@@ -17,5 +17,8 @@ coverage/
 # Scratch output from dev-loop fixtures (see `pnpm fixture:setup`)
 .scratch/
 
+# LiteLLM disk cache — regenerated on first eval run
+.cache/
+
 # Initial conversation prompt — kept locally, not committed.
 init_prompt.txt

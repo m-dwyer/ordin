@@ -97,6 +97,29 @@ pnpm ordin run  "Implement divide with zero-guard"        --project fixture --ti
 
 The `fixture` project is registered in `projects.yaml` and points at `.scratch/target-repo/` (gitignored). Re-run `pnpm fixture:setup` any time to reset the fixture to a clean state.
 
+## Eval loop (regression-gating prompt changes)
+
+Evals gate changes to the pack's prompts, skills, and config. They run the real orchestrator against fixture tasks with `AiSdkRuntime` pointed at a LiteLLM proxy — not your Max plan — so iteration is cheap and provider-swappable.
+
+**One-time:** install [Docker](https://docs.docker.com/desktop/) and [Ollama](https://ollama.com/) (or any local LLM). Pull a tool-use capable model:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5:3b        # judge model for LLM-as-judge rubrics
+```
+
+**Each session:**
+
+```bash
+mise run litellm-up           # docker compose up -d litellm (port 4000)
+mise run eval                 # run the eval suite
+mise run litellm-down         # stop proxy when done
+```
+
+**Swap backends** by editing `litellm/config.yaml` — `model_list` has Ollama as default plus commented entries for Anthropic / OpenAI / OpenRouter / Bedrock. No code change needed.
+
+Production `ordin run` never touches LiteLLM or Docker. These are eval-only.
+
 ## Directory layout + architecture
 
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the four layer separations and a live module graph.
@@ -105,4 +128,6 @@ The `fixture` project is registered in `projects.yaml` and points at `.scratch/t
 
 ## Status
 
-**Phase 1 — Core end-to-end.** `ClaudeCliRuntime` is the sole runtime. HTTP adapter, Langfuse observability, eval suite, multi-project mode, SDK runtime, and LangGraph swap are all conditional phases gated on their plan-declared triggers.
+**Phase 1 complete.** `ClaudeCliRuntime` drives production runs against Max plan.
+
+**Phase 4 (local eval suite) in progress.** `AiSdkRuntime` (Vercel AI SDK) and LiteLLM proxy landed; eval runner and fixtures are next. HTTP adapter, Langfuse observability, multi-project mode, LangGraph swap, and per-phase ingestion are conditional phases gated on their plan-declared triggers.

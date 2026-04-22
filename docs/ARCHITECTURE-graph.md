@@ -39,6 +39,10 @@ end
 subgraph K["runtimes"]
 L["types.ts"]
 O["claude-cli.ts"]
+subgraph X["ai-sdk"]
+Y["index.ts"]
+Z["tools.ts"]
+end
 end
 end
 2-->4
@@ -92,4 +96,6 @@ T-->2
 U-->2
 V-->2
 W-->G
+Y-->L
+Y-->Z
 ```

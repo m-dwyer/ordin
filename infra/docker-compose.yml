@@ -1,0 +1,41 @@
+# Optional infrastructure for ordin development.
+#
+# Nothing here is needed for `ordin run` — production path uses
+# ClaudeCliRuntime on Max plan, zero infra. These services back
+# eval (Phase 4) and observability (Phase 7) only.
+#
+# Start one service:  docker compose -f infra/docker-compose.yml up -d litellm
+# Stop everything:     docker compose -f infra/docker-compose.yml down
+#
+# Or use the wrappers in .mise.toml: `mise run litellm-up` / `litellm-down`.
+
+services:
+  # LiteLLM proxy — unified OpenAI-shaped endpoint for any backend.
+  # Used by LiteLlmRuntime during eval. Swap backends by editing
+  # `../litellm/config.yaml` model_list, no code changes.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: ordin-litellm
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ../litellm/config.yaml:/app/config.yaml:ro
+      - ../.cache/litellm:/app/.cache/litellm
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    environment:
+      # Pass-through for optional backend creds. Unset vars are fine —
+      # only the backends you enable in model_list need their key.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+    # When ollama runs on the host (not in compose), the container
+    # reaches it via host.docker.internal on macOS/Windows, or via
+    # `--add-host host.docker.internal:host-gateway` on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Phase 7 will add langfuse (postgres + clickhouse + app) to this file.
+  # Phase 8 onwards may add more. Keep additions additive — don't reshape
+  # the litellm service when new ones land.

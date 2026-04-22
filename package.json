@@ -25,9 +25,13 @@
     "fixture:setup": "rm -rf .scratch/target-repo && mkdir -p .scratch && cp -R test/fixtures/target-repo-template .scratch/target-repo && git -C .scratch/target-repo init -q && git -C .scratch/target-repo add -A && git -C .scratch/target-repo -c user.email=fixture@local -c user.name=fixture commit -q -m 'init fixture target repo' && echo 'Fixture repo ready at .scratch/target-repo'"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.41",
     "@clack/prompts": "^1.2.0",
+    "ai": "^6.0.168",
+    "autoevals": "^0.0.132",
     "commander": "^14.0.3",
     "gray-matter": "^4.0.3",
+    "openai": "^6.34.0",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },

@@ -32,7 +32,10 @@ Why these four boundaries: each is independently swappable because dependencies 
 ## Key interfaces
 
 - **`HarnessRuntime`** (`src/runtime/harness.ts`) — the stable client seam. `startRun`, `listRuns`, `getRun`, `workflowDefinition`, `paths`. Every client adapter calls through this.
-- **`AgentRuntime`** (`src/runtimes/types.ts`) — how a phase gets executed. Stage 1 has `ClaudeCliRuntime` (subprocess `claude -p`); future `SdkRuntime` is an isolated adapter swap.
+- **`AgentRuntime`** (`src/runtimes/types.ts`) — how a phase gets executed. Today there are two:
+  - **`ClaudeCliRuntime`** (`src/runtimes/claude-cli.ts`) — production. Spawns `claude -p` against the Max plan. The subprocess contains the tool loop.
+  - **`AiSdkRuntime`** (`src/runtimes/ai-sdk/`) — eval-only. Drives Vercel AI SDK (`ai` + `@ai-sdk/openai-compatible`) against any OpenAI-compatible provider URL (default: LiteLLM proxy at `localhost:4000`). Contains the tool loop in-process.
+  The orchestrator is indifferent — both implement the same interface.
 - **`Gate`** (`src/gates/types.ts`) — how a phase handoff is approved. Stage 1 has `ClackGate` (interactive), plus `FileGate` and `AutoGate` as signposts.
 - **`Composer`** (`src/domain/composer.ts`) — assembles phase prompts from agent + skills + artefact pointers. Returns a runtime-neutral `ComposedPrompt`.
 
@@ -51,11 +54,23 @@ The orchestrator (`src/orchestrator/sequential.ts`) is the merging point. It cal
 
 The plan's `HarnessRuntime.subscribe(runId): AsyncIterable<RunEvent>` (deferred until a second client exists) consumes this same type.
 
+## Runtime / provider / backend — three layers, don't conflate
+
+These are separate concerns, arranged in layers below the orchestrator:
+
+| Layer | What it is | Swap mechanism |
+|---|---|---|
+| **Runtime** | Executes one phase. Either contains a tool loop (`AiSdkRuntime`) or wraps a subprocess that does (`ClaudeCliRuntime`). | Wire a different `AgentRuntime` class. |
+| **Provider** | HTTP endpoint speaking some API shape. Stateless, routes to backends. Examples: LiteLLM proxy, OpenAI, Anthropic's OpenAI-compat, Ollama (native OpenAI-compat). | Change one URL (runtime config). |
+| **Backend / Model** | The model doing inference. Opaque strings. `claude-sonnet-4-6`, `gpt-4o-mini`, `qwen2.5-coder:7b`. | Edit LiteLLM's `model_list` (or swap provider). |
+
+So: LiteLLM is a **provider** that `AiSdkRuntime` points at by default — it is not a runtime. "Swapping LiteLLM" = change one URL. "Swapping the provider entirely" (e.g., point `AiSdkRuntime` at Ollama directly) = change one URL. "Swapping the runtime" (e.g., add a Claude Agent SDK-based one in the future) = new adapter implementing `AgentRuntime`.
+
 ## What Stage 1 intentionally doesn't have
 
 - No HTTP server, ACP server, or MCP server — Phase 2 / Phase 9 / conditional triggers.
-- No Langfuse, LiteLLM, LangGraph — Phase 7 / Phase 8 / Phase 11 triggers.
-- No `SdkRuntime` — Phase 10 trigger (moving off Max plan or needing streaming intervention).
+- No Langfuse, LangGraph — Phase 7 / Phase 11 triggers.
+- **LiteLLM is present** (Phase 4, eval-only). Production `ordin run` never touches it; `claude -p` on Max plan is the only path.
 - No `ordin install` / global symlinks — skills load per-run via `--plugin-dir` against the ordin repo itself (which is a Claude Code plugin, see `.claude-plugin/plugin.json`).
 
 ## Module graph (live)

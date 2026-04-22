@@ -1,6 +1,6 @@
 # Agentic Harness — Plan
 
-> **Implementation status (2026-04-22):** Phase 1 is complete and shipped as the `ordin` CLI. See [Part 8 → Phase 1 → Implementation notes](#phase-1--core-end-to-end-weeks-1–2---completed-2026-04-22) for variances. Next mainline target: Phase 4 (local eval suite). For the current codebase, see [`../README.md`](../README.md), [`./ARCHITECTURE.md`](./ARCHITECTURE.md), and [`../CLAUDE.md`](../CLAUDE.md).
+> **Implementation status (2026-04-22):** Phase 1 is complete and shipped as the `ordin` CLI. Phase 4 (local eval suite) in progress. See [Part 8 → Phase 1 → Implementation notes](#phase-1--core-end-to-end-weeks-1–2---completed-2026-04-22) for variances. For the current codebase, see [`../README.md`](../README.md), [`./ARCHITECTURE.md`](./ARCHITECTURE.md), and [`../CLAUDE.md`](../CLAUDE.md).
 
 A personal-first, team-extensible harness for AI-assisted software delivery with Plan → Build → Review phases, context isolation, approval gates, and instrumentation.
 
@@ -262,7 +262,69 @@ No HTTP, ACP, or IDE plugin is required for Stage 1. CLI is sufficient. HTTP + O
 
 Skills are hand-authored markdown files with YAML frontmatter at `~/.harness/skills/<name>/SKILL.md`. Installed to `~/.claude/skills/harness/<name>/` via symlink at `harness install` time so Claude Code's native skill discovery picks them up automatically. Progressive disclosure works for free — only SKILL.md descriptions enter the initial prompt; bodies load on demand when the agent decides they're relevant.
 
-**Ingestion (Stage 2+):** `harness standards sync` eventually pulls standards from Confluence / ADR repos / Notion via MCP, produces pinned-and-hashed skill files with a diff-review step. Source of truth remains filesystem; ingestion is an input pipeline, not a runtime pull. Reproducibility requires pinning.
+**Ingestion (Stage 2+):** `harness standards sync` eventually pulls standards from Confluence / ADR repos / Notion via MCP, produces pinned-and-hashed skill files with a diff-review step. Source of truth remains filesystem; ingestion is an input pipeline, not a runtime pull. Reproducibility requires pinning. The generalised version of this idea is the ingestion layer (below).
+
+### Workflow packs
+
+ordin is a runtime — a stateless engine that loads content from one or more **workflow packs** and executes them. A pack is a portable directory:
+
+```
+<pack>/
+├── .claude-plugin/plugin.json   # optional — makes the pack a Claude Code plugin too
+├── ordin.config.yaml            # per-phase defaults (model, allowed_tools, tiers)
+├── workflows/<name>.yaml        # phase ordering + orchestration concerns
+├── agents/<name>.md             # agent prompts with frontmatter
+├── skills/<name>/SKILL.md       # hand-authored skill bodies
+├── ingestion/<phase>.yaml       # per-phase external context (Phase 14; placeholder today)
+└── evals/                       # fixtures + assertions that gate pack changes
+    ├── fixtures/
+    └── README.md
+```
+
+The ordin repo itself is today's **default pack**, shipping the `software-delivery` workflow. Future packs (`acme-frontend-workflows`, `pm-discovery-pack`) are separate repos that ordin loads by path — same mechanism as the current `--plugin-dir` + `projects.yaml` pattern.
+
+**Author / consumer asymmetry.** Authoring a good pack (prompt engineering + skill design + ingestion config + eval rubrics) is specialist work — realistically one or two engineers per team. Most teammates consume packs: fork, tweak ingestion to their Confluence/repo, occasionally add a fixture. Design the pack-contribution path for that ratio — easy to tailor, deliberate to author from scratch. Don't assume every role (PM, designer, SRE) will author packs at Stage 2; that's a Stage 3+ aspiration.
+
+**Composition model.** Today: one pack, resolved by path. Stage 2 expected: one pack + per-engineer overlay (`projects.local.yaml` already models this pattern for project paths). Stage 3+ expected: company pack + team overlay + personal overlay. Multi-layer override is always messy (cf. Kustomize, Helm). Don't formalise until a real second layer lands.
+
+**Relationship to `.claude-plugin/plugin.json`.** The ordin repo is already a Claude Code plugin — `--plugin-dir` loads its skills. A pack with a `plugin.json` is loadable as *both* a Claude Code plugin and an ordin pack; packs without one are ordin-only.
+
+**Evals travel with the pack.** A pack's `evals/` gate changes to *that pack's* prompts, skills, and ingestion. When software-delivery eventually splits from the ordin repo, its fixtures split with it.
+
+### Ingestion layer
+
+The composer's tiered-context model describes *how* context reaches an agent. The ingestion layer describes *where that context comes from*.
+
+Each workflow declares, per phase, what external context to ingest. Source types:
+
+- **Pinned files in the pack** — skills, templates, ADRs committed as markdown (today's mechanism).
+- **Pinned + hashed external pulls** — Confluence pages, Notion docs, GitHub files snapshotted offline via `ordin ingest`; content-hashed for reproducibility. Generalises Phase 12 standards sync per-phase, per-workflow.
+- **Live MCP connections** — Confluence MCP, GitHub MCP, Linear MCP exposed to the agent at invocation so it can query current state.
+
+**Pinned vs live tradeoff.** Pinned is reproducible (evals re-run against the same snapshot), but stale until re-synced. Live is fresh but nondeterministic (evals get noisier, reruns diverge, MCP uptime matters). Most workflows will want both — pinned for stable reference (coding standards, RFC templates, architecture invariants), live MCP for fluid context (current sprint, open PRs, this week's incidents).
+
+**Declaration shape** (forward design — not yet implemented):
+
+```yaml
+# ingestion/explore.yaml
+phase: explore
+sources:
+  - type: pinned
+    path: ingestion/pinned/tech-strategy.md
+    origin: { kind: confluence, space: ARCH, page_id: 12345 }
+    synced_at: 2026-04-22T10:00:00Z
+    content_hash: sha256:ab12…
+  - type: live-mcp
+    server: confluence-mcp
+    capability: search
+    scope: "space:ARCH"
+```
+
+**Eval reproducibility.** Fixtures pin ingestion by pack-commit-hash. Live-MCP sources are flagged as non-reproducible — eval authors opt in knowing reruns may diverge.
+
+**Variation as a tuning knob.** Workflow authors tune ingestion alongside prompts and skills. Evals measure the effect: *"does pulling the ADR directory into Plan improve RFC quality?"*, *"does GitHub PR context in Build reduce iteration rounds?"*. Ingestion is a first-class eval dimension once the layer exists.
+
+**Status.** Design only. See Phase 14 in Part 8 for build scope. Phase 4's eval fixtures reserve an `ingestion_override` field to stay forward-compatible.
 
 ### Project context
 
@@ -581,18 +643,31 @@ Phase 1 already has `--tier S|M|L` as a CLI flag and `harness retro` for retrosp
 **Goal.** Change the harness safely. Every prompt change is eval-gated.
 
 **Deliverables:**
-- `evals/` directory with promptfoo or Inspect AI config
-- 10–15 fixture tasks (real historical problems, paired with expected artefact characteristics — e.g., "RFC must address X; build must produce tests for Y; review must catch Z if seeded with the bug")
-- Default local-model backend via LiteLLM profile + Redis cache (first run hits models; subsequent replay from cache costs nothing)
-- `harness eval [--suite <phase>] [--real-models]` command; reports pass/fail, deltas vs baseline, links to Langfuse traces (if Phase 7 done)
-- Docs: edit prompt → `harness eval` → see deltas in <10 min
+- `evals/` directory with fixture-task YAMLs + a small TS runner (plain Vitest-style iteration with `autoevals` for LLM-as-judge scoring).
+- 10–15 fixture tasks (real historical problems, paired with expected artefact characteristics — e.g., "RFC must address X; build must produce tests for Y; review must catch Z if seeded with the bug"). MVP seeds with 3–5 fixtures derived from the `.scratch/target-repo` calculator; real ones backfill as they arise.
+- `AiSdkRuntime` — second runtime implementing `AgentRuntime` via Vercel AI SDK against any OpenAI-compatible provider. Eval uses this; production stays on `ClaudeCliRuntime`.
+- LiteLLM proxy (Docker) as the default provider, with disk cache. Backend swapped by editing `litellm/config.yaml` `model_list` — Ollama, Anthropic passthrough, OpenAI, Bedrock, etc.
+- `ordin eval [--suite <phase>] [--real-models]` command; reports pass/fail, deltas vs baseline.
+- Docs: edit prompt → `ordin eval` → see deltas in <10 min.
 
-**Note.** LiteLLM + Redis first enter the stack here, scoped to eval only. Production path (Max plan via `ClaudeCliRuntime`) still doesn't touch them.
+**Note.** LiteLLM enters the stack here as a *provider* (HTTP gateway), scoped to eval only. Production path (Max plan via `ClaudeCliRuntime`) never touches it. Phase 8 later adds LiteLLM for *production routing* — a different use.
+
+**Scope choices (vs. original plan):**
+- **No promptfoo / Inspect AI.** Considered and rejected. Promptfoo's product direction is security red-teaming; its framework weight doesn't fit a pack-local eval shape. Own the small TS runner; use `autoevals` library for the one non-trivial piece (LLM-as-judge rubrics).
+- **Disk cache, no Redis.** LiteLLM supports disk cache natively. Avoids adding Redis as infra. Redis revisits only if Phase 8's production routing actually needs it.
+- **Bespoke runner rather than Vitest for eval suite.** Eval must run against pack content from any workflow pack path (see Workflow packs). Vitest is a repo-dev tool; pack consumers may not have it. The runner is a programmatic API + CLI entry (`ordin eval`), content-dir-aware.
+- **Forward-compat with ingestion (Phase 14).** Fixture YAMLs reserve `ingestion_override` field; runner accepts it as a no-op today, wires it when Phase 14 lands.
 
 **Exit criteria:**
 - Change to planner prompt → eval deltas visible locally in <10 min
 - At least one regression caught by eval and reverted
 - Eval suite runs from cache after first run (cost = 0)
+
+**Implementation notes (2026-04-22, in progress):**
+- ✅ `src/runtimes/ai-sdk/` — `AiSdkRuntime` (`index.ts`, 173 LOC) + tool defs (`tools.ts`, 157 LOC). Uses `ai` + `@ai-sdk/openai-compatible` + `zod`. Tool surface mirrors `ClaudeCliRuntime`: Read / Write / Edit / Glob / Grep / Bash.
+- ✅ `infra/docker-compose.yml` + `litellm/config.yaml` — LiteLLM proxy with disk cache; default `model_list` points at Ollama on host, commented passthroughs for Anthropic / OpenAI / OpenRouter / Bedrock.
+- ✅ `HarnessRuntime` accepts `runtimes?` and `gateForKind?` overrides so eval swaps in `AiSdkRuntime` + `AutoGate` without touching orchestrator or workflow YAML.
+- ⏳ Eval fixtures + runner + `ordin eval` CLI — in progress.
 
 ### Phase 5 — Multi-project mode
 
@@ -724,6 +799,26 @@ The phases below are additive and only built when the named trigger fires. Don't
 - Engineering standards from team's Confluence appear as a harness skill
 - Changes to the source produce a visible diff in next sync
 - Reproducibility preserved: runs use pinned/committed skill content, not live MCP calls
+
+### Phase 14 — Ingestion layer
+
+**Trigger.** Workflow authoring hits the ceiling of what pinned skills alone can express. A teammate wants their planner to consult Confluence, or their builder to read GitHub issue comments, and hand-copying into skills is the bottleneck.
+
+**Deliverables:**
+- `ingestion/<phase>.yaml` schema + loader in `src/domain/`.
+- `ordin ingest <pack> [--phase X]` command — syncs pinned sources, writes content-addressed snapshots, updates hashes.
+- MCP binding in `LiteLlmRuntime` + per-phase MCP server wiring for `ClaudeCliRuntime` (the latter has native MCP discovery; wiring it per-phase is the new work).
+- Composer extended: ingestion config resolves to `artefactInputs` (pinned) + MCP server references (live).
+- Eval runner: fixtures pin ingestion by pack-commit-hash; live-MCP sources flagged non-reproducible.
+- Docs: how to add a new ingestion source; pinned-vs-live decision guide.
+
+**Exit criteria:**
+- One real workflow pulls tech-strategy context via pinned Confluence ingestion.
+- One real workflow invokes a live MCP tool from Build phase.
+- Evals for the ingested phase run reproducibly from the pinned snapshot.
+- Swapping an ingestion source in a fixture produces a measurable eval delta.
+
+**Relationship to Phase 12.** Phase 12 (`harness standards sync`) was scoped as a narrow "pull standards into skills" tool. Phase 14 supersedes it: standards-as-skills becomes one type of ingestion; Phase 14 formalises ingestion broadly. If Phase 14 lands, Phase 12 collapses into it.
 
 ### Phase 13+ — Deferred indefinitely (trigger-driven)
 

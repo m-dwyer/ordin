@@ -1,0 +1,88 @@
+# LiteLLM proxy configuration — eval-only.
+#
+# Phase 4 of the harness plan introduces LiteLLM *scoped to the local eval
+# suite*. Production runs still go through `ClaudeCliRuntime` on Max plan;
+# this proxy is only in the path when `ordin eval` is invoked.
+#
+# Why a proxy rather than SDK mode: LiteLLM is Python. Running the proxy
+# means the TS harness can talk OpenAI-shaped HTTP to a single endpoint
+# and the backend is swapped by editing one YAML — no TS changes, no
+# rebuild, no code-level provider logic.
+#
+# Start it:   mise run litellm-up
+# Stop it:    mise run litellm-down
+# Swap backend: edit `model_list` below, then mise run litellm-up
+
+# ---- model list ----------------------------------------------------------
+# Each entry declares an alias (`model_name`) the harness can reference,
+# and the `litellm_params` routing it to a real backend. Swap freely.
+#
+# Evals reference models by alias. The alias → backend mapping lives here;
+# the harness never sees provider strings.
+
+model_list:
+  # Default: local Ollama. Qwen 2.5 Coder is a reasonable small model for
+  # tool-use agentic loops. Swap for any other Ollama model, or comment
+  # this out and uncomment one of the alternatives below.
+  - model_name: ordin-default
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:7b
+      # host.docker.internal resolves to the host Ollama from inside the
+      # litellm container (see extra_hosts in infra/docker-compose.yml).
+      api_base: http://host.docker.internal:11434
+
+  # Cheap-judge model for LLM-as-judge assertions in evals.
+  - model_name: ordin-judge
+    litellm_params:
+      model: ollama_chat/qwen2.5:3b
+      # host.docker.internal resolves to the host Ollama from inside the
+      # litellm container (see extra_hosts in infra/docker-compose.yml).
+      api_base: http://host.docker.internal:11434
+
+  # Alternatives — uncomment + set the matching env var to swap backends.
+  #
+  # Anthropic passthrough (requires ANTHROPIC_API_KEY):
+  # - model_name: ordin-default
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-6
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+  #
+  # OpenAI (requires OPENAI_API_KEY):
+  # - model_name: ordin-default
+  #   litellm_params:
+  #     model: openai/gpt-4o-mini
+  #     api_key: os.environ/OPENAI_API_KEY
+  #
+  # OpenRouter (requires OPENROUTER_API_KEY):
+  # - model_name: ordin-default
+  #   litellm_params:
+  #     model: openrouter/anthropic/claude-sonnet-4.6
+  #     api_key: os.environ/OPENROUTER_API_KEY
+  #
+  # AWS Bedrock (requires AWS_* env vars):
+  # - model_name: ordin-default
+  #   litellm_params:
+  #     model: bedrock/anthropic.claude-sonnet-4-6-v1:0
+
+# ---- proxy-wide settings -------------------------------------------------
+
+litellm_settings:
+  # Disk cache — keyed on model + messages + params. Cached responses
+  # cost zero and return instantly, making the "edit prompt → eval →
+  # see delta" loop cheap after the first real run.
+  cache: true
+  cache_params:
+    type: disk
+    disk_cache_dir: ./.cache/litellm
+  # Drop unsupported params rather than erroring — some backends (Ollama)
+  # ignore `response_format`, `seed`, etc. Keeps provider swap frictionless.
+  drop_params: true
+  # Log sparingly. Evals produce enough noise already.
+  set_verbose: false
+
+# ---- server -------------------------------------------------------------
+
+general_settings:
+  # No master key in the default config — proxy listens on localhost only.
+  # If you expose it beyond localhost, set LITELLM_MASTER_KEY.
+  master_key: os.environ/LITELLM_MASTER_KEY

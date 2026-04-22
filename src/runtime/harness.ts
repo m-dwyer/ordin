@@ -32,6 +32,21 @@ export interface HarnessRuntimeOptions {
    * Resolved as `<root>/workflows/<name>.yaml`.
    */
   readonly workflow?: string;
+  /**
+   * Override the runtime map. Keys are the runtime names the workflow
+   * references (today: "claude-cli"). When provided, the default
+   * `ClaudeCliRuntime` construction is skipped entirely — callers supply
+   * whatever `AgentRuntime` they want slotted into each workflow-declared
+   * name. Used by the eval suite to run phases through `AiSdkRuntime`
+   * against a LiteLLM proxy.
+   */
+  readonly runtimes?: ReadonlyMap<string, AgentRuntime>;
+  /**
+   * Override how gates are resolved. Defaults to the production mapping
+   * (clack for human, auto for auto/pre-commit). The eval suite passes
+   * an AutoGate-only resolver so fixtures run unattended.
+   */
+  readonly gateForKind?: (kind: Phase["gate"]) => Gate;
 }
 
 export interface StartRunInput {
@@ -62,10 +77,14 @@ export class HarnessRuntime {
 
   private readonly root: string;
   private readonly workflowName: string;
+  private readonly runtimesOverride?: ReadonlyMap<string, AgentRuntime>;
+  private readonly gateResolver?: (kind: Phase["gate"]) => Gate;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
+    this.runtimesOverride = opts.runtimes;
+    this.gateResolver = opts.gateForKind;
   }
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
@@ -117,19 +136,21 @@ export class HarnessRuntime {
 
     const artefactInputs = this.buildInputsFor(startPhase.id, slug);
 
-    const runtimes = new Map<string, AgentRuntime>([
-      [
-        "claude-cli",
-        new ClaudeCliRuntime({
-          bin: config.claudeBin(),
-          runsDir: config.runsDir(),
-          // The ordin repo itself is a Claude Code plugin
-          // (.claude-plugin/plugin.json + top-level skills/). Loading it
-          // per-invocation means zero pollution of ~/.claude/.
-          pluginDirs: [this.root],
-        }),
-      ],
-    ]);
+    const runtimes =
+      this.runtimesOverride ??
+      new Map<string, AgentRuntime>([
+        [
+          "claude-cli",
+          new ClaudeCliRuntime({
+            bin: config.claudeBin(),
+            runsDir: config.runsDir(),
+            // The ordin repo itself is a Claude Code plugin
+            // (.claude-plugin/plugin.json + top-level skills/). Loading it
+            // per-invocation means zero pollution of ~/.claude/.
+            pluginDirs: [this.root],
+          }),
+        ],
+      ]);
 
     const orchestrator = new SequentialOrchestrator({
       workflow: trimmedWorkflow,
@@ -138,7 +159,7 @@ export class HarnessRuntime {
       skills,
       runtimes,
       runStore,
-      gateForKind: this.gateForKind.bind(this),
+      gateForKind: this.gateResolver ?? this.gateForKind.bind(this),
     });
 
     const runInput: RunInput = {

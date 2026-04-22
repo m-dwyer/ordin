@@ -30,6 +30,22 @@ run = "pnpm deps:graph"
 description = "Stage the fixture target repo at .scratch/target-repo for dev-loop ordin runs"
 run = "pnpm fixture:setup"
 
+[tasks.litellm-up]
+description = "Start the LiteLLM proxy (Docker) for eval runs"
+run = "docker compose -f infra/docker-compose.yml up -d litellm"
+
+[tasks.litellm-down]
+description = "Stop the LiteLLM proxy"
+run = "docker compose -f infra/docker-compose.yml down"
+
+[tasks.litellm-logs]
+description = "Tail LiteLLM proxy logs"
+run = "docker compose -f infra/docker-compose.yml logs -f litellm"
+
+[tasks.eval]
+description = "Run the eval suite (requires `mise run litellm-up` first)"
+run = "pnpm eval"
+
 [tasks.check]
 description = "Full pre-commit sweep: typecheck + test + lint + deps-check"
 depends = ["typecheck", "test", "lint", "deps-check"]
