@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -107,30 +107,48 @@ async function stageRepo(): Promise<void> {
 }
 
 /**
- * One-line stderr progress for each interesting event. Evals run long
- * enough that silence feels like a hang; this gives live feedback
- * without flooding the terminal.
+ * Per-invocation log state. Written files are tracked here so that
+ * successive Writes to the same path can show `+A/-R` line deltas
+ * against the previous state — useful for watching an agent iterate
+ * on its own output (e.g. the verify-then-rewrite loop some models
+ * fall into).
+ *
+ * Everything here operates on the event stream, which is runtime-
+ * neutral: works whether the events came from AiSdkRuntime or a
+ * future ClaudeCliRuntime-streamed run.
+ */
+interface PendingCall {
+  readonly name: string;
+  readonly input: Record<string, unknown>;
+}
+const pendingCalls = new Map<string, PendingCall>();
+const writtenSnapshots = new Map<string, string>();
+
+/**
+ * Pretty progress stream. Buffers each tool.use until tool.result
+ * arrives so we can print the call + outcome as one aligned block.
  */
 function logEvent(event: RunEvent): void {
   switch (event.type) {
     case "phase.started":
-      // Deliberately not printing event.model — it's the composer-side
-      // name ("claude-sonnet-4-6" or whatever ordin.config.yaml says),
-      // which AiSdkRuntime then rewrites to the LiteLLM alias, which
-      // LiteLLM routes to the actual backend. Three layers; showing
-      // only the top one is misleading. See litellm/config.yaml for
-      // the actual backend routing.
+      // Deliberately not printing event.model — see the three-layer
+      // routing in litellm/config.yaml and ARCHITECTURE.md.
+      pendingCalls.clear();
+      writtenSnapshots.clear();
       process.stderr.write(`\n  [${event.phaseId}] start\n`);
       return;
-    case "agent.tool.use": {
-      const input = event.input as Record<string, unknown>;
-      const preview = summariseToolInput(event.name, input);
-      process.stderr.write(`  → ${event.name}${preview ? `(${preview})` : ""}\n`);
+    case "agent.tool.use":
+      pendingCalls.set(event.id, {
+        name: event.name,
+        input: event.input as Record<string, unknown>,
+      });
+      return;
+    case "agent.tool.result": {
+      const pending = pendingCalls.get(event.id);
+      pendingCalls.delete(event.id);
+      writeToolLine(pending, event.ok, event.preview);
       return;
     }
-    case "agent.tool.result":
-      if (!event.ok) process.stderr.write(`    ✗ tool failed: ${event.preview ?? ""}\n`);
-      return;
     case "agent.tokens":
       // Overwrite a single status line in place.
       process.stderr.write(
@@ -138,7 +156,9 @@ function logEvent(event: RunEvent): void {
       );
       return;
     case "phase.completed":
-      process.stderr.write(`\n  [${event.phaseId}] done in ${(event.durationMs / 1000).toFixed(1)}s\n`);
+      process.stderr.write(
+        `\n  [${event.phaseId}] done in ${(event.durationMs / 1000).toFixed(1)}s\n`,
+      );
       return;
     case "phase.failed":
       process.stderr.write(`\n  [${event.phaseId}] FAILED: ${event.error}\n`);
@@ -149,22 +169,132 @@ function logEvent(event: RunEvent): void {
   }
 }
 
-function summariseToolInput(name: string, input: Record<string, unknown>): string {
-  const pick = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : undefined);
+function writeToolLine(
+  pending: PendingCall | undefined,
+  ok: boolean,
+  preview: string | undefined,
+): void {
+  if (!pending) {
+    // Orphaned result — shouldn't happen, log minimally.
+    process.stderr.write(`    ← ${ok ? "ok" : `✗ ${preview ?? ""}`}\n`);
+    return;
+  }
+  const { args, outcome, extra } = renderTool(pending.name, pending.input, preview ?? "");
+  const shown = ok ? outcome : `✗ ${preview ?? "failed"}`;
+  const head = `  → ${pending.name}(${args})`;
+  process.stderr.write(shown ? `${head}  →  ${shown}\n` : `${head}\n`);
+  if (ok && extra) {
+    for (const line of extra) process.stderr.write(`           ${line}\n`);
+  }
+}
+
+interface ToolRender {
+  readonly args: string;
+  readonly outcome: string;
+  readonly extra?: readonly string[];
+}
+
+/**
+ * Render one tool call as {args, outcome, optional extra lines}.
+ *
+ * Glob/Grep/Read infer from the runtime-truncated preview (160 char cap,
+ * so counts show "+" when we likely missed some). Write reads the file
+ * directly and diffs against the last snapshot — independent of which
+ * runtime wrote it. Edit surfaces before/after from the event.input
+ * itself, also runtime-agnostic.
+ */
+function renderTool(
+  name: string,
+  input: Record<string, unknown>,
+  preview: string,
+): ToolRender {
+  const s = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : "");
+  const count = (label: string): string => {
+    if (!preview || preview === "(no matches)") return "(no matches)";
+    const n = preview.split("\n").filter((l) => l.length > 0).length;
+    return preview.length >= 160 ? `${n}+ ${label}` : `${n} ${label}`;
+  };
+
   switch (name) {
     case "Read":
+      return {
+        args: s("file_path"),
+        outcome: preview.length >= 160 ? "(truncated preview)" : `${preview.length} B`,
+      };
     case "Write":
+      return { args: s("file_path"), outcome: writeDelta(input) };
     case "Edit":
-      return pick("file_path") ?? "";
+      return {
+        args: s("file_path"),
+        outcome: "edited",
+        extra: [
+          `-  ${truncate(firstLine(s("old_string")), 100)}`,
+          `+  ${truncate(firstLine(s("new_string")), 100)}`,
+        ],
+      };
     case "Glob":
-      return pick("pattern") ?? "";
+      return { args: s("pattern"), outcome: count("matches") };
     case "Grep":
-      return [pick("pattern"), pick("path")].filter(Boolean).join(" in ");
+      return {
+        args: s("path") ? `${s("pattern")} in ${s("path")}` : s("pattern"),
+        outcome: count("hits"),
+      };
     case "Bash":
-      return (pick("command") ?? "").slice(0, 60);
+      return {
+        args: truncate(s("command"), 80),
+        outcome: preview ? truncate(preview.replace(/\s+/g, " "), 60) : "ok",
+      };
     default:
-      return "";
+      return { args: "", outcome: "" };
   }
+}
+
+/**
+ * Line delta for Write, computed from on-disk state.
+ *
+ * Strategy: on each Write, snapshot the path's post-write content.
+ * On the next Write to the same path, diff old snapshot vs. new
+ * content. For the first Write to a path we report `+N (new)`.
+ *
+ * Cross-runtime: depends only on the event's `file_path` input and
+ * the eval's known CWD. Works identically for AiSdk or a future
+ * runtime that emits the same event shape.
+ */
+function writeDelta(input: Record<string, unknown>): string {
+  const relPath = typeof input.file_path === "string" ? input.file_path : "";
+  if (!relPath) return "";
+  let current: string;
+  try {
+    current = readFileSync(join(EVAL_REPO, relPath), "utf8");
+  } catch {
+    return ""; // file moved / disappeared between write and log
+  }
+  const prior = writtenSnapshots.get(relPath);
+  writtenSnapshots.set(relPath, current);
+  if (prior === undefined) {
+    return `+${current.split("\n").length} lines (new)`;
+  }
+  const { added, removed } = lineDelta(prior, current);
+  return added === 0 && removed === 0 ? "no change" : `+${added}/-${removed} lines`;
+}
+
+function lineDelta(before: string, after: string): { added: number; removed: number } {
+  const beforeSet = new Set(before.split("\n"));
+  const afterSet = new Set(after.split("\n"));
+  let added = 0;
+  let removed = 0;
+  for (const line of after.split("\n")) if (!beforeSet.has(line)) added++;
+  for (const line of before.split("\n")) if (!afterSet.has(line)) removed++;
+  return { added, removed };
+}
+
+function firstLine(s: string): string {
+  const nl = s.indexOf("\n");
+  return nl < 0 ? s : s.slice(0, nl);
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
 function artefactRelPath(phase: RunPhaseInput["phase"], slug: string): string {
