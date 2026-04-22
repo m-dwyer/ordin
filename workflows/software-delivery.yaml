@@ -1,0 +1,40 @@
+# Software delivery workflow — Plan → Build → Review with Review→Build back-edge.
+#
+# YAML only orders phases and declares orchestration concerns (gate, runtime,
+# fresh_context). I/O is implicit: the agent's prompt declares what to read
+# and write. No redundant schema here.
+
+name: software-delivery
+version: 1
+description: >
+  Personal-first software delivery pipeline: turn a problem statement into a
+  reviewable RFC, then a PR-ready branch, then an independent review.
+
+phases:
+  - id: plan
+    agent: planner
+    runtime: claude-cli
+    gate: human
+    # Plan runs in fresh context by definition (it's the first phase).
+    fresh_context: true
+
+  - id: build
+    agent: build-local
+    runtime: claude-cli
+    gate: human
+    # Build may inherit reviewer findings through the artefact on disk; no
+    # need for fresh context here — but the subprocess is always fresh, so
+    # this is documentation of intent, not a runtime toggle.
+    fresh_context: true
+
+  - id: review
+    agent: reviewer
+    runtime: claude-cli
+    gate: human
+    # Fresh context is load-bearing for Review: independence catches
+    # "works but isn't what we asked for".
+    fresh_context: true
+    on_reject:
+      # Default iteration path: Review findings → fresh Build run.
+      goto: build
+      max_iterations: 3

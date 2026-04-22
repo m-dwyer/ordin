@@ -1,0 +1,8 @@
+{
+  "name": "fixture-target",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Harness fixture target repo — not a real package.",
+  "main": "src/index.ts"
+}

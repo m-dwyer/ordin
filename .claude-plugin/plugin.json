@@ -1,0 +1,8 @@
+{
+  "name": "ordin",
+  "description": "Skills and agents for the ordin software-delivery pipeline (Plan → Build → Review).",
+  "version": "0.1.0",
+  "author": {
+    "name": "ordin"
+  }
+}

@@ -1,0 +1,71 @@
+# ordin configuration — per-phase model and tool allowlists.
+#
+# Workflow YAMLs reference phases by id. This file supplies the defaults
+# the `ClaudeCliRuntime` needs at invocation time (model, allowed tools).
+# Agent-markdown frontmatter (model:, tools:) overrides per-agent.
+
+runtime:
+  default: claude-cli
+  claude_cli:
+    # Path to the `claude` binary. Empty = use whatever's on PATH.
+    bin: claude
+    # Where to persist per-run transcripts (JSONL from --output-format stream-json).
+    runs_dir: ~/.ordin/runs
+
+phases:
+  plan:
+    # Opus default per plan — Plan is reasoning-heavy.
+    model: claude-opus-4-7
+    allowed_tools:
+      - Read
+      - Grep
+      - Glob
+      - Write(docs/rfcs/*)
+
+  build:
+    # Sonnet default per plan — Build is higher-volume, tool-heavy.
+    model: claude-sonnet-4-6
+    allowed_tools:
+      - Read
+      - Write
+      - Edit
+      - Grep
+      - Glob
+      - Bash
+
+  review:
+    # Opus default per plan — Review is adversarial reasoning.
+    model: claude-opus-4-7
+    allowed_tools:
+      - Read
+      - Grep
+      - Glob
+      - Write(reviews/*)
+      - Bash(git diff*)
+      - Bash(git log*)
+      - Bash(git show*)
+
+# Per-tier overrides. Only the neutral `model` knob is represented here —
+# runtime-specific knobs (Claude's `--effort`, for example) are derived
+# from the tier inside the runtime itself. Precedence:
+#   agent frontmatter > tier.model > phases.<phase>.model
+tiers:
+  S:
+    # S-tier: trivial work. Prefer the cheapest/fastest model across all phases.
+    model: claude-sonnet-4-6
+  M:
+    # M-tier: balanced. Use Sonnet across all phases.
+    model: claude-sonnet-4-6
+  L: {}
+    # L-tier: heaviest profile. Empty object means per-phase defaults win
+    # (Opus for Plan/Review, Sonnet for Build).
+
+# Soft token budgets (warn only; hard ceiling deferred per plan Phase 1).
+# Used by the composer to emit retro warnings.
+budgets:
+  plan:
+    soft_tokens: 40000
+  build:
+    soft_tokens: 120000
+  review:
+    soft_tokens: 40000

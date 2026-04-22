@@ -1,0 +1,6 @@
+# Per-engineer overrides. Copy to `projects.local.yaml` and edit.
+# Merged on top of `projects.yaml`; local keys win.
+
+projects: {}
+  # my-work-repo:
+  #   path: ~/code/my-work-repo

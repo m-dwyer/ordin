@@ -1,0 +1,21 @@
+node_modules/
+.DS_Store
+*.log
+
+# User-specific config overrides
+projects.local.yaml
+.env
+.env.local
+
+# Build artefacts (none expected; tsx runs TS directly)
+dist/
+*.tsbuildinfo
+
+# Test coverage output
+coverage/
+
+# Scratch output from dev-loop fixtures (see `pnpm fixture:setup`)
+.scratch/
+
+# Initial conversation prompt — kept locally, not committed.
+init_prompt.txt

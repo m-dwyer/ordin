@@ -1,0 +1,35 @@
+[tools]
+node = "22"
+pnpm = "9.15.0"
+
+[tasks.test]
+description = "Run the unit-test suite"
+run = "pnpm test"
+
+[tasks.coverage]
+description = "Run tests with coverage (text + HTML report under coverage/)"
+run = "pnpm test:coverage"
+
+[tasks.typecheck]
+description = "Type-check the project (tsc --noEmit)"
+run = "pnpm typecheck"
+
+[tasks.lint]
+description = "Biome lint + format check"
+run = "pnpm lint"
+
+[tasks.deps-check]
+description = "Dependency-cruiser — architectural layer rules"
+run = "pnpm deps:check"
+
+[tasks.deps-graph]
+description = "Regenerate docs/ARCHITECTURE-graph.md from the live module graph"
+run = "pnpm deps:graph"
+
+[tasks.fixture-setup]
+description = "Stage the fixture target repo at .scratch/target-repo for dev-loop ordin runs"
+run = "pnpm fixture:setup"
+
+[tasks.check]
+description = "Full pre-commit sweep: typecheck + test + lint + deps-check"
+depends = ["typecheck", "test", "lint", "deps-check"]
