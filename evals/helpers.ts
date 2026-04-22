@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
-import { cp, readFile, rm } from "node:fs/promises";
+import { cp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { simpleGit } from "simple-git";
-import { ArtefactPaths } from "../src/domain/artefact";
+import { type Artefact, ArtefactManager, ArtefactPaths } from "../src/domain/artefact";
 import { AutoGate } from "../src/gates/auto";
 import type { RunEvent } from "../src/runtime/harness";
 import { HarnessRuntime } from "../src/runtime/harness";
@@ -44,7 +44,13 @@ export interface RunPhaseInput {
   readonly tier?: "S" | "M" | "L";
 }
 
-export async function runPhase(input: RunPhaseInput): Promise<string> {
+/**
+ * Runs one phase and returns the produced artefact. The domain's
+ * `Artefact` gives us { path, content, modifiedAt } — path is useful
+ * for rubric-failure messages so authors can inspect the output
+ * without hunting for it in `.scratch/`.
+ */
+export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
   await stageRepo();
 
   const apiKey = process.env.LITELLM_MASTER_KEY;
@@ -53,9 +59,22 @@ export async function runPhase(input: RunPhaseInput): Promise<string> {
       "LITELLM_MASTER_KEY is unset. Copy .env.local.example to .env.local and set the key.",
     );
   }
+  // Optional: route all composer-side model names to one explicit backend
+  // alias. Lets you compare models across runs without editing configs —
+  // `ORDIN_EVAL_MODEL=qwen3-14b pnpm eval`. The alias must exist in
+  // litellm/config.yaml's model_list.
+  const overrideAlias = process.env.ORDIN_EVAL_MODEL;
+  const modelMap = overrideAlias
+    ? new Map<string, string>([
+        ["claude-opus-4-7", overrideAlias],
+        ["claude-sonnet-4-6", overrideAlias],
+      ])
+    : undefined;
+
   const runtime = new AiSdkRuntime({
     baseUrl: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
     apiKey,
+    ...(modelMap ? { modelMap } : {}),
   });
 
   const harness = new HarnessRuntime({
@@ -73,7 +92,7 @@ export async function runPhase(input: RunPhaseInput): Promise<string> {
     onEvent: logEvent,
   });
 
-  return readFile(join(EVAL_REPO, artefactRelPath(input.phase, input.slug)), "utf8");
+  return new ArtefactManager(EVAL_REPO).read(artefactRelPath(input.phase, input.slug));
 }
 
 async function stageRepo(): Promise<void> {

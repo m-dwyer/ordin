@@ -21,16 +21,24 @@
 # the harness never sees provider strings.
 
 model_list:
-  # Aliases match the harness-side model names in `ordin.config.yaml`
-  # deliberately — so the composer's ComposedPrompt.model flows straight
-  # through to LiteLLM's model_list without needing a runtime-side
-  # rewrite. The substitution "claim X, actually run Y" happens here
-  # (LiteLLM's routing table), where it belongs — not in the TS runtime.
+  # Two kinds of aliases below:
+  #
+  # 1. HARNESS-SIDE DEFAULTS — aliases matching the composer-side model
+  #    names in ordin.config.yaml (`claude-sonnet-4-6` etc.). These are
+  #    the "no config" experience: run `pnpm eval` and it just works.
+  #    Each routes to the current default backend.
+  #
+  # 2. BACKEND ALIASES — one per specific model (`qwen3-8b`, `qwen3-14b`,
+  #    etc.). Declared once. Used for iteration/comparison by setting
+  #    `ORDIN_EVAL_MODEL=qwen3-14b pnpm eval` — the helpers map all
+  #    composer-side names to the chosen backend alias.
   #
   # Qwen 3 has native OpenAI-format tool-use, load-bearing for agentic
-  # loops. Qwen 2.5 Coder returned tool-call JSON as text content — not
-  # dispatchable by the AI SDK. Avoid smaller models (< 7B) for tool-use
-  # unless you've verified they emit `tool_calls` structurally.
+  # loops. Avoid smaller models (< 7B) for tool-use unless you've verified
+  # they emit `tool_calls` structurally (qwen2.5-coder:7b does not).
+
+  # --- harness-side defaults (route to the working baseline) ---
+
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: ollama_chat/qwen3:8b
@@ -43,11 +51,43 @@ model_list:
       model: ollama_chat/qwen3:8b
       api_base: http://host.docker.internal:11434
 
-  # Cheap judge for LLM-as-judge assertions. No tool-use; just needs
-  # clean instruction-following for "CHOICE: yes|no" output.
   - model_name: claude-haiku-4-5
     litellm_params:
       model: ollama_chat/qwen3:4b
+      api_base: http://host.docker.internal:11434
+
+  # --- backend aliases for ORDIN_EVAL_MODEL experimentation ---
+  # Add more here as you want to test them. `mise run litellm-down &&
+  # litellm-up` picks up changes. Pull the model via `ollama pull` first.
+
+  - model_name: qwen3-4b
+    litellm_params:
+      model: ollama_chat/qwen3:4b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: qwen3-8b
+    litellm_params:
+      model: ollama_chat/qwen3:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: qwen3-14b
+    litellm_params:
+      model: ollama_chat/qwen3:14b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: qwen3-32b
+    litellm_params:
+      model: ollama_chat/qwen3:32b
+      api_base: http://host.docker.internal:11434
+
+  # Qwen3-Coder MoE — 30B total, 3B active per forward pass. Inference
+  # cost scales with active params, so speed is closer to a dense 3-4B
+  # while knowledge is closer to 30B. Coder-specialised: trained on code
+  # + tool-use workflows. Good candidate for our RFC-from-code-exploration
+  # task specifically.
+  - model_name: qwen3-coder-30b
+    litellm_params:
+      model: ollama_chat/qwen3-coder:30b
       api_base: http://host.docker.internal:11434
 
   # Alternatives — replace the Ollama entries above with these to swap

@@ -73,7 +73,7 @@ Three layers below the orchestrator. Keep them distinct in code and conversation
 
 - **Runtime** (`AgentRuntime`) — executes one phase. `ClaudeCliRuntime` wraps `claude -p`; `AiSdkRuntime` drives Vercel AI SDK. Swap = new adapter class.
 - **Provider** — HTTP endpoint speaking an API shape (OpenAI-compatible, Anthropic-native). Examples: LiteLLM proxy, OpenAI, Ollama's native endpoint. Swap = change one URL.
-- **Backend / Model** — what does inference. `claude-sonnet-4-6`, `qwen2.5-coder:7b`. Opaque strings to the harness.
+- **Backend / Model** — what does inference. `claude-sonnet-4-6`, `qwen3:8b`. Opaque strings to the harness.
 
 LiteLLM is a provider, not a runtime. Name runtime modules after the API shape or SDK they speak (SdkRuntime, AiSdkRuntime, ClaudeCliRuntime) — never after a specific provider.
 

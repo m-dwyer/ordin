@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { init, LLMClassifierFromTemplate, type Score } from "autoevals";
 import OpenAI from "openai";
+import type { Artefact } from "../src/domain/artefact";
 
 // Defensive env-file load; a no-op if mise has already sourced it.
 {
@@ -79,6 +80,45 @@ export async function judge(output: string, criterion: string): Promise<JudgeRes
   const result: Score = await scorer({ output, criterion } as unknown as { output: string });
   return {
     score: typeof result.score === "number" ? result.score : 0,
-    rationale: typeof result.metadata?.rationale === "string" ? result.metadata.rationale : undefined,
+    rationale:
+      typeof result.metadata?.rationale === "string" ? result.metadata.rationale : undefined,
   };
+}
+
+/**
+ * Rubric assertion. Scores `artefact.content` against `criterion` and
+ * throws a rich error if the score is below `threshold`.
+ *
+ * Rationale is surfaced on BOTH pass and fail:
+ *   - stderr log: every call prints `judge [score] rationale` — on passes
+ *     this lets you catch rubber-stamping judges; without visible reasoning
+ *     you can't tell whether the judge engaged with the criterion or just
+ *     said yes.
+ *   - failure message: the thrown error also carries criterion + score +
+ *     rationale + artefact path, so you don't have to scroll up through
+ *     stderr to understand why Vitest failed.
+ */
+export async function rubric(
+  artefact: Artefact,
+  criterion: string,
+  options: { threshold?: number } = {},
+): Promise<JudgeResult> {
+  const threshold = options.threshold ?? 0.7;
+  const result = await judge(artefact.content, criterion);
+
+  const scoreStr = result.score.toFixed(2);
+  const rationale = result.rationale?.trim() || "(no rationale returned)";
+  process.stderr.write(`  judge [${scoreStr}] ${rationale}\n`);
+
+  if (result.score < threshold) {
+    throw new Error(
+      [
+        `Rubric below threshold: ${criterion}`,
+        `  score:     ${scoreStr} (threshold ${threshold})`,
+        `  rationale: ${rationale}`,
+        `  artefact:  ${artefact.path}`,
+      ].join("\n"),
+    );
+  }
+  return result;
 }

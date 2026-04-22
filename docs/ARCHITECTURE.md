@@ -62,7 +62,7 @@ These are separate concerns, arranged in layers below the orchestrator:
 |---|---|---|
 | **Runtime** | Executes one phase. Either contains a tool loop (`AiSdkRuntime`) or wraps a subprocess that does (`ClaudeCliRuntime`). | Wire a different `AgentRuntime` class. |
 | **Provider** | HTTP endpoint speaking some API shape. Stateless, routes to backends. Examples: LiteLLM proxy, OpenAI, Anthropic's OpenAI-compat, Ollama (native OpenAI-compat). | Change one URL (runtime config). |
-| **Backend / Model** | The model doing inference. Opaque strings. `claude-sonnet-4-6`, `gpt-4o-mini`, `qwen2.5-coder:7b`. | Edit LiteLLM's `model_list` (or swap provider). |
+| **Backend / Model** | The model doing inference. Opaque strings. `claude-sonnet-4-6`, `gpt-4o-mini`, `qwen3:8b`. | Edit LiteLLM's `model_list` (or swap provider). |
 
 So: LiteLLM is a **provider** that `AiSdkRuntime` points at by default — it is not a runtime. "Swapping LiteLLM" = change one URL. "Swapping the provider entirely" (e.g., point `AiSdkRuntime` at Ollama directly) = change one URL. "Swapping the runtime" (e.g., add a Claude Agent SDK-based one in the future) = new adapter implementing `AgentRuntime`.
 

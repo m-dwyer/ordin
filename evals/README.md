@@ -26,28 +26,66 @@ mise run litellm-down            # stop when done
 
 Swap backend by editing `litellm/config.yaml` — `model_list` has Ollama as default plus commented entries for Anthropic / OpenAI / OpenRouter / Bedrock.
 
+## Comparing models across runs
+
+`litellm/config.yaml` declares backend aliases (`qwen3-4b`, `qwen3-8b`, `qwen3-14b`, `qwen3-32b`, `qwen3-coder-30b`). Pick one per run via env var:
+
+```bash
+ORDIN_EVAL_MODEL=qwen3-14b pnpm eval
+ORDIN_EVAL_MODEL=qwen3-32b pnpm eval
+```
+
+Unset → default aliases (qwen3:8b for agent, qwen3:4b for judge). Override the judge independently via `ORDIN_EVAL_JUDGE_MODEL`.
+
+Adding a new model:
+1. `ollama pull <model>`
+2. Add an entry to `model_list` in `litellm/config.yaml`
+3. `mise run litellm-down && mise run litellm-up`
+4. `ORDIN_EVAL_MODEL=<alias> pnpm eval`
+
+Compare what matters: wall-time, output token count (from stderr log), tool-call count (repetition is a model-weakness signal), rubric scores.
+
 ## How a fixture is shaped
 
 Each `*.eval.ts` is a Vitest suite. Structure:
 
 1. `beforeAll` calls `runPhase({...})` to execute one phase against the ephemeral fixture repo at `.scratch/eval-repo/`.
-2. `runPhase` returns the produced artefact text.
-3. `it` blocks assert on the text:
-   - **Deterministic**: `expect(rfc).toContain("## Summary")` for template compliance.
-   - **LLM-as-judge**: `judge(rfc, "natural-language yes/no criterion")` returns a 0..1 score; pick a threshold per rubric.
+2. `runPhase` returns an `Artefact` (`{ path, content, modifiedAt }` — the domain type from `src/domain/artefact.ts`).
+3. `it` blocks assert on it two ways:
+   - **Deterministic**: `expect(rfc.content).toContain("## Summary")` for template compliance.
+   - **LLM-as-judge**: `await rubric(rfc, "natural-language yes/no criterion")` — throws with rationale + artefact path if below threshold (default 0.7).
 
 See `plan.eval.ts` for the canonical shape.
+
+### Rubric output
+
+On **every** rubric call, `rubric()` logs a one-liner to stderr — score + the judge's rationale from its chain-of-thought. Surfacing rationale on passes lets you catch rubber-stamping judges; without it you can't tell whether the judge engaged with the criterion or just said yes:
+
+```
+  judge [1.00] The Summary section provides a concrete handover…
+```
+
+On **failure**, the error additionally carries criterion + score + rationale + artefact path, so you don't have to scroll up through stderr:
+
+```
+Rubric below threshold: Does the Recommendation section explain WHY…
+  score:     0.40 (threshold 0.7)
+  rationale: The recommendation states a choice but does not compare tradeoffs…
+  artefact:  /Users/you/ordin/.scratch/eval-repo/docs/rfcs/plan-add-input-validation-rfc.md
+```
+
+`cat` the artefact path to see the produced RFC in full.
 
 ## Adding a fixture
 
 1. Create `evals/<phase>-<slug>.eval.ts`.
-2. Import `runPhase` from `./helpers` and `judge` from `./judge`.
-3. Write a `describe` + `beforeAll` + a handful of `it` assertions. Mix deterministic (cheap, always-runs) with rubric (probabilistic, threshold-gated).
-4. For rubrics, pick a yes/no criterion that's specific enough to be scorable. *"Is the RFC good"* is too vague; *"Does the Recommendation justify WHY the chosen option beats alternatives?"* is scorable.
+2. Import `runPhase` from `./helpers` and `rubric` from `./judge`.
+3. Write a `describe` + `beforeAll` + a handful of `it` assertions. Mix deterministic (cheap, always-runs — `expect(rfc.content).toContain(...)`) with rubric (probabilistic, threshold-gated — `await rubric(rfc, "…")`).
+4. For rubrics, pick a yes/no criterion specific enough to be scorable. *"Is the RFC good"* is too vague; *"Does the Recommendation justify WHY the chosen option beats alternatives?"* is scorable.
 
 ## Flakiness mitigations
 
-`expect(score).toBeGreaterThanOrEqual(0.7)` can oscillate near thresholds. Mitigations, in order of when to reach for them:
+`rubric()` thresholds can oscillate near the cut-off. Mitigations, in order of when to reach for them:
 
 1. Autoevals' built-in chain-of-thought (`useCoT: true` — already set).
 2. Tune thresholds per-rubric — some criteria are stable, others noisy.

@@ -99,24 +99,32 @@ The `fixture` project is registered in `projects.yaml` and points at `.scratch/t
 
 ## Eval loop (regression-gating prompt changes)
 
-Evals gate changes to the pack's prompts, skills, and config. They run the real orchestrator against fixture tasks with `AiSdkRuntime` pointed at a LiteLLM proxy — not your Max plan — so iteration is cheap and provider-swappable.
+Evals gate changes to the pack's prompts, skills, agents, and workflow. They run the real orchestrator against fixture tasks with `AiSdkRuntime` pointed at a LiteLLM proxy — not your Max plan — so iteration is cheap and provider-swappable. See [`evals/README.md`](./evals/README.md) for details.
 
-**One-time:** install [Docker](https://docs.docker.com/desktop/) and [Ollama](https://ollama.com/) (or any local LLM). Pull a tool-use capable model:
+**One-time setup.** Install [Docker](https://docs.docker.com/desktop/) and [Ollama](https://ollama.com/). Pull a model with native OpenAI-format tool-use (qwen3 family works; qwen2.5-coder does not):
 
 ```bash
-ollama pull qwen2.5-coder:7b
-ollama pull qwen2.5:3b        # judge model for LLM-as-judge rubrics
+ollama pull qwen3:8b          # agent model — needs real tool_calls, not JSON-in-text
+ollama pull qwen3:4b          # cheap judge for LLM-as-judge rubrics
+cp .env.local.example .env.local   # holds LITELLM_MASTER_KEY; mise auto-loads
 ```
 
 **Each session:**
 
 ```bash
 mise run litellm-up           # docker compose up -d litellm (port 4000)
-mise run eval                 # run the eval suite
+pnpm eval                     # run the full eval suite (mise run eval works too)
 mise run litellm-down         # stop proxy when done
 ```
 
-**Swap backends** by editing `litellm/config.yaml` — `model_list` has Ollama as default plus commented entries for Anthropic / OpenAI / OpenRouter / Bedrock. No code change needed.
+**Swap backends without editing code.** `litellm/config.yaml` declares backend aliases (`qwen3-8b`, `qwen3-14b`, `qwen3-32b`, `qwen3-coder-30b`). Pick one at run time:
+
+```bash
+ORDIN_EVAL_MODEL=qwen3-14b pnpm eval
+ORDIN_EVAL_MODEL=qwen3-coder-30b pnpm eval
+```
+
+For cloud providers (Anthropic, OpenAI, OpenRouter, Bedrock) see commented templates in `litellm/config.yaml`.
 
 Production `ordin run` never touches LiteLLM or Docker. These are eval-only.
 
@@ -130,4 +138,4 @@ Production `ordin run` never touches LiteLLM or Docker. These are eval-only.
 
 **Phase 1 complete.** `ClaudeCliRuntime` drives production runs against Max plan.
 
-**Phase 4 (local eval suite) in progress.** `AiSdkRuntime` (Vercel AI SDK) and LiteLLM proxy landed; eval runner and fixtures are next. HTTP adapter, Langfuse observability, multi-project mode, LangGraph swap, and per-phase ingestion are conditional phases gated on their plan-declared triggers.
+**Phase 4 (local eval suite) complete.** `AiSdkRuntime` (Vercel AI SDK) + Dockerised LiteLLM proxy + Vitest-shaped `.eval.ts` fixtures with autoevals LLM-as-judge rubrics. First fixture (plan: add input validation) passes 5/5 locally via qwen3:8b. HTTP adapter, Langfuse observability, multi-project mode, LangGraph swap, and per-phase ingestion are conditional phases gated on their plan-declared triggers.
