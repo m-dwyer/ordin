@@ -21,68 +21,82 @@
 # the harness never sees provider strings.
 
 model_list:
-  # Default: local Ollama. Qwen 2.5 Coder is a reasonable small model for
-  # tool-use agentic loops. Swap for any other Ollama model, or comment
-  # this out and uncomment one of the alternatives below.
-  - model_name: ordin-default
+  # Aliases match the harness-side model names in `ordin.config.yaml`
+  # deliberately — so the composer's ComposedPrompt.model flows straight
+  # through to LiteLLM's model_list without needing a runtime-side
+  # rewrite. The substitution "claim X, actually run Y" happens here
+  # (LiteLLM's routing table), where it belongs — not in the TS runtime.
+  #
+  # Qwen 3 has native OpenAI-format tool-use, load-bearing for agentic
+  # loops. Qwen 2.5 Coder returned tool-call JSON as text content — not
+  # dispatchable by the AI SDK. Avoid smaller models (< 7B) for tool-use
+  # unless you've verified they emit `tool_calls` structurally.
+  - model_name: claude-sonnet-4-6
     litellm_params:
-      model: ollama_chat/qwen2.5-coder:7b
+      model: ollama_chat/qwen3:8b
       # host.docker.internal resolves to the host Ollama from inside the
       # litellm container (see extra_hosts in infra/docker-compose.yml).
       api_base: http://host.docker.internal:11434
 
-  # Cheap-judge model for LLM-as-judge assertions in evals.
-  - model_name: ordin-judge
+  - model_name: claude-opus-4-7
     litellm_params:
-      model: ollama_chat/qwen2.5:3b
-      # host.docker.internal resolves to the host Ollama from inside the
-      # litellm container (see extra_hosts in infra/docker-compose.yml).
+      model: ollama_chat/qwen3:8b
       api_base: http://host.docker.internal:11434
 
-  # Alternatives — uncomment + set the matching env var to swap backends.
+  # Cheap judge for LLM-as-judge assertions. No tool-use; just needs
+  # clean instruction-following for "CHOICE: yes|no" output.
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: ollama_chat/qwen3:4b
+      api_base: http://host.docker.internal:11434
+
+  # Alternatives — replace the Ollama entries above with these to swap
+  # backends. The `model_name` field is the alias the harness references
+  # (matching `ordin.config.yaml`); `litellm_params.model` is the real
+  # backend LiteLLM routes to.
   #
   # Anthropic passthrough (requires ANTHROPIC_API_KEY):
-  # - model_name: ordin-default
+  # - model_name: claude-sonnet-4-6
   #   litellm_params:
   #     model: anthropic/claude-sonnet-4-6
   #     api_key: os.environ/ANTHROPIC_API_KEY
   #
-  # OpenAI (requires OPENAI_API_KEY):
-  # - model_name: ordin-default
+  # OpenAI standing in for claude-sonnet-4-6 (requires OPENAI_API_KEY):
+  # - model_name: claude-sonnet-4-6
   #   litellm_params:
   #     model: openai/gpt-4o-mini
   #     api_key: os.environ/OPENAI_API_KEY
   #
   # OpenRouter (requires OPENROUTER_API_KEY):
-  # - model_name: ordin-default
+  # - model_name: claude-sonnet-4-6
   #   litellm_params:
   #     model: openrouter/anthropic/claude-sonnet-4.6
   #     api_key: os.environ/OPENROUTER_API_KEY
   #
   # AWS Bedrock (requires AWS_* env vars):
-  # - model_name: ordin-default
+  # - model_name: claude-sonnet-4-6
   #   litellm_params:
   #     model: bedrock/anthropic.claude-sonnet-4-6-v1:0
 
 # ---- proxy-wide settings -------------------------------------------------
 
 litellm_settings:
-  # Disk cache — keyed on model + messages + params. Cached responses
-  # cost zero and return instantly, making the "edit prompt → eval →
-  # see delta" loop cheap after the first real run.
-  cache: true
-  cache_params:
-    type: disk
-    disk_cache_dir: ./.cache/litellm
   # Drop unsupported params rather than erroring — some backends (Ollama)
   # ignore `response_format`, `seed`, etc. Keeps provider swap frictionless.
   drop_params: true
   # Log sparingly. Evals produce enough noise already.
   set_verbose: false
+  # No cache yet. Add `cache: true` + `cache_params: { type: disk, ... }`
+  # when iteration latency becomes painful — requires the `litellm[caching]`
+  # extra, which means either a custom Dockerfile or an in-memory `local`
+  # cache type. Deferred until a real iteration-speed complaint fires.
 
 # ---- server -------------------------------------------------------------
+# Proxy auth. LITELLM_MASTER_KEY comes from `.env.local` via mise; the
+# docker-compose file forwards it. The harness client (AiSdkRuntime)
+# reads the same var and sends it as `Authorization: Bearer`. Localhost
+# binding (see infra/docker-compose.yml) plus auth means accidental
+# exposure doesn't leak backend credentials.
 
 general_settings:
-  # No master key in the default config — proxy listens on localhost only.
-  # If you expose it beyond localhost, set LITELLM_MASTER_KEY.
   master_key: os.environ/LITELLM_MASTER_KEY

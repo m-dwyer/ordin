@@ -33,9 +33,12 @@ export interface AiSdkRuntimeConfig {
   /** Where transcripts are persisted. Defaults to ~/.ordin/runs. */
   runsDir?: string;
   /**
-   * Optional model aliasing. `ComposedPrompt.model` flows in with the
-   * author's name (e.g. "claude-opus-4-7"); the provider knows its own
-   * aliases (e.g. "ordin-default"). This map rewrites at the seam.
+   * Optional escape hatch for aliasing composer-side model names to
+   * provider-side ones. The default setup uses matching names on both
+   * sides (LiteLLM's `model_list` entries named after the harness-side
+   * model names in `ordin.config.yaml`), so no rewrite is needed. Only
+   * useful if you deliberately want non-matching names — most callers
+   * leave this undefined.
    */
   modelMap?: ReadonlyMap<string, string>;
   /** Hard ceiling on tool-loop steps. Default 40. */

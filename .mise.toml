@@ -2,6 +2,14 @@
 node = "22"
 pnpm = "9.15.0"
 
+# Dev secrets live in `.env.local` (gitignored) — copy `.env.local.example`
+# on first clone and drop in real values. Currently needed only for
+# LITELLM_MASTER_KEY (auth for the eval proxy) + any backend API keys
+# you enable in litellm/config.yaml. mise warns but doesn't fail if the
+# file is missing, so fresh clones work until you try to run evals.
+[env]
+_.file = ".env.local"
+
 [tasks.test]
 description = "Run the unit-test suite"
 run = "pnpm test"

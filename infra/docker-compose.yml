@@ -21,15 +21,18 @@ services:
       - "127.0.0.1:4000:4000"
     volumes:
       - ../litellm/config.yaml:/app/config.yaml:ro
-      - ../.cache/litellm:/app/.cache/litellm
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
     environment:
-      # Pass-through for optional backend creds. Unset vars are fine —
-      # only the backends you enable in model_list need their key.
+      # Proxy auth. `.env.local` (via mise) is the source of truth in dev.
+      # If unset, LiteLLM runs without auth (permissive); we require it
+      # via the typical path so production exposure is a config change,
+      # not a code change.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      # Optional backend creds — only the providers you enable in
+      # model_list need their key present.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
     # When ollama runs on the host (not in compose), the container
     # reaches it via host.docker.internal on macOS/Windows, or via
     # `--add-host host.docker.internal:host-gateway` on Linux.
