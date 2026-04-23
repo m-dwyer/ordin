@@ -1,13 +1,14 @@
 import type { Agent } from "../domain/agent";
-import type { ArtefactPointer, ComposedPrompt, SkillHint } from "../domain/composer";
-import { Composer } from "../domain/composer";
+import type { ArtefactPointer } from "../domain/composer";
 import type { HarnessConfig } from "../domain/config";
 import type { Skill } from "../domain/skill";
 import type { Phase, Workflow } from "../domain/workflow";
 import type { Gate } from "../gates/types";
-import type { AgentRuntime, InvokeResult } from "../runtimes/types";
-import { promoteRuntimeEvent, type RunEvent } from "./events";
-import { generateRunId, type PhaseMeta, type RunMeta, type RunStore } from "./run-store";
+import type { AgentRuntime } from "../runtimes/types";
+import type { RunEvent } from "./events";
+import type { PhaseExecutionContext } from "./phase-execution";
+import { PhaseRunner } from "./phase-runner";
+import { generateRunId, type RunMeta, type RunStore } from "./run-store";
 
 /**
  * Sequential orchestrator — Stage 1 state machine.
@@ -38,18 +39,20 @@ export interface OrchestratorOptions {
 export interface RunInput {
   readonly task: string;
   readonly slug: string;
-  readonly repo: string;
+  readonly workspaceRoot: string;
   readonly tier: "S" | "M" | "L";
   readonly onEvent?: (event: RunEvent) => void;
-  readonly artefactInputs?: readonly ArtefactPointer[];
+  readonly artefactInputs?: ReadonlyMap<string, readonly ArtefactPointer[]>;
   readonly artefactOutputs?: ReadonlyMap<string, readonly ArtefactPointer[]>;
   readonly abortSignal?: AbortSignal;
 }
 
 export class SequentialOrchestrator {
-  private readonly composer = new Composer();
+  private readonly phaseRunner: PhaseRunner;
 
-  constructor(private readonly opts: OrchestratorOptions) {}
+  constructor(private readonly opts: OrchestratorOptions) {
+    this.phaseRunner = new PhaseRunner(opts);
+  }
 
   async run(input: RunInput): Promise<RunMeta> {
     const runId = generateRunId(input.slug);
@@ -61,7 +64,7 @@ export class SequentialOrchestrator {
       tier: input.tier,
       task: input.task,
       slug: input.slug,
-      repo: input.repo,
+      repo: input.workspaceRoot,
       startedAt: new Date().toISOString(),
       status: "running",
       phases: [],
@@ -77,15 +80,14 @@ export class SequentialOrchestrator {
       const currentPhase: Phase = cursor;
       const iter = (iterationCount.get(currentPhase.id) ?? 0) + 1;
       iterationCount.set(currentPhase.id, iter);
+      const context = this.buildPhaseContext(runId, currentPhase, input, iter, iterationContext);
 
-      const phaseMeta = await this.runPhase(
-        currentPhase,
-        input,
-        meta,
-        iter,
-        iterationContext,
+      const phaseMeta = await this.phaseRunner.execute({
+        phase: currentPhase,
+        context,
         emit,
-      );
+        abortSignal: input.abortSignal,
+      });
       meta.phases.push(phaseMeta);
       await this.opts.runStore.writeMeta(meta);
 
@@ -118,127 +120,25 @@ export class SequentialOrchestrator {
     return meta;
   }
 
-  private async runPhase(
+  private buildPhaseContext(
+    runId: string,
     phase: Phase,
     input: RunInput,
-    meta: RunMeta,
     iteration: number,
     iterationContext: string | undefined,
-    emit: (event: RunEvent) => void,
-  ): Promise<PhaseMeta> {
-    const agent = this.opts.agents.get(phase.agent);
-    if (!agent) {
-      throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
-    }
-    const runtime = this.opts.runtimes.get(phase.runtime);
-    if (!runtime) {
-      throw new Error(`Runtime "${phase.runtime}" declared by phase "${phase.id}" not registered`);
-    }
-    const defaults = this.opts.config.resolveDefaults(phase.id, input.tier);
-
-    const prompt: ComposedPrompt = this.composer.compose({
-      phase,
-      agent,
-      defaults,
+  ): PhaseExecutionContext {
+    // Keep per-phase execution state data-only so a future graph
+    // orchestrator can checkpoint/resume it cleanly.
+    return {
+      runId,
+      workspaceRoot: input.workspaceRoot,
       task: input.task,
-      cwd: input.repo,
       tier: input.tier,
-      artefactInputs: input.artefactInputs,
-      artefactOutputs: input.artefactOutputs?.get(phase.id),
-      skills: [...this.opts.skills.values()].map<SkillHint>((s) => ({
-        name: s.name,
-        description: s.description,
-      })),
-      iterationContext,
-    });
-
-    const phaseMeta: PhaseMeta = {
-      phaseId: phase.id,
       iteration,
-      startedAt: new Date().toISOString(),
-      status: "running",
-      runtime: runtime.name,
-      model: prompt.model,
+      artefactInputs: input.artefactInputs?.get(phase.id) ?? [],
+      artefactOutputs: input.artefactOutputs?.get(phase.id) ?? [],
+      ...(iterationContext ? { iterationContext } : {}),
     };
-
-    emit({
-      type: "phase.started",
-      runId: meta.runId,
-      phaseId: phase.id,
-      iteration,
-      model: prompt.model,
-      runtime: runtime.name,
-    });
-
-    const invokeResult: InvokeResult = await runtime.invoke({
-      runId: meta.runId,
-      prompt,
-      onEvent: (event) => emit(promoteRuntimeEvent(event, meta.runId, phase.id)),
-      abortSignal: input.abortSignal,
-    });
-
-    phaseMeta.completedAt = new Date().toISOString();
-    phaseMeta.tokens = invokeResult.tokens;
-    phaseMeta.durationMs = invokeResult.durationMs;
-    phaseMeta.exitCode = invokeResult.exitCode;
-    phaseMeta.transcriptPath = invokeResult.transcriptPath;
-
-    if (invokeResult.status === "failed") {
-      phaseMeta.status = "failed";
-      phaseMeta.error = invokeResult.error ?? `exit ${invokeResult.exitCode}`;
-      emit({
-        type: "phase.failed",
-        runId: meta.runId,
-        phaseId: phase.id,
-        iteration,
-        error: phaseMeta.error,
-      });
-      return phaseMeta;
-    }
-
-    emit({
-      type: "phase.completed",
-      runId: meta.runId,
-      phaseId: phase.id,
-      iteration,
-      tokens: invokeResult.tokens,
-      durationMs: invokeResult.durationMs,
-    });
-
-    const gate = this.opts.gateForKind(phase.gate);
-    emit({ type: "gate.requested", runId: meta.runId, phaseId: phase.id });
-    const decision = await gate.request({
-      runId: meta.runId,
-      phaseId: phase.id,
-      cwd: input.repo,
-      artefacts: input.artefactOutputs?.get(phase.id) ?? [],
-      summary: summariseInvocation(invokeResult),
-    });
-
-    if (decision.status === "approved") {
-      phaseMeta.status = "completed";
-      phaseMeta.gateDecision = gate.kind === "auto" ? "auto" : "approved";
-      if (decision.note) phaseMeta.gateNote = decision.note;
-      emit({
-        type: "gate.decided",
-        runId: meta.runId,
-        phaseId: phase.id,
-        decision: phaseMeta.gateDecision,
-        ...(decision.note ? { note: decision.note } : {}),
-      });
-    } else {
-      phaseMeta.status = "rejected";
-      phaseMeta.gateDecision = "rejected";
-      phaseMeta.gateNote = decision.reason;
-      emit({
-        type: "gate.decided",
-        runId: meta.runId,
-        phaseId: phase.id,
-        decision: "rejected",
-        reason: decision.reason,
-      });
-    }
-    return phaseMeta;
   }
 
   private resolveRejection(
@@ -251,16 +151,4 @@ export class SequentialOrchestrator {
     if (used >= phase.on_reject.max_iterations) return undefined;
     return target;
   }
-}
-
-function summariseInvocation(result: InvokeResult): string {
-  const parts = [
-    `duration: ${(result.durationMs / 1000).toFixed(1)}s`,
-    `in: ${result.tokens.input.toLocaleString()} tok`,
-    `out: ${result.tokens.output.toLocaleString()} tok`,
-  ];
-  if (result.tokens.cacheReadInput > 0) {
-    parts.push(`cache-read: ${result.tokens.cacheReadInput.toLocaleString()} tok`);
-  }
-  return parts.join("  |  ");
 }

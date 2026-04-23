@@ -90,7 +90,7 @@ export class HarnessRuntime {
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { config, workflow, agents, skills, projects, runStore } = await this.load();
 
-    const repo = this.resolveRepo(input, projects);
+    const workspaceRoot = this.resolveWorkspaceRoot(input, projects);
     const slug = requireSlug(input.slug);
     const tier = input.tier ?? "M";
 
@@ -99,42 +99,8 @@ export class HarnessRuntime {
       : input.startAt
         ? workflow.startingAt(input.startAt)
         : workflow;
-    const startPhase = trimmedWorkflow.firstPhase();
-
-    const artefactOutputs = new Map<string, readonly ArtefactPointer[]>([
-      [
-        "plan",
-        [
-          {
-            label: "RFC",
-            path: ArtefactPaths.rfc(slug),
-            description: "Reviewable RFC for this problem",
-          },
-        ],
-      ],
-      [
-        "build",
-        [
-          {
-            label: "Build notes",
-            path: ArtefactPaths.buildNotes(slug),
-            description: "Summary of build decisions, tests added, risks",
-          },
-        ],
-      ],
-      [
-        "review",
-        [
-          {
-            label: "Review",
-            path: ArtefactPaths.review(slug),
-            description: "Independent review against the RFC",
-          },
-        ],
-      ],
-    ]);
-
-    const artefactInputs = this.buildInputsFor(startPhase.id, slug);
+    const artefactInputs = this.buildArtefactInputs(slug);
+    const artefactOutputs = this.buildArtefactOutputs(slug);
 
     const runtimes =
       this.runtimesOverride ??
@@ -165,7 +131,7 @@ export class HarnessRuntime {
     const runInput: RunInput = {
       task: input.task,
       slug,
-      repo,
+      workspaceRoot,
       tier,
       artefactInputs,
       artefactOutputs,
@@ -224,7 +190,7 @@ export class HarnessRuntime {
     return this.loaded;
   }
 
-  private resolveRepo(input: StartRunInput, projects: ProjectRegistry): string {
+  private resolveWorkspaceRoot(input: StartRunInput, projects: ProjectRegistry): string {
     if (input.repoPath) return resolve(input.repoPath);
     if (input.projectName) return projects.get(input.projectName).path;
     throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
@@ -248,7 +214,7 @@ export class HarnessRuntime {
     }
   }
 
-  private buildInputsFor(phaseId: string, slug: string): ArtefactPointer[] {
+  private buildArtefactInputs(slug: string): ReadonlyMap<string, readonly ArtefactPointer[]> {
     const rfc: ArtefactPointer = {
       label: "Approved RFC",
       path: ArtefactPaths.rfc(slug),
@@ -259,16 +225,46 @@ export class HarnessRuntime {
       path: ArtefactPaths.buildNotes(slug),
       description: "Build-phase summary",
     };
-    switch (phaseId) {
-      case "plan":
-        return [];
-      case "build":
-        return [rfc];
-      case "review":
-        return [rfc, buildNotes];
-      default:
-        return [];
-    }
+    return new Map<string, readonly ArtefactPointer[]>([
+      ["plan", []],
+      ["build", [rfc]],
+      ["review", [rfc, buildNotes]],
+    ]);
+  }
+
+  private buildArtefactOutputs(slug: string): ReadonlyMap<string, readonly ArtefactPointer[]> {
+    return new Map<string, readonly ArtefactPointer[]>([
+      [
+        "plan",
+        [
+          {
+            label: "RFC",
+            path: ArtefactPaths.rfc(slug),
+            description: "Reviewable RFC for this problem",
+          },
+        ],
+      ],
+      [
+        "build",
+        [
+          {
+            label: "Build notes",
+            path: ArtefactPaths.buildNotes(slug),
+            description: "Summary of build decisions, tests added, risks",
+          },
+        ],
+      ],
+      [
+        "review",
+        [
+          {
+            label: "Review",
+            path: ArtefactPaths.review(slug),
+            description: "Independent review against the RFC",
+          },
+        ],
+      ],
+    ]);
   }
 }
 

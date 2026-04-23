@@ -135,7 +135,7 @@ describe("SequentialOrchestrator", () => {
     const meta = await orchestrator.run({
       task: "do the thing",
       slug: "do-thing",
-      repo: "/tmp/repo",
+      workspaceRoot: "/tmp/repo",
       tier: "M",
       onEvent: (e) => events.push(e),
     });
@@ -199,7 +199,7 @@ describe("SequentialOrchestrator", () => {
     const meta = await orchestrator.run({
       task: "t",
       slug: "t",
-      repo: "/tmp/repo",
+      workspaceRoot: "/tmp/repo",
       tier: "M",
     });
 
@@ -244,7 +244,7 @@ describe("SequentialOrchestrator", () => {
     const meta = await orchestrator.run({
       task: "t",
       slug: "t",
-      repo: "/tmp/repo",
+      workspaceRoot: "/tmp/repo",
       tier: "M",
     });
 
@@ -278,7 +278,7 @@ describe("SequentialOrchestrator", () => {
     const meta = await orchestrator.run({
       task: "t",
       slug: "t",
-      repo: "/tmp/repo",
+      workspaceRoot: "/tmp/repo",
       tier: "M",
     });
 
@@ -303,7 +303,7 @@ describe("SequentialOrchestrator", () => {
     });
 
     await expect(
-      orchestrator.run({ task: "t", slug: "t", repo: "/tmp/repo", tier: "M" }),
+      orchestrator.run({ task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" }),
     ).rejects.toThrow(/Agent "builder" declared by phase "build" not loaded/);
   });
 
@@ -330,7 +330,7 @@ phases:
     });
 
     await expect(
-      orchestrator.run({ task: "t", slug: "t", repo: "/tmp/repo", tier: "M" }),
+      orchestrator.run({ task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" }),
     ).rejects.toThrow(/Runtime "missing".+not registered/);
   });
 });
