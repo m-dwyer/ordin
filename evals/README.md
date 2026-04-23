@@ -102,8 +102,11 @@ Start with single runs + tuned thresholds. Add #3/#4 only if flakiness bites.
 
 Separate config (`vitest.eval.config.ts`) + separate script (`pnpm eval`) keeps these operationally distinct. Same Vitest runner, different cadence and meaning.
 
+## Seeding upstream artefacts (isolation-per-phase)
+
+`build.eval.ts` runs Build without first running Plan: `runPhase` accepts a `seed(repoPath)` callback that writes an approved RFC into the eval repo before the phase kicks off. This keeps Plan regressions from leaking into Build signal, at the cost of one hand-authored RFC per fixture — worth it for interpretable results. Apply the same pattern for Review fixtures: seed an RFC + a diff representing the state Review is judging.
+
 ## Next steps (not yet in)
 
-- `build.eval.ts` — requires seeding an RFC into the fixture before running Build. Plan-then-Build chains are an option; isolation-per-phase is preferred. Revisit when a Build regression actually matters.
-- `review.eval.ts` — similar: needs a seeded diff in the fixture. Worth adding when Review prompts are being iterated on.
+- `review.eval.ts` — needs a seeded RFC + a seeded diff (and a seeded build-notes) in the fixture. Worth adding when Review prompts are being iterated on.
 - Delta-from-baseline reporting if threshold tuning gets fiddly.

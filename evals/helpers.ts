@@ -35,13 +35,32 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  */
 
 const TEMPLATE = join(REPO_ROOT, "test/fixtures/target-repo-template");
-const EVAL_REPO = join(REPO_ROOT, ".scratch/eval-repo");
+export const EVAL_REPO = join(REPO_ROOT, ".scratch/eval-repo");
+const FIXTURES = join(REPO_ROOT, "evals/fixtures");
+
+/**
+ * Read a fixture file under `evals/fixtures/<relPath>` as a UTF-8 string.
+ * Keeps seeded artefacts (RFCs, diffs, build-notes) as real markdown /
+ * text files on disk rather than inline template literals — diffs stay
+ * clean, editors syntax-highlight them, and `cat` shows the fixture
+ * author exactly what the agent will see.
+ */
+export function loadFixture(relPath: string): string {
+  return readFileSync(join(FIXTURES, relPath), "utf8");
+}
 
 export interface RunPhaseInput {
   readonly phase: "plan" | "build" | "review";
   readonly task: string;
   readonly slug: string;
   readonly tier?: "S" | "M" | "L";
+  /**
+   * Optional hook to stage artefacts or files into the ephemeral repo
+   * *after* the fixture template copy + git init but *before* the phase
+   * runs. Used by isolation-per-phase fixtures: `build.eval.ts` seeds
+   * an approved RFC so Build can start from it without chaining Plan.
+   */
+  readonly seed?: (repoPath: string) => Promise<void>;
 }
 
 /**
@@ -52,6 +71,7 @@ export interface RunPhaseInput {
  */
 export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
   await stageRepo();
+  if (input.seed) await input.seed(EVAL_REPO);
 
   const apiKey = process.env.LITELLM_MASTER_KEY;
   if (!apiKey) {
