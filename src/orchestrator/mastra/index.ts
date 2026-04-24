@@ -31,15 +31,20 @@ interface RunCtx {
   readonly iter: Map<string, number>;
   feedback: Feedback | undefined;
   /**
-   * Set to "halted" / "failed" by a step before it throws to abort the
-   * Mastra workflow. Mastra serialises errors (loses class identity),
-   * so the engine reads intent from these flags rather than from
-   * `result.error instanceof X`.
+   * Set to "halted" / "failed" by a step before it calls Mastra's
+   * `bail()` to end the workflow. Mastra ends the workflow cleanly
+   * (status "bailed"), so the engine reads halt vs. fail intent from
+   * this flag rather than inspecting the bail payload.
    */
   outcome: "halted" | "failed" | undefined;
 }
 
-const ABORT_MESSAGE = "ordin-step-abort";
+/**
+ * Mastra step `bail(result)` ends the workflow cleanly with status
+ * "bailed". Steps return its result directly. Typed loosely here
+ * because Mastra's `InnerOutput` sentinel isn't a public export.
+ */
+type Bail = (result: { approved: boolean }) => { approved: boolean };
 
 export class MastraEngine implements Engine {
   constructor(private readonly services: EngineServices) {}
@@ -77,6 +82,8 @@ export class MastraEngine implements Engine {
     const result = await run.start({ inputData: {} });
 
     if (ctx.outcome) {
+      // A step set the outcome before bailing — `result.status` will
+      // be "bailed" for halt/fail; ctx carries the intent.
       meta.status = ctx.outcome;
     } else if (result.status === "success") {
       meta.status = "completed";
@@ -119,7 +126,7 @@ function compile(workflow: Workflow, ctx: RunCtx) {
       id: phase.id,
       inputSchema: Gate,
       outputSchema: Gate,
-      execute: () => runOnePhase(phase, ctx),
+      execute: ({ bail }) => runOnePhase(phase, ctx, bail as unknown as Bail),
     });
 
   let wf = createWorkflow({
@@ -140,9 +147,9 @@ function compile(workflow: Workflow, ctx: RunCtx) {
     id: `ordin-${workflow.name}-loop`,
     inputSchema: Gate,
     outputSchema: Gate,
-    execute: async () => {
+    execute: async ({ bail }) => {
       for (const phase of loopSegment) {
-        const { approved } = await runOnePhase(phase, ctx);
+        const { approved } = await runOnePhase(phase, ctx, bail as unknown as Bail);
         if (!approved) return { approved: false };
       }
       return { approved: true };
@@ -165,7 +172,7 @@ function compile(workflow: Workflow, ctx: RunCtx) {
   return wf.commit();
 }
 
-async function runOnePhase(phase: Phase, ctx: RunCtx): Promise<{ approved: boolean }> {
+async function runOnePhase(phase: Phase, ctx: RunCtx, bail: Bail): Promise<{ approved: boolean }> {
   const iter = (ctx.iter.get(phase.id) ?? 0) + 1;
   ctx.iter.set(phase.id, iter);
 
@@ -192,7 +199,7 @@ async function runOnePhase(phase: Phase, ctx: RunCtx): Promise<{ approved: boole
 
   if (phaseMeta.status === "failed") {
     ctx.outcome = "failed";
-    throw new Error(ABORT_MESSAGE);
+    return bail({ approved: false });
   }
 
   const gate = ctx.services.gateFor(phase);
@@ -235,7 +242,7 @@ async function runOnePhase(phase: Phase, ctx: RunCtx): Promise<{ approved: boole
 
   if (!phase.on_reject) {
     ctx.outcome = "halted";
-    throw new Error(ABORT_MESSAGE);
+    return bail({ approved: false });
   }
   ctx.feedback = {
     fromPhase: phase.id,
