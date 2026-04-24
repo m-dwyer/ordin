@@ -29,6 +29,7 @@
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.41",
     "@clack/prompts": "^1.2.0",
+    "@mastra/core": "^1.28.0",
     "ai": "^6.0.168",
     "autoevals": "^0.0.132",
     "commander": "^14.0.3",
