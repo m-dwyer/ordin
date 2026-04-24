@@ -9,12 +9,11 @@ import { type Skill, SkillLoader } from "../domain/skill";
 import { type Phase, type Workflow, WorkflowLoader } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
 import type { Gate } from "../gates/types";
-import type { Engine, EngineRunInput, EngineServices } from "../orchestrator/engine";
+import type { EngineRunInput, EngineServices } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
 import { PhaseRunner } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
-import { SequentialEngine } from "../orchestrator/sequential";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
 import type { AgentRuntime } from "../runtimes/types";
 
@@ -127,12 +126,7 @@ export class HarnessRuntime {
       gateFor: (phase) => gateResolver(phase.gate),
       runStore,
     };
-    // Feature flag: ORDIN_ENGINE=mastra opts into the Mastra-backed
-    // engine. Default stays SequentialEngine until the cut-over commit.
-    const engine: Engine =
-      process.env["ORDIN_ENGINE"] === "mastra"
-        ? new MastraEngine(services)
-        : new SequentialEngine(services);
+    const engine = new MastraEngine(services);
 
     const runInput: EngineRunInput = {
       workflow: trimmedWorkflow,

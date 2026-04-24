@@ -1,13 +1,34 @@
 import type { Agent } from "../domain/agent";
-import type { ComposedPrompt, SkillHint } from "../domain/composer";
+import type { ArtefactPointer, ComposedPrompt, Feedback, SkillHint } from "../domain/composer";
 import { Composer } from "../domain/composer";
 import type { HarnessConfig } from "../domain/config";
 import type { Skill } from "../domain/skill";
 import type { Phase } from "../domain/workflow";
 import type { AgentRuntime, InvokeResult } from "../runtimes/types";
-import { promoteRuntimeEvent } from "./events";
-import type { PhaseExecutionRequest } from "./phase-execution";
+import { promoteRuntimeEvent, type RunEvent } from "./events";
 import type { PhaseMeta } from "./run-store";
+
+/**
+ * Per-phase execution context. Data-only so any engine (sequential,
+ * Mastra, future LangGraph) can construct it cleanly.
+ */
+export interface PhaseExecutionContext {
+  readonly runId: string;
+  readonly workspaceRoot: string;
+  readonly task: string;
+  readonly tier: "S" | "M" | "L";
+  readonly iteration: number;
+  readonly artefactInputs: readonly ArtefactPointer[];
+  readonly artefactOutputs: readonly ArtefactPointer[];
+  readonly feedback?: Feedback;
+}
+
+export interface PhaseExecutionRequest {
+  readonly phase: Phase;
+  readonly context: PhaseExecutionContext;
+  readonly emit: (event: RunEvent) => void;
+  readonly abortSignal?: AbortSignal;
+}
 
 /**
  * `PhaseRunner` executes one phase: compose prompt → invoke runtime →
