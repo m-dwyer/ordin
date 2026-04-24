@@ -1,4 +1,3 @@
-import type { ArtefactPointer } from "../domain/composer";
 import type { Workflow } from "../domain/workflow";
 import type { Gate } from "../gates/types";
 import type { RunEvent } from "./events";
@@ -33,7 +32,5 @@ export interface EngineRunInput {
   readonly workspaceRoot: string;
   readonly tier: "S" | "M" | "L";
   readonly onEvent?: (event: RunEvent) => void;
-  readonly artefactInputs?: ReadonlyMap<string, readonly ArtefactPointer[]>;
-  readonly artefactOutputs?: ReadonlyMap<string, readonly ArtefactPointer[]>;
   readonly abortSignal?: AbortSignal;
 }

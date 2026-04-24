@@ -103,9 +103,29 @@ tiers:
     `name: software-delivery
 version: 1
 phases:
-  - { id: plan, agent: planner, runtime: claude-cli, gate: human }
-  - { id: build, agent: build-local, runtime: claude-cli, gate: human }
-  - { id: review, agent: reviewer, runtime: claude-cli, gate: human }
+  - id: plan
+    agent: planner
+    runtime: claude-cli
+    gate: human
+    outputs:
+      - { label: RFC, path: "docs/rfcs/{slug}-rfc.md", description: "Reviewable RFC for this problem" }
+  - id: build
+    agent: build-local
+    runtime: claude-cli
+    gate: human
+    inputs:
+      - { label: "Approved RFC", path: "docs/rfcs/{slug}-rfc.md", description: "Plan-phase output; source of truth for Build and Review" }
+    outputs:
+      - { label: "Build notes", path: "docs/rfcs/{slug}-build-notes.md" }
+  - id: review
+    agent: reviewer
+    runtime: claude-cli
+    gate: human
+    inputs:
+      - { label: "Approved RFC", path: "docs/rfcs/{slug}-rfc.md" }
+      - { label: "Build notes", path: "docs/rfcs/{slug}-build-notes.md", description: "Build-phase summary" }
+    outputs:
+      - { label: Review, path: "reviews/{slug}-review.md" }
 `,
   );
   await write(join(root, "projects.yaml"), "projects: {}\n");

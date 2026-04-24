@@ -3,7 +3,7 @@ import { cp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { simpleGit } from "simple-git";
-import { type Artefact, ArtefactManager, ArtefactPaths } from "../src/domain/artefact";
+import { type Artefact, ArtefactManager } from "../src/domain/artefact";
 import { AutoGate } from "../src/gates/auto";
 import type { RunEvent } from "../src/runtime/harness";
 import { HarnessRuntime } from "../src/runtime/harness";
@@ -317,13 +317,26 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-function artefactRelPath(phase: RunPhaseInput["phase"], slug: string): string {
+/**
+ * Eval-side mirror of `software-delivery.yaml`'s declared phase
+ * outputs. Hardcoded here (rather than parsed from YAML) because evals
+ * are repo-local and we want assertions to fail loudly if a workflow
+ * author changes a path without updating eval expectations.
+ */
+export function artefactPathFor(
+  phase: "plan" | "build" | "review",
+  slug: string,
+): string {
   switch (phase) {
     case "plan":
-      return ArtefactPaths.rfc(slug);
+      return `docs/rfcs/${slug}-rfc.md`;
     case "build":
-      return ArtefactPaths.buildNotes(slug);
+      return `docs/rfcs/${slug}-build-notes.md`;
     case "review":
-      return ArtefactPaths.review(slug);
+      return `reviews/${slug}-review.md`;
   }
+}
+
+function artefactRelPath(phase: RunPhaseInput["phase"], slug: string): string {
+  return artefactPathFor(phase, slug);
 }

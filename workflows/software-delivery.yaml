@@ -1,8 +1,10 @@
 # Software delivery workflow — Plan → Build → Review with Review→Build back-edge.
 #
-# YAML only orders phases and declares orchestration concerns (gate, runtime,
-# fresh_context). I/O is implicit: the agent's prompt declares what to read
-# and write. No redundant schema here.
+# YAML orders phases and declares orchestration concerns (gate, runtime,
+# fresh_context) plus optional per-phase artefact contracts. Paths
+# support a `{slug}` placeholder resolved at run time. Agents may also
+# read or write paths beyond what's declared here — the declarations
+# are what the engine threads phase-to-phase, not a hard whitelist.
 
 name: software-delivery
 version: 1
@@ -17,6 +19,10 @@ phases:
     gate: human
     # Plan runs in fresh context by definition (it's the first phase).
     fresh_context: true
+    outputs:
+      - label: RFC
+        path: docs/rfcs/{slug}-rfc.md
+        description: Reviewable RFC for this problem
 
   - id: build
     agent: build-local
@@ -26,6 +32,14 @@ phases:
     # need for fresh context here — but the subprocess is always fresh, so
     # this is documentation of intent, not a runtime toggle.
     fresh_context: true
+    inputs:
+      - label: Approved RFC
+        path: docs/rfcs/{slug}-rfc.md
+        description: Plan-phase output; source of truth for Build and Review
+    outputs:
+      - label: Build notes
+        path: docs/rfcs/{slug}-build-notes.md
+        description: Summary of build decisions, tests added, risks
 
   - id: review
     agent: reviewer
@@ -38,3 +52,14 @@ phases:
       # Default iteration path: Review findings → fresh Build run.
       goto: build
       max_iterations: 3
+    inputs:
+      - label: Approved RFC
+        path: docs/rfcs/{slug}-rfc.md
+        description: Plan-phase output; source of truth for Build and Review
+      - label: Build notes
+        path: docs/rfcs/{slug}-build-notes.md
+        description: Build-phase summary
+    outputs:
+      - label: Review
+        path: reviews/{slug}-review.md
+        description: Independent review against the RFC

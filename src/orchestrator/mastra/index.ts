@@ -1,7 +1,7 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
-import type { Feedback } from "../../domain/composer";
-import type { Phase, Workflow } from "../../domain/workflow";
+import type { ArtefactPointer, Feedback } from "../../domain/composer";
+import { type Phase, resolveArtefactPath, type Workflow } from "../../domain/workflow";
 import type { Engine, EngineRunInput, EngineServices } from "../engine";
 import type { RunEvent } from "../events";
 import { summariseInvocation } from "../phase-runner";
@@ -169,8 +169,8 @@ async function runOnePhase(phase: Phase, ctx: RunCtx): Promise<{ approved: boole
   const iter = (ctx.iter.get(phase.id) ?? 0) + 1;
   ctx.iter.set(phase.id, iter);
 
-  const artefactInputs = ctx.input.artefactInputs?.get(phase.id) ?? [];
-  const artefactOutputs = ctx.input.artefactOutputs?.get(phase.id) ?? [];
+  const artefactInputs = resolveArtefacts(phase.inputs, ctx.input.slug);
+  const artefactOutputs = resolveArtefacts(phase.outputs, ctx.input.slug);
 
   const { meta: phaseMeta, invokeResult } = await ctx.services.phaseRunner.run({
     phase,
@@ -243,4 +243,16 @@ async function runOnePhase(phase: Phase, ctx: RunCtx): Promise<{ approved: boole
     ...(decision.reason ? { reason: decision.reason } : {}),
   };
   return { approved: false };
+}
+
+function resolveArtefacts(
+  contracts: Phase["inputs"] | Phase["outputs"],
+  slug: string,
+): readonly ArtefactPointer[] {
+  if (!contracts) return [];
+  return contracts.map((c) => ({
+    label: c.label,
+    path: resolveArtefactPath(c, slug),
+    ...(c.description ? { description: c.description } : {}),
+  }));
 }

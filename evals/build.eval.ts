@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Artefact, ArtefactPaths } from "../src/domain/artefact";
-import { EVAL_REPO, loadFixture, runPhase } from "./helpers";
+import type { Artefact } from "../src/domain/artefact";
+import { artefactPathFor, EVAL_REPO, loadFixture, runPhase } from "./helpers";
 import { rubric } from "./judge";
 
 /**
@@ -28,7 +28,7 @@ describe("build: implement divide with zero-guard", () => {
       slug: SLUG,
       tier: "S",
       seed: async (repo) => {
-        const rfcPath = join(repo, ArtefactPaths.rfc(SLUG));
+        const rfcPath = join(repo, artefactPathFor("plan", SLUG));
         await mkdir(dirname(rfcPath), { recursive: true });
         await writeFile(rfcPath, loadFixture("divide-with-zero-guard/rfc.md"), "utf8");
       },

@@ -1,8 +1,6 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Agent, AgentLoader } from "../domain/agent";
-import { ArtefactPaths } from "../domain/artefact";
-import type { ArtefactPointer } from "../domain/composer";
 import { HarnessConfig } from "../domain/config";
 import { ProjectRegistry } from "../domain/project";
 import { type Skill, SkillLoader } from "../domain/skill";
@@ -102,8 +100,6 @@ export class HarnessRuntime {
       : input.startAt
         ? workflow.startingAt(input.startAt)
         : workflow;
-    const artefactInputs = this.buildArtefactInputs(slug);
-    const artefactOutputs = this.buildArtefactOutputs(slug);
 
     const runtimes =
       this.runtimesOverride ??
@@ -134,8 +130,6 @@ export class HarnessRuntime {
       slug,
       workspaceRoot,
       tier,
-      artefactInputs,
-      artefactOutputs,
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
@@ -215,59 +209,6 @@ export class HarnessRuntime {
         throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
       }
     }
-  }
-
-  private buildArtefactInputs(slug: string): ReadonlyMap<string, readonly ArtefactPointer[]> {
-    const rfc: ArtefactPointer = {
-      label: "Approved RFC",
-      path: ArtefactPaths.rfc(slug),
-      description: "Plan-phase output; source of truth for Build and Review",
-    };
-    const buildNotes: ArtefactPointer = {
-      label: "Build notes",
-      path: ArtefactPaths.buildNotes(slug),
-      description: "Build-phase summary",
-    };
-    return new Map<string, readonly ArtefactPointer[]>([
-      ["plan", []],
-      ["build", [rfc]],
-      ["review", [rfc, buildNotes]],
-    ]);
-  }
-
-  private buildArtefactOutputs(slug: string): ReadonlyMap<string, readonly ArtefactPointer[]> {
-    return new Map<string, readonly ArtefactPointer[]>([
-      [
-        "plan",
-        [
-          {
-            label: "RFC",
-            path: ArtefactPaths.rfc(slug),
-            description: "Reviewable RFC for this problem",
-          },
-        ],
-      ],
-      [
-        "build",
-        [
-          {
-            label: "Build notes",
-            path: ArtefactPaths.buildNotes(slug),
-            description: "Summary of build decisions, tests added, risks",
-          },
-        ],
-      ],
-      [
-        "review",
-        [
-          {
-            label: "Review",
-            path: ArtefactPaths.review(slug),
-            description: "Independent review against the RFC",
-          },
-        ],
-      ],
-    ]);
   }
 }
 

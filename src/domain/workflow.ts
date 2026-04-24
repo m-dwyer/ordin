@@ -4,8 +4,11 @@ import { z } from "zod";
 
 /**
  * Workflow schema — see harness-plan.md Appendix C.
- * YAML only orders phases and declares orchestration concerns;
- * implicit I/O: the agent prompt declares what to read and write.
+ * YAML orders phases, declares orchestration concerns, and optionally
+ * declares per-phase artefact `inputs` / `outputs` (paths support a
+ * `{slug}` placeholder resolved at run time). When a phase omits those
+ * declarations the agent's prompt is the sole source of truth — engines
+ * just don't thread artefacts for that phase.
  */
 export const GateKindSchema = z.enum(["human", "auto", "pre-commit"]);
 export type GateKind = z.infer<typeof GateKindSchema>;
@@ -21,6 +24,13 @@ export const BudgetsSchema = z.object({
 });
 export type Budgets = z.infer<typeof BudgetsSchema>;
 
+export const ArtefactContractSchema = z.object({
+  label: z.string().min(1),
+  path: z.string().min(1),
+  description: z.string().optional(),
+});
+export type ArtefactContract = z.infer<typeof ArtefactContractSchema>;
+
 export const PhaseSchema = z.object({
   id: z.string().min(1),
   agent: z.string().min(1),
@@ -29,8 +39,19 @@ export const PhaseSchema = z.object({
   fresh_context: z.boolean().optional(),
   on_reject: OnRejectSchema.optional(),
   budgets: BudgetsSchema.optional(),
+  inputs: z.array(ArtefactContractSchema).optional(),
+  outputs: z.array(ArtefactContractSchema).optional(),
 });
 export type Phase = z.infer<typeof PhaseSchema>;
+
+/**
+ * Substitute `{slug}` in an `ArtefactContract.path` with the run's
+ * slug. Other placeholders are left untouched (forward-compatible
+ * with future ones if needed).
+ */
+export function resolveArtefactPath(contract: ArtefactContract, slug: string): string {
+  return contract.path.replace(/\{slug\}/g, slug);
+}
 
 export const WorkflowSchema = z.object({
   name: z.string().min(1),

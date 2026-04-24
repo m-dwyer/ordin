@@ -15,19 +15,6 @@ export interface Artefact {
   readonly modifiedAt: number;
 }
 
-/**
- * Conventional artefact paths, parameterised by slug.
- * Centralised here so a future workflow profile can swap paths
- * without rewriting every agent prompt.
- */
-export const ArtefactPaths = {
-  rfc: (slug: string) => `docs/rfcs/${slug}-rfc.md`,
-  buildNotes: (slug: string) => `docs/rfcs/${slug}-build-notes.md`,
-  review: (slug: string) => `reviews/${slug}-review.md`,
-  explore: (slug: string) => `explore/${slug}.md`,
-  problem: (slug: string) => `problems/${slug}.md`,
-} as const;
-
 export class ArtefactManager {
   constructor(private readonly repoPath: string) {}
 

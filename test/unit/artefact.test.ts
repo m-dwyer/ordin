@@ -2,15 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ArtefactManager, ArtefactPaths } from "../../src/domain/artefact";
-
-describe("ArtefactPaths", () => {
-  it("generates conventional paths parameterised by slug", () => {
-    expect(ArtefactPaths.rfc("feature-x")).toBe("docs/rfcs/feature-x-rfc.md");
-    expect(ArtefactPaths.buildNotes("feature-x")).toBe("docs/rfcs/feature-x-build-notes.md");
-    expect(ArtefactPaths.review("feature-x")).toBe("reviews/feature-x-review.md");
-  });
-});
+import { ArtefactManager } from "../../src/domain/artefact";
 
 describe("ArtefactManager", () => {
   it("reads a file and reports it exists", async () => {
