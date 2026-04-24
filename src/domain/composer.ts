@@ -32,6 +32,18 @@ export interface PhaseDefaults {
   readonly softTokenBudget?: number;
 }
 
+/**
+ * Structured feedback from a prior-phase rejection. Engines surface
+ * this when re-running a phase after a back-edge (e.g. Review → Build).
+ * Composer is responsible for shaping the prompt section — engines
+ * stay out of the agent-facing wording.
+ */
+export interface Feedback {
+  readonly fromPhase: string;
+  readonly decision: "rejected";
+  readonly reason?: string;
+}
+
 export interface ComposeInput {
   readonly phase: Phase;
   readonly agent: Agent;
@@ -54,8 +66,8 @@ export interface ComposeInput {
    * runtimes with native skill discovery — names + descriptions suffice.
    */
   readonly skills?: readonly SkillHint[];
-  /** Optional prior-iteration context (e.g. reviewer findings on a re-Build). */
-  readonly iterationContext?: string;
+  /** Optional structured feedback from a prior-phase rejection. */
+  readonly feedback?: Feedback;
 }
 
 export interface ArtefactPointer {
@@ -123,10 +135,13 @@ export class Composer {
       }
     }
 
-    if (input.iterationContext) {
+    if (input.feedback) {
       sections.push("");
       sections.push("## Prior-iteration context");
-      sections.push(input.iterationContext.trim());
+      const headline = `Rejection from ${input.feedback.fromPhase}`;
+      sections.push(
+        input.feedback.reason ? `${headline}: ${input.feedback.reason.trim()}` : headline,
+      );
     }
 
     sections.push("");

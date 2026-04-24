@@ -1,4 +1,4 @@
-import type { ArtefactPointer } from "../domain/composer";
+import type { ArtefactPointer, Feedback } from "../domain/composer";
 import type { Phase } from "../domain/workflow";
 import type { RunEvent } from "./events";
 
@@ -16,7 +16,11 @@ export interface PhaseExecutionContext {
   readonly iteration: number;
   readonly artefactInputs: readonly ArtefactPointer[];
   readonly artefactOutputs: readonly ArtefactPointer[];
-  readonly iterationContext?: string;
+  /**
+   * Structured feedback from a prior-phase rejection. Composer shapes
+   * the resulting prompt section; engines just pass it through.
+   */
+  readonly feedback?: Feedback;
 }
 
 export interface PhaseExecutionRequest {

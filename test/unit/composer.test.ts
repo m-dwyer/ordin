@@ -62,7 +62,7 @@ describe("Composer", () => {
     expect(out.tier).toBe("S");
   });
 
-  it("renders artefact inputs, outputs, skills, and iteration context into the prompt", () => {
+  it("renders artefact inputs, outputs, skills, and structured feedback into the prompt", () => {
     const out = composer.compose({
       phase,
       agent,
@@ -73,12 +73,27 @@ describe("Composer", () => {
       artefactInputs: [{ label: "Brief", path: "problem.md" }],
       artefactOutputs: [{ label: "RFC", path: "docs/rfcs/t-rfc.md" }],
       skills: [{ name: "rfc-template", description: "RFC structure" }],
-      iterationContext: "Previous review said X",
+      feedback: { fromPhase: "review", decision: "rejected", reason: "tests missing" },
     });
     expect(out.userPrompt).toContain("Brief");
     expect(out.userPrompt).toContain("problem.md");
     expect(out.userPrompt).toContain("docs/rfcs/t-rfc.md");
     expect(out.userPrompt).toContain("rfc-template");
-    expect(out.userPrompt).toContain("Previous review said X");
+    expect(out.userPrompt).toContain("## Prior-iteration context");
+    expect(out.userPrompt).toContain("Rejection from review: tests missing");
+  });
+
+  it("renders feedback without reason as a bare headline", () => {
+    const out = composer.compose({
+      phase,
+      agent,
+      defaults: { model: "x", allowedTools: [] },
+      task: "t",
+      cwd: "/repo",
+      tier: "M",
+      feedback: { fromPhase: "review", decision: "rejected" },
+    });
+    // Headline appears; no trailing " — reason" because no reason was given.
+    expect(out.userPrompt).toMatch(/## Prior-iteration context\nRejection from review\n/);
   });
 });

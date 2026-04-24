@@ -8,9 +8,11 @@ import type { Skill } from "../../src/domain/skill";
 import { type Workflow, WorkflowLoader } from "../../src/domain/workflow";
 import { AutoGate } from "../../src/gates/auto";
 import type { Gate, GateContext, GateDecision } from "../../src/gates/types";
+import type { EngineServices } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
+import { PhaseRunner } from "../../src/orchestrator/phase-runner";
 import { RunStore } from "../../src/orchestrator/run-store";
-import { SequentialOrchestrator } from "../../src/orchestrator/sequential";
+import { SequentialEngine } from "../../src/orchestrator/sequential";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -85,13 +87,15 @@ const fakeAgent = (name: string): Agent => ({
   source: `/virtual/${name}.md`,
 });
 
-async function makeHarness(): Promise<{
-  workflow: Workflow;
-  config: HarnessConfig;
-  agents: Map<string, Agent>;
-  skills: Map<string, Skill>;
-  runStore: RunStore;
-}> {
+interface Harness {
+  readonly workflow: Workflow;
+  readonly config: HarnessConfig;
+  readonly agents: Map<string, Agent>;
+  readonly skills: Map<string, Skill>;
+  readonly runStore: RunStore;
+}
+
+async function makeHarness(): Promise<Harness> {
   const workflow = await new WorkflowLoader().load(await writeTempYaml(TEST_WORKFLOW_YAML));
   const configPath = await writeTempYaml(TEST_CONFIG_YAML);
   const config = await HarnessConfig.load(configPath);
@@ -106,7 +110,20 @@ async function makeHarness(): Promise<{
   return { workflow, config, agents, skills, runStore };
 }
 
-describe("SequentialOrchestrator", () => {
+function makeServices(harness: Harness, runtime: AgentRuntime, gateForAny: Gate): EngineServices {
+  return {
+    phaseRunner: new PhaseRunner({
+      config: harness.config,
+      agents: harness.agents,
+      skills: harness.skills,
+      runtimes: new Map([[runtime.name, runtime]]),
+    }),
+    gateFor: () => gateForAny,
+    runStore: harness.runStore,
+  };
+}
+
+describe("SequentialEngine", () => {
   let runtime: FakeRuntime;
 
   beforeEach(() => {
@@ -114,7 +131,7 @@ describe("SequentialOrchestrator", () => {
   });
 
   it("runs phases in order when every gate approves", async () => {
-    const { workflow, config, agents, skills, runStore } = await makeHarness();
+    const harness = await makeHarness();
     const gate = new QueuedGate([
       { status: "approved" },
       { status: "approved" },
@@ -122,17 +139,10 @@ describe("SequentialOrchestrator", () => {
     ]);
 
     const events: RunEvent[] = [];
-    const orchestrator = new SequentialOrchestrator({
-      workflow,
-      config,
-      agents,
-      skills,
-      runtimes: new Map([["fake", runtime]]),
-      gateForKind: () => gate,
-      runStore,
-    });
+    const engine = new SequentialEngine(makeServices(harness, runtime, gate));
 
-    const meta = await orchestrator.run({
+    const meta = await engine.run({
+      workflow: harness.workflow,
       task: "do the thing",
       slug: "do-thing",
       workspaceRoot: "/tmp/repo",
@@ -176,8 +186,8 @@ describe("SequentialOrchestrator", () => {
     ]);
   });
 
-  it("follows Review→Build back-edge on rejection and passes context to next Build", async () => {
-    const { workflow, config, agents, skills, runStore } = await makeHarness();
+  it("follows Review→Build back-edge on rejection and passes structured feedback", async () => {
+    const harness = await makeHarness();
     const gate = new QueuedGate([
       { status: "approved" }, // plan
       { status: "approved" }, // build #1
@@ -186,17 +196,10 @@ describe("SequentialOrchestrator", () => {
       { status: "approved" }, // review #2
     ]);
 
-    const orchestrator = new SequentialOrchestrator({
-      workflow,
-      config,
-      agents,
-      skills,
-      runtimes: new Map([["fake", runtime]]),
-      gateForKind: () => gate,
-      runStore,
-    });
+    const engine = new SequentialEngine(makeServices(harness, runtime, gate));
 
-    const meta = await orchestrator.run({
+    const meta = await engine.run({
+      workflow: harness.workflow,
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -213,16 +216,17 @@ describe("SequentialOrchestrator", () => {
     ]);
 
     // The second Build invocation must carry the rejection reason as
-    // iteration context so the agent can address the feedback.
+    // iteration feedback so the agent can address it.
     const secondBuild = runtime.invocations[3];
     expect(secondBuild?.prompt.phaseId).toBe("build");
+    expect(secondBuild?.prompt.userPrompt).toContain("Rejection from review");
     expect(secondBuild?.prompt.userPrompt).toContain("tests missing");
   });
 
   it("halts when max_iterations is exceeded", async () => {
-    const { workflow, config, agents, skills, runStore } = await makeHarness();
-    // review has max_iterations=2 for the build back-edge. So two builds are allowed;
-    // a third review rejection must halt.
+    const harness = await makeHarness();
+    // review has max_iterations=2 for the build back-edge. So two builds
+    // are allowed; a third review rejection must halt.
     const gate = new QueuedGate([
       { status: "approved" }, // plan
       { status: "approved" }, // build #1
@@ -231,17 +235,10 @@ describe("SequentialOrchestrator", () => {
       { status: "rejected", reason: "r2" }, // review #2 → would be build #3 (blocked)
     ]);
 
-    const orchestrator = new SequentialOrchestrator({
-      workflow,
-      config,
-      agents,
-      skills,
-      runtimes: new Map([["fake", runtime]]),
-      gateForKind: () => gate,
-      runStore,
-    });
+    const engine = new SequentialEngine(makeServices(harness, runtime, gate));
 
-    const meta = await orchestrator.run({
+    const meta = await engine.run({
+      workflow: harness.workflow,
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -254,7 +251,7 @@ describe("SequentialOrchestrator", () => {
   });
 
   it("records failure and stops when the runtime returns failed", async () => {
-    const { workflow, config, agents, skills, runStore } = await makeHarness();
+    const harness = await makeHarness();
     runtime.result = {
       status: "failed",
       exitCode: 1,
@@ -263,19 +260,10 @@ describe("SequentialOrchestrator", () => {
       durationMs: 50,
       error: "claude crashed",
     };
-    const gate = new AutoGate();
+    const engine = new SequentialEngine(makeServices(harness, runtime, new AutoGate()));
 
-    const orchestrator = new SequentialOrchestrator({
-      workflow,
-      config,
-      agents,
-      skills,
-      runtimes: new Map([["fake", runtime]]),
-      gateForKind: () => gate,
-      runStore,
-    });
-
-    const meta = await orchestrator.run({
+    const meta = await engine.run({
+      workflow: harness.workflow,
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -289,26 +277,32 @@ describe("SequentialOrchestrator", () => {
   });
 
   it("throws a clear error when a phase references an unregistered agent", async () => {
-    const { workflow, config, skills, runStore } = await makeHarness();
+    const harness = await makeHarness();
     const incompleteAgents = new Map<string, Agent>([["planner", fakeAgent("planner")]]);
-
-    const orchestrator = new SequentialOrchestrator({
-      workflow,
-      config,
-      agents: incompleteAgents,
-      skills,
-      runtimes: new Map([["fake", runtime]]),
-      gateForKind: () => new AutoGate(),
-      runStore,
+    const engine = new SequentialEngine({
+      phaseRunner: new PhaseRunner({
+        config: harness.config,
+        agents: incompleteAgents,
+        skills: harness.skills,
+        runtimes: new Map([[runtime.name, runtime]]),
+      }),
+      gateFor: () => new AutoGate(),
+      runStore: harness.runStore,
     });
 
     await expect(
-      orchestrator.run({ task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" }),
+      engine.run({
+        workflow: harness.workflow,
+        task: "t",
+        slug: "t",
+        workspaceRoot: "/tmp/repo",
+        tier: "M",
+      }),
     ).rejects.toThrow(/Agent "builder" declared by phase "build" not loaded/);
   });
 
   it("throws when a phase references an unregistered runtime", async () => {
-    const { config, agents, skills, runStore } = await makeHarness();
+    const harness = await makeHarness();
     const workflow = await new WorkflowLoader().load(
       await writeTempYaml(
         `name: t
@@ -318,19 +312,16 @@ phases:
 `,
       ),
     );
-
-    const orchestrator = new SequentialOrchestrator({
-      workflow,
-      config,
-      agents,
-      skills,
-      runtimes: new Map([["fake", runtime]]),
-      gateForKind: () => new AutoGate(),
-      runStore,
-    });
+    const engine = new SequentialEngine(makeServices(harness, runtime, new AutoGate()));
 
     await expect(
-      orchestrator.run({ task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" }),
+      engine.run({
+        workflow,
+        task: "t",
+        slug: "t",
+        workspaceRoot: "/tmp/repo",
+        tier: "M",
+      }),
     ).rejects.toThrow(/Runtime "missing".+not registered/);
   });
 });

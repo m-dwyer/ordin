@@ -1,66 +1,41 @@
-import type { Agent } from "../domain/agent";
-import type { ArtefactPointer } from "../domain/composer";
-import type { HarnessConfig } from "../domain/config";
-import type { Skill } from "../domain/skill";
-import type { Phase, Workflow } from "../domain/workflow";
-import type { Gate } from "../gates/types";
-import type { AgentRuntime } from "../runtimes/types";
+import type { Feedback } from "../domain/composer";
+import type { Phase } from "../domain/workflow";
+import type { Engine, EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import type { PhaseExecutionContext } from "./phase-execution";
-import { PhaseRunner } from "./phase-runner";
-import { generateRunId, type RunMeta, type RunStore } from "./run-store";
+import { summariseInvocation } from "./phase-runner";
+import { generateRunId, type PhaseMeta, type RunMeta } from "./run-store";
 
 /**
- * Sequential orchestrator — Stage 1 state machine.
+ * Sequential state-machine engine.
  *
- * Runs phases in order. At each gate:
+ * Walks phases in declared order. After each phase, the engine calls
+ * the resolved `Gate` and dispatches on the decision:
+ *
  *   • approve  → advance to next phase
- *   • reject   → if phase has `on_reject.goto`, restart that phase with
- *                the rejection reason as iteration context (bounded by
- *                max_iterations); otherwise halt.
+ *   • reject   → if the current phase has `on_reject.goto`, restart
+ *                that phase with a structured `Feedback` (bounded by
+ *                `max_iterations`); otherwise halt.
  *
- * Also the merging point for events: runtime-local RuntimeEvents get
- * tagged with runId + phaseId and emitted into the unified RunEvent stream
- * alongside our own lifecycle events.
+ * Also the merging point for events: `PhaseRunner` emits lifecycle +
+ * runtime-tagged events into the unified `RunEvent` stream; this
+ * engine adds its own `gate.*` and `run.*` events around them.
  *
- * The LangGraph swap in Phase 11 replaces this module. Domain, runtimes,
- * and gates stay unchanged.
+ * `MastraEngine` (Phase 11) is an alternative `Engine` implementation
+ * with the same services; domain, runtimes, gates stay unchanged.
  */
-export interface OrchestratorOptions {
-  readonly workflow: Workflow;
-  readonly config: HarnessConfig;
-  readonly agents: ReadonlyMap<string, Agent>;
-  readonly skills: ReadonlyMap<string, Skill>;
-  readonly runtimes: ReadonlyMap<string, AgentRuntime>;
-  readonly gateForKind: (kind: Phase["gate"]) => Gate;
-  readonly runStore: RunStore;
-}
+export class SequentialEngine implements Engine {
+  constructor(private readonly services: EngineServices) {}
 
-export interface RunInput {
-  readonly task: string;
-  readonly slug: string;
-  readonly workspaceRoot: string;
-  readonly tier: "S" | "M" | "L";
-  readonly onEvent?: (event: RunEvent) => void;
-  readonly artefactInputs?: ReadonlyMap<string, readonly ArtefactPointer[]>;
-  readonly artefactOutputs?: ReadonlyMap<string, readonly ArtefactPointer[]>;
-  readonly abortSignal?: AbortSignal;
-}
-
-export class SequentialOrchestrator {
-  private readonly phaseRunner: PhaseRunner;
-
-  constructor(private readonly opts: OrchestratorOptions) {
-    this.phaseRunner = new PhaseRunner(opts);
-  }
-
-  async run(input: RunInput): Promise<RunMeta> {
+  async run(input: EngineRunInput): Promise<RunMeta> {
+    const { phaseRunner, gateFor, runStore } = this.services;
+    const { workflow } = input;
     const runId = generateRunId(input.slug);
     const emit = input.onEvent ?? (() => {});
 
     const meta: RunMeta = {
       runId,
-      workflow: this.opts.workflow.name,
+      workflow: workflow.name,
       tier: input.tier,
       task: input.task,
       slug: input.slug,
@@ -69,53 +44,89 @@ export class SequentialOrchestrator {
       status: "running",
       phases: [],
     };
-    await this.opts.runStore.writeMeta(meta);
+    await runStore.writeMeta(meta);
     emit({ type: "run.started", runId });
 
     const iterationCount = new Map<string, number>();
-    let cursor: Phase | undefined = this.opts.workflow.firstPhase();
-    let iterationContext: string | undefined;
+    let cursor: Phase | undefined = workflow.firstPhase();
+    let feedback: Feedback | undefined;
 
     while (cursor) {
       const currentPhase: Phase = cursor;
       const iter = (iterationCount.get(currentPhase.id) ?? 0) + 1;
       iterationCount.set(currentPhase.id, iter);
-      const context = this.buildPhaseContext(runId, currentPhase, input, iter, iterationContext);
+      const context = this.buildPhaseContext(runId, currentPhase, input, iter, feedback);
 
-      const phaseMeta = await this.phaseRunner.execute({
+      const { meta: phaseMeta, invokeResult } = await phaseRunner.run({
         phase: currentPhase,
         context,
         emit,
-        abortSignal: input.abortSignal,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
       meta.phases.push(phaseMeta);
-      await this.opts.runStore.writeMeta(meta);
+      await runStore.writeMeta(meta);
 
       if (phaseMeta.status === "failed") {
         meta.status = "failed";
         break;
       }
 
-      if (phaseMeta.gateDecision === "rejected") {
-        const target = this.resolveRejection(currentPhase, iterationCount);
-        if (!target) {
-          meta.status = "halted";
-          break;
-        }
-        iterationContext = phaseMeta.gateNote
-          ? `Rejection from ${currentPhase.id}: ${phaseMeta.gateNote}`
-          : `Rejection from ${currentPhase.id}`;
-        cursor = target;
+      const gate = gateFor(currentPhase);
+      emit({ type: "gate.requested", runId, phaseId: currentPhase.id });
+      const decision = await gate.request({
+        runId,
+        phaseId: currentPhase.id,
+        cwd: input.workspaceRoot,
+        artefacts: context.artefactOutputs,
+        summary: summariseInvocation(invokeResult),
+      });
+
+      if (decision.status === "approved") {
+        phaseMeta.status = "completed";
+        phaseMeta.gateDecision = gate.kind === "auto" ? "auto" : "approved";
+        if (decision.note) phaseMeta.gateNote = decision.note;
+        emit({
+          type: "gate.decided",
+          runId,
+          phaseId: currentPhase.id,
+          decision: phaseMeta.gateDecision,
+          ...(decision.note ? { note: decision.note } : {}),
+        });
+        await runStore.writeMeta(meta);
+        feedback = undefined;
+        cursor = workflow.nextPhase(currentPhase.id);
         continue;
       }
 
-      iterationContext = undefined;
-      cursor = this.opts.workflow.nextPhase(currentPhase.id);
+      // Rejected.
+      phaseMeta.status = "rejected";
+      phaseMeta.gateDecision = "rejected";
+      phaseMeta.gateNote = decision.reason;
+      emit({
+        type: "gate.decided",
+        runId,
+        phaseId: currentPhase.id,
+        decision: "rejected",
+        reason: decision.reason,
+      });
+      await runStore.writeMeta(meta);
+
+      const target = this.resolveRejection(currentPhase, iterationCount, workflow);
+      if (!target) {
+        meta.status = "halted";
+        break;
+      }
+      feedback = {
+        fromPhase: currentPhase.id,
+        decision: "rejected",
+        ...(decision.reason ? { reason: decision.reason } : {}),
+      };
+      cursor = target;
     }
 
     if (meta.status === "running") meta.status = "completed";
     meta.completedAt = new Date().toISOString();
-    await this.opts.runStore.writeMeta(meta);
+    await runStore.writeMeta(meta);
     emit({ type: "run.completed", runId, status: meta.status });
     return meta;
   }
@@ -123,12 +134,10 @@ export class SequentialOrchestrator {
   private buildPhaseContext(
     runId: string,
     phase: Phase,
-    input: RunInput,
+    input: EngineRunInput,
     iteration: number,
-    iterationContext: string | undefined,
+    feedback: Feedback | undefined,
   ): PhaseExecutionContext {
-    // Keep per-phase execution state data-only so a future graph
-    // orchestrator can checkpoint/resume it cleanly.
     return {
       runId,
       workspaceRoot: input.workspaceRoot,
@@ -137,18 +146,22 @@ export class SequentialOrchestrator {
       iteration,
       artefactInputs: input.artefactInputs?.get(phase.id) ?? [],
       artefactOutputs: input.artefactOutputs?.get(phase.id) ?? [],
-      ...(iterationContext ? { iterationContext } : {}),
+      ...(feedback ? { feedback } : {}),
     };
   }
 
   private resolveRejection(
     phase: Phase,
     iterationCount: ReadonlyMap<string, number>,
+    workflow: EngineRunInput["workflow"],
   ): Phase | undefined {
     if (!phase.on_reject) return undefined;
-    const target = this.opts.workflow.findPhase(phase.on_reject.goto);
+    const target = workflow.findPhase(phase.on_reject.goto);
     const used = iterationCount.get(target.id) ?? 0;
     if (used >= phase.on_reject.max_iterations) return undefined;
     return target;
   }
 }
+
+// Type aliases for the values PhaseMeta carries forward unchanged.
+export type { PhaseMeta, RunEvent };

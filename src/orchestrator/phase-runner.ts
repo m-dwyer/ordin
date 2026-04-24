@@ -4,18 +4,32 @@ import { Composer } from "../domain/composer";
 import type { HarnessConfig } from "../domain/config";
 import type { Skill } from "../domain/skill";
 import type { Phase } from "../domain/workflow";
-import type { Gate } from "../gates/types";
 import type { AgentRuntime, InvokeResult } from "../runtimes/types";
 import { promoteRuntimeEvent } from "./events";
-import type { PhaseExecutionContext, PhaseExecutionRequest } from "./phase-execution";
+import type { PhaseExecutionRequest } from "./phase-execution";
 import type { PhaseMeta } from "./run-store";
 
+/**
+ * `PhaseRunner` executes one phase: compose prompt → invoke runtime →
+ * collect result. It emits `phase.started` / `phase.completed` /
+ * `phase.failed` lifecycle events plus the runtime's observation
+ * stream, tagged with runId + phaseId.
+ *
+ * Gates are deliberately NOT this class's concern — the engine calls
+ * the gate after receiving the phase result and decides what happens
+ * on rejection. Keeps PhaseRunner gate-agnostic so `MastraEngine`,
+ * `SequentialEngine`, and future engines can wire gating differently.
+ */
 export interface PhaseRunnerOptions {
   readonly config: HarnessConfig;
   readonly agents: ReadonlyMap<string, Agent>;
   readonly skills: ReadonlyMap<string, Skill>;
   readonly runtimes: ReadonlyMap<string, AgentRuntime>;
-  readonly gateForKind: (kind: Phase["gate"]) => Gate;
+}
+
+export interface PhaseRunResult {
+  readonly meta: PhaseMeta;
+  readonly invokeResult: InvokeResult;
 }
 
 export class PhaseRunner {
@@ -23,7 +37,7 @@ export class PhaseRunner {
 
   constructor(private readonly opts: PhaseRunnerOptions) {}
 
-  async execute(req: PhaseExecutionRequest): Promise<PhaseMeta> {
+  async run(req: PhaseExecutionRequest): Promise<PhaseRunResult> {
     const { context, emit, phase } = req;
     const agent = this.agentFor(phase);
     const runtime = this.runtimeFor(phase);
@@ -51,7 +65,7 @@ export class PhaseRunner {
       runId: context.runId,
       prompt,
       onEvent: (event) => emit(promoteRuntimeEvent(event, context.runId, phase.id)),
-      abortSignal: req.abortSignal,
+      ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
     });
 
     this.applyInvokeResult(phaseMeta, invokeResult);
@@ -66,7 +80,7 @@ export class PhaseRunner {
         iteration: context.iteration,
         error: phaseMeta.error,
       });
-      return phaseMeta;
+      return { meta: phaseMeta, invokeResult };
     }
 
     emit({
@@ -77,42 +91,7 @@ export class PhaseRunner {
       tokens: invokeResult.tokens,
       durationMs: invokeResult.durationMs,
     });
-
-    const gate = this.opts.gateForKind(phase.gate);
-    emit({ type: "gate.requested", runId: context.runId, phaseId: phase.id });
-    const decision = await gate.request({
-      runId: context.runId,
-      phaseId: phase.id,
-      cwd: context.workspaceRoot,
-      artefacts: context.artefactOutputs,
-      summary: summariseInvocation(invokeResult),
-    });
-
-    if (decision.status === "approved") {
-      phaseMeta.status = "completed";
-      phaseMeta.gateDecision = gate.kind === "auto" ? "auto" : "approved";
-      if (decision.note) phaseMeta.gateNote = decision.note;
-      emit({
-        type: "gate.decided",
-        runId: context.runId,
-        phaseId: phase.id,
-        decision: phaseMeta.gateDecision,
-        ...(decision.note ? { note: decision.note } : {}),
-      });
-      return phaseMeta;
-    }
-
-    phaseMeta.status = "rejected";
-    phaseMeta.gateDecision = "rejected";
-    phaseMeta.gateNote = decision.reason;
-    emit({
-      type: "gate.decided",
-      runId: context.runId,
-      phaseId: phase.id,
-      decision: "rejected",
-      reason: decision.reason,
-    });
-    return phaseMeta;
+    return { meta: phaseMeta, invokeResult };
   }
 
   private agentFor(phase: Phase): Agent {
@@ -133,7 +112,7 @@ export class PhaseRunner {
 
   private composePrompt(
     phase: Phase,
-    context: PhaseExecutionContext,
+    context: PhaseExecutionRequest["context"],
     agent: Agent,
   ): ComposedPrompt {
     const defaults = this.opts.config.resolveDefaults(phase.id, context.tier);
@@ -150,7 +129,7 @@ export class PhaseRunner {
         name: s.name,
         description: s.description,
       })),
-      iterationContext: context.iterationContext,
+      ...(context.feedback ? { feedback: context.feedback } : {}),
     });
   }
 
@@ -163,7 +142,7 @@ export class PhaseRunner {
   }
 }
 
-function summariseInvocation(result: InvokeResult): string {
+export function summariseInvocation(result: InvokeResult): string {
   const parts = [
     `duration: ${(result.durationMs / 1000).toFixed(1)}s`,
     `in: ${result.tokens.input.toLocaleString()} tok`,

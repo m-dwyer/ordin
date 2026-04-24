@@ -9,10 +9,11 @@ import { type Skill, SkillLoader } from "../domain/skill";
 import { type Phase, type Workflow, WorkflowLoader } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
 import type { Gate } from "../gates/types";
+import type { Engine, EngineRunInput, EngineServices } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
+import { PhaseRunner } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
-import type { RunInput } from "../orchestrator/sequential";
-import { SequentialOrchestrator } from "../orchestrator/sequential";
+import { SequentialEngine } from "../orchestrator/sequential";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
 import type { AgentRuntime } from "../runtimes/types";
 
@@ -119,17 +120,16 @@ export class HarnessRuntime {
         ],
       ]);
 
-    const orchestrator = new SequentialOrchestrator({
-      workflow: trimmedWorkflow,
-      config,
-      agents,
-      skills,
-      runtimes,
+    const gateResolver = this.gateResolver ?? this.gateForKind.bind(this);
+    const services: EngineServices = {
+      phaseRunner: new PhaseRunner({ config, agents, skills, runtimes }),
+      gateFor: (phase) => gateResolver(phase.gate),
       runStore,
-      gateForKind: this.gateResolver ?? this.gateForKind.bind(this),
-    });
+    };
+    const engine: Engine = new SequentialEngine(services);
 
-    const runInput: RunInput = {
+    const runInput: EngineRunInput = {
+      workflow: trimmedWorkflow,
       task: input.task,
       slug,
       workspaceRoot,
@@ -139,7 +139,7 @@ export class HarnessRuntime {
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
-    return orchestrator.run(runInput);
+    return engine.run(runInput);
   }
 
   async listRuns(): Promise<RunMeta[]> {
