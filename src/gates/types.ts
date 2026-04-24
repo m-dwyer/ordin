@@ -2,12 +2,22 @@
  * Gate contract. Gates run at phase boundaries; they decide whether to
  * proceed, iterate, or halt based on the artefacts just produced.
  *
- * Stage 1 uses ClackGate for human review; FileGate and AutoGate exist
- * as signposts for CI/auto workflows.
+ * Gates are pure business logic — no UI imports here. `HumanGate`
+ * delegates to a `GatePrompter` the caller injects; CLI / web / Slack /
+ * HTTP clients each ship their own prompter implementation.
  */
 export interface Gate {
   readonly kind: string;
   request(ctx: GateContext): Promise<GateDecision>;
+}
+
+/**
+ * Collects a decision from a human reviewer. Client-interface layers
+ * (CLI, HTTP, Slack …) implement this to present the gate however their
+ * transport calls for.
+ */
+export interface GatePrompter {
+  prompt(ctx: GateContext): Promise<GateDecision>;
 }
 
 export interface GateContext {

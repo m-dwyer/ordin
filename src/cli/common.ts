@@ -1,6 +1,7 @@
 import { log, spinner } from "@clack/prompts";
 import { InvalidArgumentError } from "commander";
 import { HarnessRuntime, type RunEvent } from "../runtime/harness";
+import { clackGateResolver } from "./gate-prompters/clack";
 
 export function parseTier(value: string): "S" | "M" | "L" {
   if (value === "S" || value === "M" || value === "L") return value;
@@ -8,7 +9,7 @@ export function parseTier(value: string): "S" | "M" | "L" {
 }
 
 export function ordin(): HarnessRuntime {
-  return new HarnessRuntime();
+  return new HarnessRuntime({ gateForKind: clackGateResolver() });
 }
 
 /**

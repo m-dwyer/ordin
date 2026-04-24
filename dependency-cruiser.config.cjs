@@ -49,9 +49,20 @@ module.exports = {
       name: "cli-cannot-reach-past-harness-runtime",
       severity: "error",
       comment:
-        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator directly.",
-      from: { path: "^src/cli" },
+        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator directly. Exception: src/cli/gate-prompters/ assembles CLI-specific gate resolvers and legitimately imports Gate/HumanGate/AutoGate + the Phase type.",
+      from: {
+        path: "^src/cli",
+        pathNot: "^src/cli/gate-prompters/",
+      },
       to: { path: "^src/(domain|runtimes|orchestrator|gates)/" },
+    },
+    {
+      name: "gate-prompters-scoped-to-gate-assembly",
+      severity: "error",
+      comment:
+        "Gate-prompter adapters may import the gate layer and Phase type (to implement Phase['gate'] switch), but nothing else outside src/gates and src/domain/workflow.",
+      from: { path: "^src/cli/gate-prompters/" },
+      to: { path: "^src/(runtime|runtimes|orchestrator)/" },
     },
     {
       name: "no-orphans",

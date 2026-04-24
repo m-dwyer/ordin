@@ -1,27 +1,37 @@
 import { spawn } from "node:child_process";
 import { cancel, confirm, isCancel, log, note, select, text } from "@clack/prompts";
-import type { Gate, GateArtefact, GateContext, GateDecision } from "./types";
+import type { Phase } from "../../domain/workflow";
+import { AutoGate } from "../../gates/auto";
+import { HumanGate } from "../../gates/human";
+import type {
+  Gate,
+  GateArtefact,
+  GateContext,
+  GateDecision,
+  GatePrompter,
+} from "../../gates/types";
 
 type GateAction = "approve" | "reject" | "view" | "edit";
 
 /**
- * Interactive human gate. Opens the artefact in $EDITOR when requested,
- * then loops until the reviewer approves or rejects. Stage 1 default.
+ * Clack-based prompter for `HumanGate`. CLI-only — this is the single
+ * place `@clack/prompts` is imported outside the existing CLI entries.
+ * Opens artefacts in `$EDITOR` / `$PAGER` on demand and loops until the
+ * reviewer approves or rejects.
  */
-export interface ClackGateConfig {
+export interface ClackGatePrompterConfig {
   /** Override the editor. Defaults to $EDITOR, then $VISUAL, then `vi`. */
   readonly editor?: string;
 }
 
-export class ClackGate implements Gate {
-  readonly kind = "clack";
+export class ClackGatePrompter implements GatePrompter {
   private readonly editor: string;
 
-  constructor(config: ClackGateConfig = {}) {
+  constructor(config: ClackGatePrompterConfig = {}) {
     this.editor = config.editor ?? process.env["EDITOR"] ?? process.env["VISUAL"] ?? "vi";
   }
 
-  async request(ctx: GateContext): Promise<GateDecision> {
+  async prompt(ctx: GateContext): Promise<GateDecision> {
     note(this.buildSummary(ctx), `Gate — ${ctx.phaseId}`);
 
     while (true) {
@@ -132,4 +142,27 @@ export class ClackGate implements Gate {
       });
     });
   }
+}
+
+/**
+ * CLI's gate resolver: `HumanGate` backed by a clack prompter for the
+ * `human` kind, `AutoGate` everywhere else. `pre-commit` defers to the
+ * host repository's pre-commit hook during Build — auto-approve here.
+ */
+export function clackGateResolver(
+  prompter: GatePrompter = new ClackGatePrompter(),
+): (kind: Phase["gate"]) => Gate {
+  return (kind) => {
+    switch (kind) {
+      case "human":
+        return new HumanGate(prompter);
+      case "auto":
+      case "pre-commit":
+        return new AutoGate();
+      default: {
+        const _exhaustive: never = kind;
+        throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
+      }
+    }
+  };
 }

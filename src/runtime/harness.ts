@@ -8,7 +8,6 @@ import { ProjectRegistry } from "../domain/project";
 import { type Skill, SkillLoader } from "../domain/skill";
 import { type Phase, type Workflow, WorkflowLoader } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
-import { ClackGate } from "../gates/clack";
 import type { Gate } from "../gates/types";
 import type { RunEvent } from "../orchestrator/events";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
@@ -42,9 +41,12 @@ export interface HarnessRuntimeOptions {
    */
   readonly runtimes?: ReadonlyMap<string, AgentRuntime>;
   /**
-   * Override how gates are resolved. Defaults to the production mapping
-   * (clack for human, auto for auto/pre-commit). The eval suite passes
-   * an AutoGate-only resolver so fixtures run unattended.
+   * Resolve a `Gate` for a given workflow `gate` kind. Client interfaces
+   * assemble their own resolver — the CLI builds one that wraps clack
+   * around `HumanGate`; the eval suite (and headless / CI callers)
+   * return `AutoGate` for every kind. Harness default (no override) is
+   * `AutoGate` for every kind: safe headless behaviour, and production
+   * flows always supply their own resolver explicitly.
    */
   readonly gateForKind?: (kind: Phase["gate"]) => Gate;
 }
@@ -196,16 +198,18 @@ export class HarnessRuntime {
     throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
   }
 
+  /**
+   * Headless default: auto-approve for every kind. Production callers
+   * (CLI, HTTP, Slack) supply their own resolver via `gateForKind` that
+   * wires `HumanGate` + the appropriate prompter. Kept in the harness
+   * (rather than forcing every caller to opt in) so CI / eval / library
+   * consumers just work out of the box.
+   */
   private gateForKind(kind: Phase["gate"]): Gate {
     switch (kind) {
       case "human":
-        return new ClackGate();
       case "auto":
-        return new AutoGate();
       case "pre-commit":
-        // Phase 1: pre-commit is a placeholder — we gate on the host hook,
-        // not in-harness. Treat as auto-approve here; the real check is the
-        // repo's pre-commit running during Build.
         return new AutoGate();
       default: {
         const _exhaustive: never = kind;
