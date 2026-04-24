@@ -1,16 +1,37 @@
-# ordin configuration — per-phase model and tool allowlists.
+# ordin configuration — harness-level defaults + opaque per-runtime config.
 #
-# Workflow YAMLs reference phases by id. This file supplies the defaults
-# the `ClaudeCliRuntime` needs at invocation time (model, allowed tools).
-# Agent-markdown frontmatter (model:, tools:) overrides per-agent.
+# Layering:
+#   run_store / default_runtime / phases / tiers / budgets  — harness-level;
+#     schema lives in src/domain/config.ts.
+#   runtimes.<name>.*                                         — opaque to
+#     the domain; each runtime validates its own slice via its `fromConfig`.
 
-runtime:
-  default: claude-cli
-  claude_cli:
+# Where per-run metadata and transcripts are persisted.
+run_store:
+  base_dir: ~/.ordin/runs
+
+# Which runtime entry to use when a workflow phase doesn't specify one.
+default_runtime: claude-cli
+
+# Per-runtime configs. Keys here match the `runtime:` field in
+# workflows/<name>.yaml phases. Schemas validated by each runtime.
+runtimes:
+  claude-cli:
     # Path to the `claude` binary. Empty = use whatever's on PATH.
     bin: claude
-    # Where to persist per-run transcripts (JSONL from --output-format stream-json).
-    runs_dir: ~/.ordin/runs
+    # Per-phase Claude-specific overrides. Domain-neutral fields (model,
+    # allowed_tools) live below in `phases`; these are the Claude CLI
+    # flags that have no cross-runtime equivalent today.
+    phases:
+      plan:
+        fallback_model: claude-sonnet-4-6
+        max_turns: 60
+      build:
+        fallback_model: claude-sonnet-4-6
+        max_turns: 80
+      review:
+        fallback_model: claude-sonnet-4-6
+        max_turns: 40
 
 phases:
   plan:
@@ -45,9 +66,9 @@ phases:
       - Bash(git log*)
       - Bash(git show*)
 
-# Per-tier overrides. Only the neutral `model` knob is represented here —
-# runtime-specific knobs (Claude's `--effort`, for example) are derived
-# from the tier inside the runtime itself. Precedence:
+# Per-tier model overrides. Only the neutral `model` knob is represented
+# here — runtime-specific knobs (Claude's `--effort`, for example) are
+# derived from the tier inside the runtime itself. Precedence:
 #   agent frontmatter > tier.model > phases.<phase>.model
 tiers:
   S:

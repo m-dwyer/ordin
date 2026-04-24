@@ -30,8 +30,8 @@ budgets:
     expect(config.phaseDefaults("plan").model).toBe("claude-opus-4-7");
     expect(config.softTokenBudget("plan")).toBe(40000);
     expect(config.softTokenBudget("build")).toBeUndefined();
-    expect(config.claudeBin()).toBe("claude");
-    expect(config.runsDir()).toMatch(/\.ordin\/runs$/);
+    expect(config.defaultRuntime).toBe("claude-cli");
+    expect(config.runStoreDir()).toMatch(/\.ordin\/runs$/);
   });
 
   it("throws for an unknown phase", async () => {
@@ -71,5 +71,48 @@ budgets:
     // L-tier has no override → falls back to the phase default
     const l = config.resolveDefaults("plan", "L");
     expect(l.model).toBe("claude-opus-4-7");
+  });
+
+  it("exposes opaque runtime config slices for validation by each runtime", async () => {
+    const path = await tempConfig(
+      `default_runtime: claude-cli
+runtimes:
+  claude-cli:
+    bin: /usr/local/bin/claude
+    phases:
+      plan: { fallback_model: claude-sonnet-4-6, max_turns: 60 }
+  ai-sdk:
+    base_url: http://localhost:4000
+phases:
+  plan:
+    model: m
+    allowed_tools: []
+`,
+    );
+    const config = await HarnessConfig.load(path);
+
+    expect(config.defaultRuntime).toBe("claude-cli");
+    expect(config.runtimeConfig("claude-cli")).toEqual({
+      bin: "/usr/local/bin/claude",
+      phases: { plan: { fallback_model: "claude-sonnet-4-6", max_turns: 60 } },
+    });
+    expect(config.runtimeConfig("ai-sdk")).toEqual({ base_url: "http://localhost:4000" });
+    // Missing runtime name returns {} — runtime's fromConfig handles defaults.
+    expect(config.runtimeConfig("unknown")).toEqual({});
+  });
+
+  it("expands ~ in run_store.base_dir", async () => {
+    const path = await tempConfig(
+      `run_store:
+  base_dir: ~/custom-runs
+phases:
+  plan:
+    model: m
+    allowed_tools: []
+`,
+    );
+    const config = await HarnessConfig.load(path);
+    expect(config.runStoreDir()).toMatch(/custom-runs$/);
+    expect(config.runStoreDir()).not.toContain("~");
   });
 });

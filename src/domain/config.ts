@@ -5,16 +5,18 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 /**
- * ordin.config.yaml — per-phase model and tool allowlist defaults,
- * runtime configuration, and per-tier overrides.
+ * ordin.config.yaml — per-phase defaults, tier overrides, run-store
+ * location, and opaque runtime configs.
  *
- * Design invariant: the domain stays provider-neutral. Model IDs are
- * opaque strings that each runtime interprets; tiers are a harness
- * concept. Runtime-specific knobs (Claude's `--effort`, permission modes,
- * plugin dirs) live inside the runtime, not here.
+ * Design invariant: the domain stays provider-neutral. Runtime-specific
+ * config shapes (e.g. Claude CLI bin path, AI SDK base URL) live in
+ * each runtime's module and are validated there. This file only knows
+ * "a runtime named X has some opaque config" — no runtime names or
+ * keys baked into the schema.
  *
- * Precedence for each resolved setting: agent frontmatter > tier override
- * > phase default. Phase defaults encode the L-tier / heaviest profile.
+ * Precedence for each resolved setting: agent frontmatter > tier
+ * override > phase default. Phase defaults encode the L-tier / heaviest
+ * profile.
  */
 export const PhaseDefaultsSchema = z.object({
   model: z.string().min(1),
@@ -22,20 +24,12 @@ export const PhaseDefaultsSchema = z.object({
 });
 export type PhaseDefaultsRaw = z.infer<typeof PhaseDefaultsSchema>;
 
-const CLAUDE_CLI_DEFAULTS = { bin: "claude", runs_dir: "~/.ordin/runs" } as const;
-const RUNTIME_DEFAULTS = { default: "claude-cli", claude_cli: CLAUDE_CLI_DEFAULTS } as const;
-
-export const ClaudeCliConfigSchema = z.object({
-  bin: z.string().default(CLAUDE_CLI_DEFAULTS.bin),
-  runs_dir: z.string().default(CLAUDE_CLI_DEFAULTS.runs_dir),
+export const RunStoreSchema = z.object({
+  base_dir: z.string().default("~/.ordin/runs"),
 });
-export type ClaudeCliConfigRaw = z.infer<typeof ClaudeCliConfigSchema>;
+export type RunStoreRaw = z.infer<typeof RunStoreSchema>;
 
-export const RuntimeConfigSchema = z.object({
-  default: z.string().default(RUNTIME_DEFAULTS.default),
-  claude_cli: ClaudeCliConfigSchema.default(CLAUDE_CLI_DEFAULTS),
-});
-export type RuntimeConfigRaw = z.infer<typeof RuntimeConfigSchema>;
+const DEFAULT_RUN_STORE: RunStoreRaw = { base_dir: "~/.ordin/runs" };
 
 export const BudgetsConfigSchema = z.record(
   z.string(),
@@ -74,8 +68,18 @@ export const TiersSchema = z
   .default(DEFAULT_TIERS);
 export type TiersRaw = z.infer<typeof TiersSchema>;
 
+/**
+ * Opaque per-runtime config bag. Each runtime owns its own zod schema
+ * and calls `HarnessConfig.runtimeConfig(name)` to fetch its slice —
+ * which is validated inside the runtime, not here.
+ */
+export const RuntimesConfigSchema = z.record(z.string(), z.unknown()).default({});
+export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
+
 export const HarnessConfigSchema = z.object({
-  runtime: RuntimeConfigSchema.default(RUNTIME_DEFAULTS),
+  run_store: RunStoreSchema.default(DEFAULT_RUN_STORE),
+  default_runtime: z.string().default("claude-cli"),
+  runtimes: RuntimesConfigSchema,
   phases: z.record(z.string(), PhaseDefaultsSchema),
   tiers: TiersSchema,
   budgets: BudgetsConfigSchema.default({}),
@@ -89,7 +93,9 @@ export interface ResolvedPhaseDefaults {
 
 export class HarnessConfig {
   constructor(
-    readonly runtime: RuntimeConfigRaw,
+    readonly runStore: RunStoreRaw,
+    readonly defaultRuntime: string,
+    readonly runtimes: RuntimesConfigRaw,
     readonly phases: Readonly<Record<string, PhaseDefaultsRaw>>,
     readonly tiers: TiersRaw,
     readonly budgets: Readonly<Record<string, { soft_tokens?: number }>>,
@@ -106,10 +112,9 @@ export class HarnessConfig {
   }
 
   /**
-   * Resolve per-phase defaults for a given tier. The tier's `model`
-   * overrides the phase's declared default when set. Runtime-specific
-   * concerns (effort, permissions) are not represented here — those
-   * belong inside the runtime and are derived from `prompt.tier`.
+   * Resolve per-phase defaults for a given tier. Precedence per field:
+   *   tier override > phase default. Agent frontmatter (if any) wins
+   *   over both at composer time.
    */
   resolveDefaults(phaseId: string, tier: TierKey): ResolvedPhaseDefaults {
     const phase = this.phaseDefaults(phaseId);
@@ -126,12 +131,17 @@ export class HarnessConfig {
     return this.budgets[phaseId]?.soft_tokens;
   }
 
-  runsDir(): string {
-    return expandHome(this.runtime.claude_cli.runs_dir);
+  /**
+   * Opaque config slice for a named runtime. Callers validate the shape
+   * inside the runtime's own schema (`ClaudeCliRuntime.fromConfig`,
+   * etc.) — the domain never interprets it.
+   */
+  runtimeConfig(name: string): unknown {
+    return this.runtimes[name] ?? {};
   }
 
-  claudeBin(): string {
-    return this.runtime.claude_cli.bin;
+  runStoreDir(): string {
+    return expandHome(this.runStore.base_dir);
   }
 
   static async load(path: string): Promise<HarnessConfig> {
@@ -146,7 +156,9 @@ export class HarnessConfig {
       );
     }
     return new HarnessConfig(
-      result.data.runtime,
+      result.data.run_store,
+      result.data.default_runtime,
+      result.data.runtimes,
       result.data.phases,
       result.data.tiers,
       result.data.budgets,

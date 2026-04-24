@@ -76,11 +76,12 @@ async function makeHarnessRoot(): Promise<string> {
 
   await write(
     join(root, "ordin.config.yaml"),
-    `runtime:
-  default: claude-cli
-  claude_cli:
+    `run_store:
+  base_dir: ${join(root, "runs")}
+default_runtime: claude-cli
+runtimes:
+  claude-cli:
     bin: claude
-    runs_dir: ${join(root, "runs")}
 phases:
   plan:
     model: m

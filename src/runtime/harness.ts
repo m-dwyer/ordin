@@ -109,13 +109,12 @@ export class HarnessRuntime {
       new Map<string, AgentRuntime>([
         [
           "claude-cli",
-          new ClaudeCliRuntime({
-            bin: config.claudeBin(),
-            runsDir: config.runsDir(),
+          ClaudeCliRuntime.fromConfig(config.runtimeConfig("claude-cli"), {
             // The ordin repo itself is a Claude Code plugin
             // (.claude-plugin/plugin.json + top-level skills/). Loading it
             // per-invocation means zero pollution of ~/.claude/.
             pluginDirs: [this.root],
+            runsDirFallback: config.runStoreDir(),
           }),
         ],
       ]);
@@ -187,7 +186,7 @@ export class HarnessRuntime {
       agents,
       skills,
       projects,
-      runStore: new RunStore(config.runsDir()),
+      runStore: new RunStore(config.runStoreDir()),
     };
     return this.loaded;
   }
