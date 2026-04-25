@@ -99,7 +99,7 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
 
   const harness = new HarnessRuntime({
     root: REPO_ROOT,
-    runtimes: new Map([["claude-cli", runtime]]),
+    runtimes: new Map([["ai-sdk", runtime]]),
     gateForKind: () => new AutoGate(),
   });
 

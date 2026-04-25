@@ -129,12 +129,14 @@ describe("registerRun", () => {
     });
   });
 
-  it("--dry-run calls previewRun, prints prompts, and never invokes startRun", async () => {
+  it("--dry-run calls previewRun (not startRun) and renders the previews", async () => {
     const program = new Command();
     program.exitOverride();
 
     let startRunCalls = 0;
     let previewInput: StartRunInput | undefined;
+    let renderedPreviews: readonly PhasePreview[] | undefined;
+    let renderedTask: string | undefined;
     const fakePreview: PhasePreview = {
       phase: { id: "plan", agent: "planner", gate: "human" },
       runtimeName: "ai-sdk",
@@ -150,7 +152,6 @@ describe("registerRun", () => {
       },
     };
 
-    let captured = "";
     registerRun(program, {
       createRuntime: () => ({
         startRun: async () => {
@@ -162,8 +163,9 @@ describe("registerRun", () => {
           return [fakePreview];
         },
       }),
-      print: (text) => {
-        captured += text;
+      renderPreviews: (previews, task) => {
+        renderedPreviews = previews;
+        renderedTask = task;
       },
     });
 
@@ -174,10 +176,7 @@ describe("registerRun", () => {
 
     expect(startRunCalls).toBe(0);
     expect(previewInput?.task).toBe("Try dry");
-    expect(captured).toContain("PHASE  plan");
-    expect(captured).toContain("system body");
-    expect(captured).toContain("user prompt body");
-    expect(captured).toContain("ai-sdk");
-    expect(captured).toContain("qwen3-8b");
+    expect(renderedTask).toBe("Try dry");
+    expect(renderedPreviews?.[0]).toBe(fakePreview);
   });
 });

@@ -1,4 +1,4 @@
-import { intro, outro } from "@clack/prompts";
+import { intro, log, note, outro } from "@clack/prompts";
 import type { Command } from "commander";
 import type { HarnessRuntime, PhasePreview, RunEvent } from "../runtime/harness";
 import { clackEventSink, ordin, parseTier, slugify } from "./common";
@@ -13,8 +13,8 @@ export interface RunCommandDeps {
   };
   readonly intro?: (message: string) => void;
   readonly outro?: (message: string) => void;
-  /** Capture printed text instead of writing to stdout. Test seam. */
-  readonly print?: (text: string) => void;
+  /** Override the dry-run renderer. Test seam. */
+  readonly renderPreviews?: (previews: readonly PhasePreview[], task: string) => void;
 }
 
 interface RunCommandOpts {
@@ -52,8 +52,8 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
 
       if (opts.dryRun) {
         const previews = await runtime.previewRun(input);
-        const print = deps.print ?? ((text) => process.stdout.write(text));
-        printPreviews(previews, input.task, print);
+        const render = deps.renderPreviews ?? renderPreviewsWithClack;
+        render(previews, input.task);
         return;
       }
 
@@ -106,26 +106,45 @@ export function buildRunInput(
   };
 }
 
-function printPreviews(
-  previews: readonly PhasePreview[],
-  task: string,
-  print: (text: string) => void,
-): void {
-  print(`# ordin run --dry-run · ${task}\n`);
-  print(`# ${previews.length} phase${previews.length === 1 ? "" : "s"}\n\n`);
+/**
+ * Renders dry-run previews using clack. One `note()` per phase — the
+ * box itself is the visual container for that phase, with metadata,
+ * system prompt, and user prompt as labelled sub-sections inside it.
+ * Phase is the unit; sections belong to it. Pipes cleanly too (no
+ * cursor-redraw escape codes).
+ */
+function renderPreviewsWithClack(previews: readonly PhasePreview[], task: string): void {
+  intro(`ordin dry-run · ${task}`);
+  log.message(
+    `${previews.length} phase${previews.length === 1 ? "" : "s"} composed — no runtime invoked`,
+  );
+
   for (const preview of previews) {
     const { phase, runtimeName, prompt } = preview;
     const tools = prompt.tools.length > 0 ? prompt.tools.join(", ") : "(none)";
-    print(`${"─".repeat(78)}\n`);
-    print(`PHASE  ${phase.id}\n`);
-    print(`agent: ${phase.agent}    runtime: ${runtimeName}    model: ${prompt.model}\n`);
-    print(`tools: ${tools}\n`);
-    print(`cwd:   ${prompt.cwd}\n`);
-    print(`${"─".repeat(78)}\n`);
-    print("## SYSTEM PROMPT\n\n");
-    print(prompt.systemPrompt);
-    print("\n\n## USER PROMPT\n\n");
-    print(prompt.userPrompt);
-    print("\n\n");
+    const body = [
+      `agent:   ${phase.agent}`,
+      `runtime: ${runtimeName}`,
+      `model:   ${prompt.model}`,
+      `tools:   ${tools}`,
+      `cwd:     ${prompt.cwd}`,
+      "",
+      "▸ system prompt",
+      indentBlock(prompt.systemPrompt),
+      "",
+      "▸ user prompt",
+      indentBlock(prompt.userPrompt),
+    ].join("\n");
+    note(body, `Phase — ${phase.id}`);
   }
+
+  outro(`${previews.length} phase${previews.length === 1 ? "" : "s"} previewed`);
+}
+
+/** Two-space indent so sub-section bodies sit visually under their `▸` heading. */
+function indentBlock(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
 }
