@@ -41,8 +41,10 @@ interface RunCtx {
 
 /**
  * Mastra step `bail(result)` ends the workflow cleanly with status
- * "bailed". Steps return its result directly. Typed loosely here
- * because Mastra's `InnerOutput` sentinel isn't a public export.
+ * "bailed". At runtime it returns an `InnerOutput` sentinel that
+ * Mastra unwraps; we type it as the step's output shape so the
+ * `execute` function can return it directly. Only called from the
+ * step boundary — `runOnePhase` keeps a plain return shape.
  */
 type Bail = (result: { approved: boolean }) => { approved: boolean };
 
@@ -126,7 +128,10 @@ function compile(workflow: Workflow, ctx: RunCtx) {
       id: phase.id,
       inputSchema: Gate,
       outputSchema: Gate,
-      execute: ({ bail }) => runOnePhase(phase, ctx, bail as unknown as Bail),
+      execute: async ({ bail }) => {
+        const result = await runOnePhase(phase, ctx);
+        return ctx.outcome ? (bail as unknown as Bail)(result) : result;
+      },
     });
 
   let wf = createWorkflow({
@@ -149,8 +154,11 @@ function compile(workflow: Workflow, ctx: RunCtx) {
     outputSchema: Gate,
     execute: async ({ bail }) => {
       for (const phase of loopSegment) {
-        const { approved } = await runOnePhase(phase, ctx, bail as unknown as Bail);
-        if (!approved) return { approved: false };
+        const result = await runOnePhase(phase, ctx);
+        // A non-rejecter halt or runtime failure inside the loop must
+        // end the workflow, not just the iteration.
+        if (ctx.outcome) return (bail as unknown as Bail)(result);
+        if (!result.approved) return result; // rejecter rejected → dountil retries.
       }
       return { approved: true };
     },
@@ -172,7 +180,7 @@ function compile(workflow: Workflow, ctx: RunCtx) {
   return wf.commit();
 }
 
-async function runOnePhase(phase: Phase, ctx: RunCtx, bail: Bail): Promise<{ approved: boolean }> {
+async function runOnePhase(phase: Phase, ctx: RunCtx): Promise<{ approved: boolean }> {
   const iter = (ctx.iter.get(phase.id) ?? 0) + 1;
   ctx.iter.set(phase.id, iter);
 
@@ -199,7 +207,7 @@ async function runOnePhase(phase: Phase, ctx: RunCtx, bail: Bail): Promise<{ app
 
   if (phaseMeta.status === "failed") {
     ctx.outcome = "failed";
-    return bail({ approved: false });
+    return { approved: false };
   }
 
   const gate = ctx.services.gateFor(phase);
@@ -242,7 +250,7 @@ async function runOnePhase(phase: Phase, ctx: RunCtx, bail: Bail): Promise<{ app
 
   if (!phase.on_reject) {
     ctx.outcome = "halted";
-    return bail({ approved: false });
+    return { approved: false };
   }
   ctx.feedback = {
     fromPhase: phase.id,
