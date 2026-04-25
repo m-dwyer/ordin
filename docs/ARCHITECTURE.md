@@ -8,36 +8,45 @@ This document describes ordin as it exists today in `src/`. ordin is one impleme
 ┌──────────────────────────────────────────────────────────┐
 │  Client interfaces (CLI; future: HTTP, ACP, MCP, ...)    │
 │  — only use HarnessRuntime                               │
+│  — `cli/gate-prompters/` assembles the CLI gate resolver │
 ├──────────────────────────────────────────────────────────┤
-│  Orchestrator (sequential state machine, run store)      │
+│  Orchestrator (Engine + PhaseRunner + RunStore)          │
+│  — `Engine` interface; `MastraEngine` is today's impl    │
 │  — uses Domain and Runtimes via their interfaces         │
 ├──────────────────────────────────────────────────────────┤
 │  Domain (workflow, agent, skill, composer, artefact)     │
 │  — pure TypeScript; no orchestrator, no runtime          │
 ├──────────────────────────────────────────────────────────┤
-│  Runtimes (ClaudeCliRuntime; SDK runtime when triggered) │
+│  Runtimes (ClaudeCliRuntime, AiSdkRuntime; future SDK)   │
 │  — implement AgentRuntime; no orchestrator               │
+├──────────────────────────────────────────────────────────┤
+│  Gates (Gate / GatePrompter; HumanGate, AutoGate, File)  │
+│  — pure business logic; no UI imports                    │
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** the orchestrator imports from domain and runtimes. Domain and runtimes depend on neither each other nor the orchestrator. Clients only go through `HarnessRuntime` — they never reach around it into domain/orchestrator/runtimes directly. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
+**Dependency rule:** the orchestrator imports from domain, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
 
-Why these four boundaries: each is independently swappable because dependencies flow one direction.
+Why these five boundaries (the original four plus a now-pure gate layer): each is independently swappable because dependencies flow one direction.
 
-- Replace the orchestrator with LangGraph → replace one directory, domain/runtimes untouched.
+- Replace the engine (LangGraph, Temporal, custom) → new `Engine` impl alongside `MastraEngine`; domain/runtimes/gates untouched.
 - Add a new client (HTTP, MCP, ACP) → new adapter over `HarnessRuntime`; zero changes elsewhere.
-- Add a new runtime (SDK, Mastra, alternate CLI) → new adapter implementing `AgentRuntime`; zero changes elsewhere.
-- Add observability (Langfuse) → sidecar decorator wrapping the runtime; no core changes.
+- Add a new runtime (Claude Agent SDK, etc.) → new adapter implementing `AgentRuntime`; zero changes elsewhere.
+- Add a new gate prompter (web, Slack, Github approval) → new `GatePrompter` impl in the client layer; gate business logic stays the same.
+- Add observability (Langfuse) → sidecar decorator wrapping the runtime, or wire Mastra's built-in tracing inside `MastraEngine`.
 
 ## Key interfaces
 
 - **`HarnessRuntime`** (`src/runtime/harness.ts`) — the stable client seam. `startRun`, `listRuns`, `getRun`, `workflowDefinition`, `paths`. Every client adapter calls through this.
+- **`Engine`** (`src/orchestrator/engine.ts`) — the orchestration seam. `run(EngineRunInput): Promise<RunMeta>`. Today's only implementation is `MastraEngine` (`src/orchestrator/mastra/`), which compiles a `Workflow` into a `@mastra/core/workflows` workflow: each phase becomes a `createStep`; a single `on_reject` back-edge becomes a `.dountil()` loop step. Adding a `LangGraphEngine` later is a new file behind this same interface — no domain / runtime / gate changes.
+- **`PhaseRunner`** (`src/orchestrator/phase-runner.ts`) — single-phase executor. Composes the prompt, invokes the runtime, returns `{ meta, invokeResult }`. Does *not* call the gate; that's the engine's responsibility.
 - **`AgentRuntime`** (`src/runtimes/types.ts`) — how a phase gets executed. Today there are two:
-  - **`ClaudeCliRuntime`** (`src/runtimes/claude-cli.ts`) — production. Spawns `claude -p` against the Max plan. The subprocess contains the tool loop.
+  - **`ClaudeCliRuntime`** (`src/runtimes/claude-cli.ts`) — spawns `claude -p` (the only programmatic path under Max plan). Owns its own config schema (`bin`, `timeout_ms`, per-phase `fallback_model` / `max_turns`) via `fromConfig`. Wires `--setting-sources project`, `--exclude-dynamic-system-prompt-sections`, and `--include-hook-events` always; `--no-session-persistence` and `--include-partial-messages` per `InvokeRequest`. The subprocess contains the tool loop.
   - **`AiSdkRuntime`** (`src/runtimes/ai-sdk/`) — eval-only. Drives Vercel AI SDK (`ai` + `@ai-sdk/openai-compatible`) against any OpenAI-compatible provider URL (default: LiteLLM proxy at `localhost:4000`). Contains the tool loop in-process.
-  The orchestrator is indifferent — both implement the same interface.
-- **`Gate`** (`src/gates/types.ts`) — how a phase handoff is approved. Stage 1 has `ClackGate` (interactive), plus `FileGate` and `AutoGate` as signposts.
-- **`Composer`** (`src/domain/composer.ts`) — assembles phase prompts from agent + skills + artefact pointers. Returns a runtime-neutral `ComposedPrompt`.
+  Neither is a committed long-term production choice; both sit behind `AgentRuntime` so the engine swaps one for another without domain changes.
+- **`Gate`** (`src/gates/types.ts`) — how a phase handoff is approved. Pure business logic. `HumanGate` delegates to an injected `GatePrompter`; `AutoGate` and `FileGate` are self-contained.
+- **`GatePrompter`** (`src/gates/types.ts`) — collects a decision from a human reviewer. CLI ships `ClackGatePrompter` in `src/cli/gate-prompters/clack.ts`; future web/Slack/HTTP clients each ship their own. The harness default `gateForKind` returns `AutoGate` for every kind — safe headless behaviour, and prod callers always supply their own resolver.
+- **`Composer`** (`src/domain/composer.ts`) — assembles phase prompts from agent + skills + artefact pointers + structured `Feedback` (rejection from a prior phase). Returns a runtime-neutral `ComposedPrompt`.
 
 ## Event model
 
@@ -50,7 +59,7 @@ Two event types, split cleanly along the layer boundary:
   - Gate lifecycle: `gate.requested`, `gate.decided`
   - Agent observations: `agent.text`, `agent.thinking`, `agent.tool.use`, `agent.tool.result`, `agent.tokens`, `agent.error` — each tagged with `runId` + `phaseId`
 
-The orchestrator (`src/orchestrator/sequential.ts`) is the merging point. It calls `runtime.invoke({ onEvent })` with a closure that wraps each `RuntimeEvent` via `promoteRuntimeEvent()`, then emits its own lifecycle events into the same stream via its `onEvent` callback. Consumers (CLI today, future HTTP / MCP adapters) see one ordered stream; runtimes stay layer-pure.
+`PhaseRunner` (`src/orchestrator/phase-runner.ts`) is the merging point. It calls `runtime.invoke({ onEvent })` with a closure that wraps each `RuntimeEvent` via `promoteRuntimeEvent()`, then emits phase lifecycle events into the same stream. The engine adds gate and run lifecycle events. Consumers (CLI today, future HTTP / MCP adapters) see one ordered stream; runtimes stay layer-pure.
 
 The plan's `HarnessRuntime.subscribe(runId): AsyncIterable<RunEvent>` (deferred until a second client exists) consumes this same type.
 
@@ -69,8 +78,10 @@ So: LiteLLM is a **provider** that `AiSdkRuntime` points at by default — it is
 ## What Stage 1 intentionally doesn't have
 
 - No HTTP server, ACP server, or MCP server — Phase 2 / Phase 9 / conditional triggers.
-- No Langfuse, LangGraph — Phase 7 / Phase 11 triggers.
-- **LiteLLM is present** (Phase 4, eval-only). Production `ordin run` never touches it; `claude -p` on Max plan is the only path.
+- No Langfuse — Phase 7 trigger. (Mastra's built-in tracing is reachable through `MastraEngine` if needed.)
+- No `LangGraphEngine` — Phase 11 trigger. The `Engine` interface exists; adding LangGraph is a new file alongside `MastraEngine`. Concrete needs that would justify it: XL-tier parallel phases or mid-process resume.
+- No `ordin continue` (mid-process resume) — Mastra supports it natively via storage adapters; we'd add `@mastra/libsql` (or similar) when it's wanted. Session ids are already captured by `ClaudeCliRuntime`.
+- **LiteLLM is present** (Phase 4, eval-only). Production `ordin run` never touches it; `claude -p` on Max plan is the only programmatic path under that subscription.
 - No `ordin install` / global symlinks — skills load per-run via `--plugin-dir` against the ordin repo itself (which is a Claude Code plugin, see `.claude-plugin/plugin.json`).
 
 ## Module graph (live)

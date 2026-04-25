@@ -136,6 +136,10 @@ Production `ordin run` never touches LiteLLM or Docker. These are eval-only.
 
 ## Status
 
-**Phase 1 complete.** `ClaudeCliRuntime` drives production runs against Max plan.
+**Phase 1 complete.** `ClaudeCliRuntime` drives runs against Max plan via `claude -p`. CLI wrapper hardened with `--setting-sources project`, `--exclude-dynamic-system-prompt-sections`, `--include-hook-events`, and per-phase `--fallback-model` / `--max-turns`.
 
-**Phase 4 (local eval suite) complete.** `AiSdkRuntime` (Vercel AI SDK) + Dockerised LiteLLM proxy + Vitest-shaped `.eval.ts` fixtures with autoevals LLM-as-judge rubrics. First fixture (plan: add input validation) passes 5/5 locally via qwen3:8b. HTTP adapter, Langfuse observability, multi-project mode, LangGraph swap, and per-phase ingestion are conditional phases gated on their plan-declared triggers.
+**Phase 4 (local eval suite) complete.** `AiSdkRuntime` (Vercel AI SDK) + Dockerised LiteLLM proxy + Vitest-shaped `.eval.ts` fixtures with autoevals LLM-as-judge rubrics. First fixture (plan: add input validation) passes 5/5 locally via qwen3:8b.
+
+**Orchestrator refactor (post-Phase 4) complete.** `Engine` interface + `MastraEngine` (backed by `@mastra/core/workflows`) replace the custom sequential state machine. Gates are pure business logic; the CLI's clack prompter lives in `src/cli/gate-prompters/`. Runtime-specific config out of the domain. Per-phase artefact `inputs` / `outputs` declared in `workflows/<name>.yaml` with `{slug}` placeholders. See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+
+HTTP adapter, Langfuse observability, multi-project mode, `LangGraphEngine`, mid-process resume, and per-phase ingestion are conditional phases gated on their plan-declared triggers.

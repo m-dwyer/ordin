@@ -10,24 +10,28 @@ Conventions for agents (and humans) working **on** the ordin repo itself. ordin 
 - **Package manager:** pnpm (pinned in `package.json` > `packageManager`).
 - **Linter / formatter:** Biome v2 — 2-space indent, double quotes, 100 col. Run `pnpm lint`/`pnpm format`.
 - **Tests:** Vitest v4.
-- **Deps:** commander (CLI), @clack/prompts (gates), yaml (config), gray-matter (frontmatter), zod (schemas), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals).
+- **Deps:** commander (CLI), @clack/prompts (CLI gate prompter), yaml (config), gray-matter (frontmatter), zod (schemas), @mastra/core (workflow engine), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals).
 
 ## Architecture — the four load-bearing separations
 
 ```
 cli/           client interface — only uses HarnessRuntime
+                gate-prompters/  CLI-side prompters (clack); CLI assembles its own gate resolver
 runtime/       HarnessRuntime implementation
-orchestrator/  sequential state machine + run-store
-gates/         Gate interface + Clack/File/Auto
-runtimes/      AgentRuntime interface + ClaudeCliRuntime (prod) + ai-sdk/ (eval)
+orchestrator/  Engine interface + PhaseRunner + RunStore
+                mastra/   MastraEngine — compiles Workflow → Mastra workflow
+gates/         Gate / GatePrompter interfaces + HumanGate / FileGate / AutoGate (pure business logic)
+runtimes/      AgentRuntime interface + ClaudeCliRuntime + ai-sdk/
 domain/        pure types + loaders + composer (no orchestrator, no runtime)
 ```
 
-**Dependency rule:** `orchestrator` imports from `domain` and `runtimes`. `domain` and `runtimes` depend on neither each other nor the orchestrator. `cli` only goes through `HarnessRuntime`. Enforced via `pnpm deps:check` (dependency-cruiser) — run locally before commits; no CI enforcement yet.
+**Dependency rule:** `orchestrator` imports from `domain` and `runtimes`. `domain` and `runtimes` depend on neither each other nor the orchestrator. `cli` only goes through `HarnessRuntime`. Targeted exception: `cli/gate-prompters/` legitimately imports from `gates/` and `domain/workflow.ts` to assemble the CLI's gate resolver. Enforced via `pnpm deps:check` (dependency-cruiser) — run locally before commits; no CI enforcement yet.
+
+**Engine seam.** `Engine` (in `src/orchestrator/engine.ts`) is the swap interface. `MastraEngine` is today's only implementation, backed by `@mastra/core/workflows`. A future `LangGraphEngine` or any other implementation lives behind the same interface — domain, runtimes, gates, composer, CLI, and YAML content stay unchanged.
 
 ## Style
 
-- Classes for loaders, adapters, and services (WorkflowLoader, ClackGate, ClaudeCliRuntime, etc.).
+- Classes for loaders, adapters, and services (WorkflowLoader, HumanGate, ClaudeCliRuntime, MastraEngine, etc.).
 - Plain `readonly` interfaces for data that flows between layers.
 - Named exports only — no default exports.
 - No `.ts` or `.js` extensions on relative imports (Bundler resolution handles it).
@@ -47,7 +51,7 @@ domain/        pure types + loaders + composer (no orchestrator, no runtime)
 | Skills (hand-authored) | `skills/<name>/SKILL.md` |
 | Plugin manifest (Claude-side) | `.claude-plugin/plugin.json` — loaded via `--plugin-dir` per run |
 | Workflows | `workflows/*.yaml` |
-| Per-phase defaults | `ordin.config.yaml` |
+| Per-phase defaults | `ordin.config.yaml` (top-level harness config; `runtimes.<name>.*` is opaque to the domain — each runtime owns its own schema via `fromConfig`) |
 | Projects (shared / local) | `projects.yaml` / `projects.local.yaml` |
 | Run artefacts | `~/.ordin/runs/<run-id>/` (outside repo) |
 | Eval fixtures + runner | `evals/` (pack-local; Phase 4) |
@@ -81,12 +85,12 @@ LiteLLM is a provider, not a runtime. Name runtime modules after the API shape o
 
 The plan commits to deferring infrastructure until concrete triggers fire. Avoid adding these proactively:
 
-- Langfuse / OpenTelemetry / custom tracing — wait until the Phase 7 trigger.
+- Langfuse / OpenTelemetry / custom tracing — wait until the Phase 7 trigger. (Mastra's built-in observability hooks are available behind the engine but not wired.)
 - LiteLLM *for production routing* — Phase 8 trigger. (Eval-only LiteLLM is already present per Phase 4 — don't touch it from production paths.)
 - HTTP server — Phase 2 trigger.
 - ACP server — Phase 9 trigger.
-- LangGraph or similar orchestrator — Phase 11 trigger.
-- Additional runtimes (Claude Agent SDK, Mastra) — Phase 10 trigger.
-- Per-phase MCP ingestion / Confluence pulls / pinned external sources — Phase 14 trigger.
+- LangGraph engine implementation — Phase 11 trigger. The `Engine` seam exists; adding `LangGraphEngine` is a new file alongside `MastraEngine`. Don't build until concrete need (XL-tier parallel phases, mid-process resume).
+- Additional agent runtimes (Claude Agent SDK, etc.) — Phase 10 trigger; blocked on moving off Max plan billing.
+- Per-phase MCP ingestion / Confluence pulls / pinned external sources — Phase 14 trigger. (Mastra workflow steps natively support MCP servers; ordin doesn't wire them yet.)
 
 If in doubt, re-read the trigger for that phase in [`docs/harness-plan.md`](./docs/harness-plan.md) and confirm it has actually fired.

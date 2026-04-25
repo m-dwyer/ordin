@@ -1,6 +1,6 @@
 # Agentic Harness — Plan
 
-> **Implementation status (2026-04-22):** Phase 1 is complete and shipped as the `ordin` CLI. Phase 4 (local eval suite) in progress. See [Part 8 → Phase 1 → Implementation notes](#phase-1--core-end-to-end-weeks-1–2---completed-2026-04-22) for variances. For the current codebase, see [`../README.md`](../README.md), [`./ARCHITECTURE.md`](./ARCHITECTURE.md), and [`../CLAUDE.md`](../CLAUDE.md).
+> **Implementation status (2026-04-25):** Phase 1 complete; Phase 4 (local eval suite) complete. Orchestrator refactored: an `Engine` seam now sits between `HarnessRuntime` and the workflow runtime, with `MastraEngine` (backed by `@mastra/core/workflows`) as today's only implementation. Phase 11's "LangGraph swap" is now a small new-file change behind that seam. Gate layer is pure business logic; the CLI's clack prompter lives in `src/cli/gate-prompters/`. Runtime-specific config (claude-cli bin, fallback model, max turns) is owned by each runtime's own schema, not the domain. Per-phase artefact `inputs` / `outputs` are declared in `workflows/<name>.yaml` with `{slug}` placeholders. For the current codebase, see [`../README.md`](../README.md), [`./ARCHITECTURE.md`](./ARCHITECTURE.md), and [`../CLAUDE.md`](../CLAUDE.md).
 
 A personal-first, team-extensible harness for AI-assisted software delivery with Plan → Build → Review phases, context isolation, approval gates, and instrumentation.
 
@@ -69,7 +69,7 @@ This is the architectural commitment that makes everything else cheap to evolve:
 │  Client interfaces (CLI; future: HTTP, ACP, IDE plugin)  │
 │  — call HarnessRuntime                                   │
 ├──────────────────────────────────────────────────────────┤
-│  Orchestrator (sequential state machine, gates)          │
+│  Orchestrator (Engine seam; MastraEngine; PhaseRunner)   │
 │  — uses Domain and Runtimes                              │
 ├──────────────────────────────────────────────────────────┤
 │  Domain (workflow, agent, skill, composer, artefact)     │
@@ -85,10 +85,11 @@ This is the architectural commitment that makes everything else cheap to evolve:
 In Stage 1 the separation is *convention* — directory structure + `AgentRuntime` / `HarnessRuntime` / `Gate` interfaces as architectural signposts for future-you and future-teammates. A `dependency-cruiser.config.cjs` exists and can be invoked via `pnpm deps:check` locally, but there's no CI enforcement yet (no CI). Add enforcement in Stage 2 when teammates adopt and the layers start getting violated.
 
 This is what makes later swaps localised:
-- Replacing the orchestrator with LangGraph → replace one directory (~300 LOC)
+- Replacing the engine (e.g. LangGraph) → new `Engine` impl alongside `MastraEngine`; domain / runtimes / gates / CLI / YAML untouched
 - Adding a new client interface → new adapter, zero changes elsewhere
-- Adding a new agent runtime (Mastra, OpenCode wrap, SDK) → new adapter, zero changes elsewhere
-- Adding Langfuse observability → sidecar decorator wrapping existing runtime calls
+- Adding a new agent runtime (Claude Agent SDK, OpenCode wrap, Mastra Agent) → new adapter implementing `AgentRuntime`, zero changes elsewhere
+- Adding a new gate prompter (web, Slack, GitHub-checks) → new `GatePrompter` impl in the client layer; gate business logic stays the same
+- Adding Langfuse observability → sidecar decorator wrapping existing runtime calls, or wire Mastra's tracing inside `MastraEngine`
 
 ### The harness as prompt composer
 
@@ -382,7 +383,7 @@ The harness is useless if a one-line bugfix triggers a 4-phase ceremony, and equ
 | **L — Complex** | Cross-module feature, migration | Explore? → Plan → Build → Review, iteration | Full subagents, iteration allowed | Opus Plan/Review, Sonnet Build |
 | **XL — Initiative** *(deferred, typically requires LangGraph)* | Multi-week, multi-RFC | Full pipeline, Plan decomposes to child M-tier runs | Parallel Build agents | Premium across |
 
-XL-tier is genuinely hard on sequential orchestrators today. Treat as aspirational until the orchestrator swap in Phase 11 (see Implementation). In the meantime, decompose XL manually into a sequence of L-tier runs.
+XL-tier is genuinely hard on a single-back-edge engine. Treat as aspirational until Phase 11 (richer Mastra wiring or a new `LangGraphEngine` behind the existing `Engine` seam). In the meantime, decompose XL manually into a sequence of L-tier runs.
 
 ### Triage — the cheapest phase
 
@@ -568,7 +569,7 @@ Phases 1, 4, 5, 6 are the Stage 1 + Stage 2 mainline. Phases 2, 3, 7+ are condit
 - pnpm/TS project with Biome (spaces) + Vitest + zod
 - `src/domain/` — workflow loader, agent loader, skill loader, composer, artefact manager, project registry
 - `src/runtimes/` — `ClaudeCliRuntime` (sole Stage 1 runtime; `--append-system-prompt`, `--output-format stream-json`, `--allowed-tools` per phase, `--model` from config, CWD = target repo)
-- `src/orchestrator/` — sequential state machine with Review→Build back-edge; blocking foreground execution (Option A)
+- `src/orchestrator/` — `Engine` interface + `PhaseRunner` + `RunStore`; default impl `MastraEngine` (in `src/orchestrator/mastra/`) compiles the workflow into a `@mastra/core/workflows` workflow with Review→Build back-edge as a `.dountil()` loop; blocking foreground execution (Option A)
 - `src/gates/` — `ClackGate` opens artefact in `$EDITOR`, then approve/reject/edit-and-approve. `FileGate` and `AutoGate` optional.
 - `src/runtime/` — `HarnessRuntime` implementation (library surface — signpost interface even though CLI is the only Stage 1 client)
 - `src/cli/` — `plan`, `build`, `review`, `run`, `status`, `runs`, `retro`, `doctor`, `install`. `--tier S|M|L` flag on phase commands. No `harness continue` (deferred with state-restore).
@@ -770,20 +771,25 @@ The phases below are additive and only built when the named trigger fires. Don't
 - One phase runs end-to-end on `SdkRuntime` against a non-Anthropic model
 - No Claude CLI dependency in that path
 
-### Phase 11 — LangGraph orchestrator swap
+### Phase 11 — `LangGraphEngine` (or richer Mastra config)
 
-**Trigger.** XL-tier work needs parallel Build agents; or runs routinely fail mid-phase and manual restart is painful; or orchestration has outgrown sequential + one back-edge.
+**Trigger.** XL-tier work needs parallel Build agents; or `ordin continue` (mid-process resume) becomes a real pain point; or `MastraEngine`'s topology constraints (single back-edge per workflow) bite.
 
-**Deliverables:**
-- Replace `src/orchestrator/` with LangGraph graph builder that reads same workflow YAML
-- Domain, runtimes, gates, artefact management — unchanged
-- Checkpointing configured; runs resumable
+The `Engine` seam already exists. Two concrete paths once a trigger fires:
 
-**Note.** This is the payoff of the four-layer separation: deletion + new module; zero changes to domain or runtimes. Expected ~1–2 days of work.
+1. **Wire more of Mastra into `MastraEngine`** — Mastra natively supports parallel steps (`.parallel()`), suspend/resume (via `@mastra/libsql` storage), nested branches, and richer condition primitives. For most triggers this is the cheaper path: edit `src/orchestrator/mastra/index.ts` + add a storage dep.
+2. **Add `LangGraphEngine`** — new file `src/orchestrator/langgraph/index.ts` implementing `Engine`, with its own compiler turning `Workflow` into a `StateGraph`. Domain / runtimes / gates / CLI / YAML untouched. Switch via `ORDIN_ENGINE` env or constructor option.
+
+**Deliverables (depending on path chosen):**
+- `MastraEngine` extended for parallel phases / nested loops / mid-process resume; storage adapter wired.
+- *Or* `LangGraphEngine` implementing the same `Engine` interface.
+- Per-phase soft-iteration cap and parallel topology supported in `Workflow`/YAML where the engine needs it.
+
+**Note.** The structural refactor that landed before this phase moved the heavy lifting forward — adding a second engine implementation is a single new file, not a directory replacement.
 
 **Exit criteria:**
-- Parallel-phase XL-tier workflow runs end-to-end
-- Mid-phase crash recoverable from last checkpoint without re-running prior phases
+- Parallel-phase XL-tier workflow runs end-to-end.
+- Mid-process crash recoverable without re-running prior phases.
 
 ### Phase 12 — Standards ingestion
 
