@@ -90,6 +90,15 @@ model_list:
       model: ollama_chat/qwen3-coder:30b
       api_base: http://host.docker.internal:11434
 
+  # Catch-all: any model not explicitly aliased above passes through to
+  # Ollama by tag. Lets `ollama pull <tag> && pnpm ordin run --model <tag>`
+  # just work — no config edit, no proxy bounce. The explicit aliases
+  # above still take precedence for canonical names.
+  - model_name: "*"
+    litellm_params:
+      model: ollama_chat/*
+      api_base: http://host.docker.internal:11434
+
   # Alternatives — replace the Ollama entries above with these to swap
   # backends. The `model_name` field is the alias the harness references
   # (matching `ordin.config.yaml`); `litellm_params.model` is the real
