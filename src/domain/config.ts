@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 /**
- * ordin.config.yaml — per-phase defaults, tier overrides, run-store
+ * ordin.config.yaml — global defaults, tier overrides, run-store
  * location, and opaque runtime configs.
  *
  * Design invariant: the domain stays provider-neutral. Runtime-specific
@@ -14,28 +14,15 @@ import { z } from "zod";
  * "a runtime named X has some opaque config" — no runtime names or
  * keys baked into the schema.
  *
- * Precedence for each resolved setting: agent frontmatter > tier
- * override > phase default. Phase defaults encode the L-tier / heaviest
- * profile.
+ * Workflow-specific phase defaults live in workflows/*.yaml. This file
+ * deliberately knows nothing about workflow phase ids.
  */
-export const PhaseDefaultsSchema = z.object({
-  model: z.string().min(1),
-  allowed_tools: z.array(z.string()).default([]),
-});
-export type PhaseDefaultsRaw = z.infer<typeof PhaseDefaultsSchema>;
-
 export const RunStoreSchema = z.object({
   base_dir: z.string().default("~/.ordin/runs"),
 });
 export type RunStoreRaw = z.infer<typeof RunStoreSchema>;
 
 const DEFAULT_RUN_STORE: RunStoreRaw = { base_dir: "~/.ordin/runs" };
-
-export const BudgetsConfigSchema = z.record(
-  z.string(),
-  z.object({ soft_tokens: z.number().int().positive().optional() }),
-);
-export type BudgetsConfigRaw = z.infer<typeof BudgetsConfigSchema>;
 
 export const TierKeySchema = z.enum(["S", "M", "L"]);
 export type TierKey = z.infer<typeof TierKeySchema>;
@@ -78,57 +65,25 @@ export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
 
 export const HarnessConfigSchema = z.object({
   run_store: RunStoreSchema.default(DEFAULT_RUN_STORE),
-  default_runtime: z.string().default("claude-cli"),
+  default_runtime: z.string().default("ai-sdk"),
+  default_model: z.string().min(1).default("qwen3-8b"),
+  allowed_tools: z.array(z.string()).default([]),
   runtimes: RuntimesConfigSchema,
-  phases: z.record(z.string(), PhaseDefaultsSchema),
   tiers: TiersSchema,
-  budgets: BudgetsConfigSchema.default({}),
 });
-
-export interface ResolvedPhaseDefaults {
-  readonly model: string;
-  readonly allowedTools: readonly string[];
-  readonly softTokenBudget?: number;
-}
 
 export class HarnessConfig {
   constructor(
     readonly runStore: RunStoreRaw,
     readonly defaultRuntime: string,
+    readonly defaultModel: string,
+    readonly allowedTools: readonly string[],
     readonly runtimes: RuntimesConfigRaw,
-    readonly phases: Readonly<Record<string, PhaseDefaultsRaw>>,
     readonly tiers: TiersRaw,
-    readonly budgets: Readonly<Record<string, { soft_tokens?: number }>>,
   ) {}
 
-  phaseDefaults(phaseId: string): PhaseDefaultsRaw {
-    const defaults = this.phases[phaseId];
-    if (!defaults) {
-      throw new Error(
-        `No defaults for phase "${phaseId}" in ordin.config.yaml (set \`phases.${phaseId}.model\` and \`phases.${phaseId}.allowed_tools\`)`,
-      );
-    }
-    return defaults;
-  }
-
-  /**
-   * Resolve per-phase defaults for a given tier. Precedence per field:
-   *   tier override > phase default. Agent frontmatter (if any) wins
-   *   over both at composer time.
-   */
-  resolveDefaults(phaseId: string, tier: TierKey): ResolvedPhaseDefaults {
-    const phase = this.phaseDefaults(phaseId);
-    const tierProfile = this.tiers[tier];
-    const softTokenBudget = this.softTokenBudget(phaseId);
-    return {
-      model: tierProfile.model ?? phase.model,
-      allowedTools: phase.allowed_tools,
-      ...(softTokenBudget !== undefined ? { softTokenBudget } : {}),
-    };
-  }
-
-  softTokenBudget(phaseId: string): number | undefined {
-    return this.budgets[phaseId]?.soft_tokens;
+  tierModel(tier: TierKey): string | undefined {
+    return this.tiers[tier].model;
   }
 
   /**
@@ -158,10 +113,10 @@ export class HarnessConfig {
     return new HarnessConfig(
       result.data.run_store,
       result.data.default_runtime,
+      result.data.default_model,
+      result.data.allowed_tools,
       result.data.runtimes,
-      result.data.phases,
       result.data.tiers,
-      result.data.budgets,
     );
   }
 }

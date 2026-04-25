@@ -1,27 +1,39 @@
 # ordin configuration — harness-level defaults + opaque per-runtime config.
 #
 # Layering:
-#   run_store / default_runtime / phases / tiers / budgets  — harness-level;
-#     schema lives in src/domain/config.ts.
-#   runtimes.<name>.*                                         — opaque to
-#     the domain; each runtime validates its own slice via its `fromConfig`.
+#   run_store / default_runtime / default_model / allowed_tools / tiers
+#     are harness-level; schema lives in src/domain/config.ts.
+#   runtimes.<name>.* is opaque to the domain; each runtime validates its
+#     own slice via its `fromConfig`.
+#   Workflow-specific phase config lives in workflows/*.yaml.
 
 # Where per-run metadata and transcripts are persisted.
 run_store:
   base_dir: ~/.ordin/runs
 
 # Which runtime entry to use when a workflow phase doesn't specify one.
-default_runtime: claude-cli
+default_runtime: ai-sdk
+
+# Final fallback when neither the workflow nor phase declares a model/tools.
+default_model: qwen3-8b
+allowed_tools: []
 
 # Per-runtime configs. Keys here match the `runtime:` field in
 # workflows/<name>.yaml phases. Schemas validated by each runtime.
 runtimes:
+  ai-sdk:
+    # Local OpenAI-compatible provider. The default repo setup points at
+    # LiteLLM, whose config routes these aliases to Ollama models.
+    base_url: http://localhost:4000
+    api_key_env: LITELLM_MASTER_KEY
+    max_steps: 40
+
   claude-cli:
     # Path to the `claude` binary. Empty = use whatever's on PATH.
     bin: claude
     # Per-phase Claude-specific overrides. Domain-neutral fields (model,
-    # allowed_tools) live below in `phases`; these are the Claude CLI
-    # flags that have no cross-runtime equivalent today.
+    # allowed_tools) live in workflow YAML; these are the Claude CLI flags
+    # that have no cross-runtime equivalent today.
     phases:
       plan:
         fallback_model: claude-sonnet-4-6
@@ -33,60 +45,17 @@ runtimes:
         fallback_model: claude-sonnet-4-6
         max_turns: 40
 
-phases:
-  plan:
-    # Opus default per plan — Plan is reasoning-heavy.
-    model: claude-opus-4-7
-    allowed_tools:
-      - Read
-      - Grep
-      - Glob
-      - Write(docs/rfcs/*)
-
-  build:
-    # Sonnet default per plan — Build is higher-volume, tool-heavy.
-    model: claude-sonnet-4-6
-    allowed_tools:
-      - Read
-      - Write
-      - Edit
-      - Grep
-      - Glob
-      - Bash
-
-  review:
-    # Opus default per plan — Review is adversarial reasoning.
-    model: claude-opus-4-7
-    allowed_tools:
-      - Read
-      - Grep
-      - Glob
-      - Write(reviews/*)
-      - Bash(git diff*)
-      - Bash(git log*)
-      - Bash(git show*)
-
 # Per-tier model overrides. Only the neutral `model` knob is represented
 # here — runtime-specific knobs (Claude's `--effort`, for example) are
-# derived from the tier inside the runtime itself. Precedence:
-#   agent frontmatter > tier.model > phases.<phase>.model
+# derived from the tier inside the runtime itself. Workflow/phase model
+# declarations win over these tier fallbacks.
 tiers:
   S:
-    # S-tier: trivial work. Prefer the cheapest/fastest model across all phases.
-    model: claude-sonnet-4-6
+    # S-tier: trivial work. Prefer the cheapest/fastest local model.
+    model: qwen3-4b
   M:
-    # M-tier: balanced. Use Sonnet across all phases.
-    model: claude-sonnet-4-6
+    # M-tier: balanced local model.
+    model: qwen3-8b
   L: {}
     # L-tier: heaviest profile. Empty object means per-phase defaults win
-    # (Opus for Plan/Review, Sonnet for Build).
-
-# Soft token budgets (warn only; hard ceiling deferred per plan Phase 1).
-# Used by the composer to emit retro warnings.
-budgets:
-  plan:
-    soft_tokens: 40000
-  build:
-    soft_tokens: 120000
-  review:
-    soft_tokens: 40000
+    # (currently qwen3-8b for all default workflow phases).

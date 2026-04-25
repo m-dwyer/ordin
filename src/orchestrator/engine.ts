@@ -33,6 +33,7 @@ export interface EngineServices {
 }
 
 export interface EngineRunInput {
+  readonly workflow: WorkflowManifest;
   readonly task: string;
   readonly slug: string;
   readonly workspaceRoot: string;

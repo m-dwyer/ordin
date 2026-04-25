@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isAbsolute, resolve } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, text } from "@clack/prompts";
 import type { Phase } from "../../domain/workflow";
 import { AutoGate } from "../../gates/auto";
@@ -71,13 +72,13 @@ export class ClackGatePrompter implements GatePrompter {
         case "view": {
           const artefact = await this.chooseArtefact(ctx.artefacts, "View which artefact?");
           if (!artefact) continue;
-          await this.openInPager(artefact.path);
+          await this.openInPager(resolveArtefactPath(artefact.path, ctx.cwd));
           break;
         }
         case "edit": {
           const artefact = await this.chooseArtefact(ctx.artefacts, "Edit which artefact?");
           if (!artefact) continue;
-          await this.openInEditor(artefact.path);
+          await this.openInEditor(resolveArtefactPath(artefact.path, ctx.cwd));
           const continueEdit = await confirm({
             message: `Saved edits to ${artefact.label}. Ready to re-prompt?`,
           });
@@ -142,6 +143,16 @@ export class ClackGatePrompter implements GatePrompter {
       });
     });
   }
+}
+
+/**
+ * Artefact paths come in relative to the workspace root (the target
+ * repo); the prompter spawns the editor/pager in the harness process's
+ * cwd, which is usually a different directory entirely. Resolve to an
+ * absolute path so $EDITOR / $PAGER find the file regardless.
+ */
+function resolveArtefactPath(path: string, cwd: string): string {
+  return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 /**

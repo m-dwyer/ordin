@@ -17,6 +17,7 @@ import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
 import { PhaseRunner } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
+import { AiSdkRuntime } from "../runtimes/ai-sdk";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
 import type { AgentRuntime } from "../runtimes/types";
 
@@ -110,6 +111,7 @@ export class HarnessRuntime {
       .compile(this.workflowForRun(state.workflow, input));
 
     const runInput: EngineRunInput = {
+      workflow: compiledWorkflow.manifest,
       task: input.task,
       slug,
       workspaceRoot,
@@ -199,6 +201,12 @@ export class HarnessRuntime {
     return (
       this.runtimesOverride ??
       new Map<string, AgentRuntime>([
+        [
+          "ai-sdk",
+          AiSdkRuntime.fromConfig(config.runtimeConfig("ai-sdk"), {
+            runsDir: config.runStoreDir(),
+          }),
+        ],
         [
           "claude-cli",
           ClaudeCliRuntime.fromConfig(config.runtimeConfig("claude-cli"), {

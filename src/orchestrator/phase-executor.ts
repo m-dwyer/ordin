@@ -39,6 +39,7 @@ export async function executePhase(
     phase,
     context: {
       runId: ctx.runId,
+      workflow: ctx.input.workflow,
       runDir,
       workspaceRoot: ctx.input.workspaceRoot,
       task: ctx.input.task,

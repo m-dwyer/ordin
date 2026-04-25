@@ -1,5 +1,5 @@
 import type { Agent } from "./agent";
-import type { Phase } from "./workflow";
+import type { Phase, ResolvedPromptDefaults } from "./workflow";
 
 /**
  * Output of the composer. A runtime-neutral representation of what a
@@ -23,16 +23,6 @@ export interface ComposedPrompt {
 }
 
 /**
- * Per-phase defaults from ordin.config.yaml. Agent frontmatter wins
- * where specified, then workflow phase.budgets, then phase defaults.
- */
-export interface PhaseDefaults {
-  readonly model: string;
-  readonly allowedTools: readonly string[];
-  readonly softTokenBudget?: number;
-}
-
-/**
  * Structured feedback from a prior-phase rejection. Engines surface
  * this when re-running a phase after a back-edge (e.g. Review → Build).
  * Composer is responsible for shaping the prompt section — engines
@@ -47,7 +37,7 @@ export interface Feedback {
 export interface ComposeInput {
   readonly phase: Phase;
   readonly agent: Agent;
-  readonly defaults: PhaseDefaults;
+  readonly defaults: ResolvedPromptDefaults;
   readonly task: string;
   readonly cwd: string;
   readonly tier: "S" | "M" | "L";

@@ -8,8 +8,15 @@ export function parseTier(value: string): "S" | "M" | "L" {
   throw new InvalidArgumentError("Tier must be S, M, or L");
 }
 
-export function ordin(): HarnessRuntime {
-  return new HarnessRuntime({ gateForKind: clackGateResolver() });
+export interface OrdinCliOptions {
+  readonly workflow?: string;
+}
+
+export function ordin(opts: OrdinCliOptions = {}): HarnessRuntime {
+  return new HarnessRuntime({
+    ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    gateForKind: clackGateResolver(),
+  });
 }
 
 /**

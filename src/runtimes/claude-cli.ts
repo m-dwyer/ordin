@@ -269,7 +269,9 @@ export class ClaudeCliRuntime implements AgentRuntime {
       args.push("--plugin-dir", dir);
     }
     args.push("--effort", ClaudeCliRuntime.effortForTier(prompt.tier));
-    if (override.fallback_model) args.push("--fallback-model", override.fallback_model);
+    if (override.fallback_model && override.fallback_model !== prompt.model) {
+      args.push("--fallback-model", override.fallback_model);
+    }
     if (override.max_turns !== undefined) args.push("--max-turns", String(override.max_turns));
     if (req.ephemeralSession) args.push("--no-session-persistence");
     if (req.streamPartial) args.push("--include-partial-messages");

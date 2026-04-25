@@ -24,6 +24,13 @@ export const BudgetsSchema = z.object({
 });
 export type Budgets = z.infer<typeof BudgetsSchema>;
 
+export const PromptDefaultsSchema = z.object({
+  model: z.string().min(1).optional(),
+  allowed_tools: z.array(z.string()).optional(),
+  budgets: BudgetsSchema.optional(),
+});
+export type PromptDefaults = z.infer<typeof PromptDefaultsSchema>;
+
 export const ArtefactContractSchema = z.object({
   label: z.string().min(1),
   path: z.string().min(1),
@@ -34,8 +41,10 @@ export type ArtefactContract = z.infer<typeof ArtefactContractSchema>;
 export const PhaseSchema = z.object({
   id: z.string().min(1),
   agent: z.string().min(1),
-  runtime: z.string().min(1),
+  runtime: z.string().min(1).optional(),
   gate: GateKindSchema,
+  model: z.string().min(1).optional(),
+  allowed_tools: z.array(z.string()).optional(),
   fresh_context: z.boolean().optional(),
   on_reject: OnRejectSchema.optional(),
   budgets: BudgetsSchema.optional(),
@@ -57,6 +66,10 @@ export const WorkflowManifestSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   version: z.union([z.string(), z.number()]).transform((v) => String(v)),
+  runtime: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  allowed_tools: z.array(z.string()).optional(),
+  budgets: BudgetsSchema.optional(),
   phases: z.array(PhaseSchema).min(1),
 });
 export const WorkflowSchema = WorkflowManifestSchema;
@@ -66,12 +79,20 @@ export class WorkflowManifest {
   readonly name: string;
   readonly description?: string;
   readonly version: string;
+  readonly runtime?: string;
+  readonly model?: string;
+  readonly allowedTools?: readonly string[];
+  readonly budgets?: Budgets;
   readonly phases: readonly Phase[];
 
   constructor(shape: WorkflowManifestShape) {
     this.name = shape.name;
     this.description = shape.description;
     this.version = shape.version;
+    this.runtime = shape.runtime;
+    this.model = shape.model;
+    this.allowedTools = shape.allowed_tools;
+    this.budgets = shape.budgets;
     this.phases = shape.phases;
   }
 
@@ -136,9 +157,42 @@ export class WorkflowManifest {
       name: this.name,
       ...(this.description ? { description: this.description } : {}),
       version: this.version,
+      ...(this.runtime ? { runtime: this.runtime } : {}),
+      ...(this.model ? { model: this.model } : {}),
+      ...(this.allowedTools ? { allowed_tools: [...this.allowedTools] } : {}),
+      ...(this.budgets ? { budgets: this.budgets } : {}),
       phases,
     });
   }
+}
+
+export function resolvePhaseRuntime(
+  phase: Phase,
+  workflow: WorkflowManifest,
+  defaultRuntime: string,
+): string {
+  return phase.runtime ?? workflow.runtime ?? defaultRuntime;
+}
+
+export interface ResolvedPromptDefaults {
+  readonly model: string;
+  readonly allowedTools: readonly string[];
+  readonly softTokenBudget?: number;
+}
+
+export function resolvePromptDefaults(
+  phase: Phase,
+  workflow: WorkflowManifest,
+  tierModel: string | undefined,
+  globalModel: string,
+  globalAllowedTools: readonly string[],
+): ResolvedPromptDefaults {
+  const softTokenBudget = phase.budgets?.soft_tokens ?? workflow.budgets?.soft_tokens;
+  return {
+    model: phase.model ?? workflow.model ?? tierModel ?? globalModel,
+    allowedTools: phase.allowed_tools ?? workflow.allowedTools ?? globalAllowedTools,
+    ...(softTokenBudget !== undefined ? { softTokenBudget } : {}),
+  };
 }
 
 export type Workflow = WorkflowManifest;

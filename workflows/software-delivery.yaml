@@ -8,6 +8,8 @@
 
 name: software-delivery
 version: 1
+runtime: ai-sdk
+model: qwen3-8b
 description: >
   Personal-first software delivery pipeline: turn a problem statement into a
   reviewable RFC, then a PR-ready branch, then an independent review.
@@ -15,8 +17,14 @@ description: >
 phases:
   - id: plan
     agent: planner
-    runtime: claude-cli
     gate: human
+    allowed_tools:
+      - Read
+      - Grep
+      - Glob
+      - Write(docs/rfcs/*)
+    budgets:
+      soft_tokens: 40000
     # Plan runs in fresh context by definition (it's the first phase).
     fresh_context: true
     outputs:
@@ -26,8 +34,16 @@ phases:
 
   - id: build
     agent: build-local
-    runtime: claude-cli
     gate: human
+    allowed_tools:
+      - Read
+      - Write
+      - Edit
+      - Grep
+      - Glob
+      - Bash
+    budgets:
+      soft_tokens: 120000
     # Build may inherit reviewer findings through the artefact on disk; no
     # need for fresh context here — but the subprocess is always fresh, so
     # this is documentation of intent, not a runtime toggle.
@@ -43,8 +59,17 @@ phases:
 
   - id: review
     agent: reviewer
-    runtime: claude-cli
     gate: human
+    allowed_tools:
+      - Read
+      - Grep
+      - Glob
+      - Write(reviews/*)
+      - Bash(git diff*)
+      - Bash(git log*)
+      - Bash(git show*)
+    budgets:
+      soft_tokens: 40000
     # Fresh context is load-bearing for Review: independence catches
     # "works but isn't what we asked for".
     fresh_context: true

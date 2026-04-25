@@ -73,7 +73,7 @@ describe("HarnessRuntime", () => {
     const runtime = new FakeRuntime();
     const harness = new HarnessRuntime({
       root,
-      runtimes: new Map([["claude-cli", runtime]]),
+      runtimes: new Map([["ai-sdk", runtime]]),
       gateForKind: () => new AutoGate(),
     });
 
@@ -117,20 +117,12 @@ async function makeHarnessRoot(): Promise<string> {
     join(root, "ordin.config.yaml"),
     `run_store:
   base_dir: ${join(root, "runs")}
-default_runtime: claude-cli
+default_runtime: ai-sdk
+default_model: m
+allowed_tools: []
 runtimes:
-  claude-cli:
-    bin: claude
-phases:
-  plan:
-    model: m
-    allowed_tools: []
-  build:
-    model: m
-    allowed_tools: []
-  review:
-    model: m
-    allowed_tools: []
+  ai-sdk:
+    base_url: http://localhost:4000
 tiers:
   S: {}
   M: {}
@@ -141,25 +133,27 @@ tiers:
     join(root, "workflows", "software-delivery.yaml"),
     `name: software-delivery
 version: 1
+runtime: ai-sdk
+model: m
 phases:
   - id: plan
     agent: planner
-    runtime: claude-cli
     gate: human
+    allowed_tools: []
     outputs:
       - { label: RFC, path: "docs/rfcs/{slug}-rfc.md", description: "Reviewable RFC for this problem" }
   - id: build
     agent: build-local
-    runtime: claude-cli
     gate: human
+    allowed_tools: []
     inputs:
       - { label: "Approved RFC", path: "docs/rfcs/{slug}-rfc.md", description: "Plan-phase output; source of truth for Build and Review" }
     outputs:
       - { label: "Build notes", path: "docs/rfcs/{slug}-build-notes.md" }
   - id: review
     agent: reviewer
-    runtime: claude-cli
     gate: human
+    allowed_tools: []
     inputs:
       - { label: "Approved RFC", path: "docs/rfcs/{slug}-rfc.md" }
       - { label: "Build notes", path: "docs/rfcs/{slug}-build-notes.md", description: "Build-phase summary" }
@@ -173,7 +167,7 @@ phases:
     join(root, "agents", "planner.md"),
     `---
 name: planner
-runtime: claude-cli
+runtime: ai-sdk
 ---
 
 Planner prompt.
@@ -183,7 +177,7 @@ Planner prompt.
     join(root, "agents", "build-local.md"),
     `---
 name: build-local
-runtime: claude-cli
+runtime: ai-sdk
 ---
 
 Build prompt.
@@ -193,7 +187,7 @@ Build prompt.
     join(root, "agents", "reviewer.md"),
     `---
 name: reviewer
-runtime: claude-cli
+runtime: ai-sdk
 ---
 
 Review prompt.

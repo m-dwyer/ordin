@@ -12,65 +12,24 @@ async function tempConfig(yaml: string): Promise<string> {
 }
 
 describe("HarnessConfig", () => {
-  it("loads per-phase defaults and applies runtime/budget fallbacks", async () => {
+  it("loads global defaults without workflow phase ids", async () => {
     const path = await tempConfig(
-      `phases:
-  plan:
-    model: claude-opus-4-7
-    allowed_tools: [Read, Grep]
-  build:
-    model: claude-sonnet-4-6
-    allowed_tools: [Read, Write, Edit, Bash]
-budgets:
-  plan:
-    soft_tokens: 40000
-`,
-    );
-    const config = await HarnessConfig.load(path);
-    expect(config.phaseDefaults("plan").model).toBe("claude-opus-4-7");
-    expect(config.softTokenBudget("plan")).toBe(40000);
-    expect(config.softTokenBudget("build")).toBeUndefined();
-    expect(config.defaultRuntime).toBe("claude-cli");
-    expect(config.runStoreDir()).toMatch(/\.ordin\/runs$/);
-  });
-
-  it("throws for an unknown phase", async () => {
-    const path = await tempConfig(
-      `phases:
-  plan:
-    model: m
-    allowed_tools: []
-`,
-    );
-    const config = await HarnessConfig.load(path);
-    expect(() => config.phaseDefaults("build")).toThrow(/No defaults for phase "build"/);
-  });
-
-  it("applies tier model override via resolveDefaults", async () => {
-    const path = await tempConfig(
-      `phases:
-  plan:
-    model: claude-opus-4-7
-    allowed_tools: [Read]
+      `default_model: qwen3-8b
+allowed_tools: [Read, Grep]
 tiers:
   S:
-    model: claude-sonnet-4-6
-  L: {}
-budgets:
-  plan:
-    soft_tokens: 40000
+    model: qwen3-4b
 `,
     );
+
     const config = await HarnessConfig.load(path);
 
-    const s = config.resolveDefaults("plan", "S");
-    expect(s.model).toBe("claude-sonnet-4-6");
-    expect(s.allowedTools).toEqual(["Read"]);
-    expect(s.softTokenBudget).toBe(40000);
-
-    // L-tier has no override → falls back to the phase default
-    const l = config.resolveDefaults("plan", "L");
-    expect(l.model).toBe("claude-opus-4-7");
+    expect(config.defaultRuntime).toBe("ai-sdk");
+    expect(config.defaultModel).toBe("qwen3-8b");
+    expect(config.allowedTools).toEqual(["Read", "Grep"]);
+    expect(config.tierModel("S")).toBe("qwen3-4b");
+    expect(config.tierModel("L")).toBeUndefined();
+    expect(config.runStoreDir()).toMatch(/\.ordin\/runs$/);
   });
 
   it("exposes opaque runtime config slices for validation by each runtime", async () => {
@@ -83,10 +42,6 @@ runtimes:
       plan: { fallback_model: claude-sonnet-4-6, max_turns: 60 }
   ai-sdk:
     base_url: http://localhost:4000
-phases:
-  plan:
-    model: m
-    allowed_tools: []
 `,
     );
     const config = await HarnessConfig.load(path);
@@ -97,7 +52,6 @@ phases:
       phases: { plan: { fallback_model: "claude-sonnet-4-6", max_turns: 60 } },
     });
     expect(config.runtimeConfig("ai-sdk")).toEqual({ base_url: "http://localhost:4000" });
-    // Missing runtime name returns {} — runtime's fromConfig handles defaults.
     expect(config.runtimeConfig("unknown")).toEqual({});
   });
 
@@ -105,10 +59,6 @@ phases:
     const path = await tempConfig(
       `run_store:
   base_dir: ~/custom-runs
-phases:
-  plan:
-    model: m
-    allowed_tools: []
 `,
     );
     const config = await HarnessConfig.load(path);

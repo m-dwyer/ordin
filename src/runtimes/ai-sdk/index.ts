@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText, type StepResult, stepCountIs, type ToolSet } from "ai";
+import { z } from "zod";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -50,6 +51,25 @@ export interface AiSdkRuntimeConfig {
   bypassCache?: boolean;
 }
 
+export const AiSdkRuntimeConfigSchema = z.object({
+  /** OpenAI-compatible provider URL. Default: LiteLLM proxy at localhost:4000. */
+  base_url: z.string().url().optional(),
+  /**
+   * API key value. Prefer `api_key_env` for local configs so secrets
+   * stay out of YAML.
+   */
+  api_key: z.string().optional(),
+  /** Environment variable to read for the API key. */
+  api_key_env: z.string().min(1).optional(),
+  /** Where transcripts are persisted. Defaults to the harness run store. */
+  runs_dir: z.string().optional(),
+  /** Hard ceiling on tool-loop steps. Default 40. */
+  max_steps: z.number().int().positive().optional(),
+  /** Send a no-cache header to providers that support it. */
+  bypass_cache: z.boolean().optional(),
+});
+export type AiSdkRuntimeConfigRaw = z.infer<typeof AiSdkRuntimeConfigSchema>;
+
 export class AiSdkRuntime implements AgentRuntime {
   readonly name = "ai-sdk";
   readonly capabilities: RuntimeCapabilities = {
@@ -73,6 +93,18 @@ export class AiSdkRuntime implements AgentRuntime {
     this.modelMap = config.modelMap ?? new Map();
     this.maxSteps = config.maxSteps ?? 40;
     this.bypassCache = config.bypassCache ?? false;
+  }
+
+  static fromConfig(raw: unknown, extras: Pick<AiSdkRuntimeConfig, "runsDir"> = {}): AiSdkRuntime {
+    const parsed = AiSdkRuntimeConfigSchema.parse(raw ?? {});
+    const apiKey = parsed.api_key_env ? process.env[parsed.api_key_env] : parsed.api_key;
+    return new AiSdkRuntime({
+      ...(parsed.base_url ? { baseUrl: parsed.base_url } : {}),
+      ...(apiKey ? { apiKey } : {}),
+      ...(parsed.runs_dir ? { runsDir: parsed.runs_dir } : extras),
+      ...(parsed.max_steps !== undefined ? { maxSteps: parsed.max_steps } : {}),
+      ...(parsed.bypass_cache !== undefined ? { bypassCache: parsed.bypass_cache } : {}),
+    });
   }
 
   async invoke(req: InvokeRequest): Promise<InvokeResult> {

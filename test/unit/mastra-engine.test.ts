@@ -67,22 +67,16 @@ async function writeTempYaml(contents: string): Promise<string> {
 
 const TEST_WORKFLOW_YAML = `name: t
 version: 1
+runtime: fake
+model: m
 phases:
-  - { id: plan, agent: planner, runtime: fake, gate: human }
-  - { id: build, agent: builder, runtime: fake, gate: human }
-  - { id: review, agent: reviewer, runtime: fake, gate: human, on_reject: { goto: build, max_iterations: 2 } }
+  - { id: plan, agent: planner, gate: human, allowed_tools: [] }
+  - { id: build, agent: builder, gate: human, allowed_tools: [] }
+  - { id: review, agent: reviewer, gate: human, allowed_tools: [], on_reject: { goto: build, max_iterations: 2 } }
 `;
 
-const TEST_CONFIG_YAML = `phases:
-  plan:
-    model: m
-    allowed_tools: []
-  build:
-    model: m
-    allowed_tools: []
-  review:
-    model: m
-    allowed_tools: []
+const TEST_CONFIG_YAML = `default_model: m
+allowed_tools: []
 `;
 
 const fakeAgent = (name: string): Agent => ({
@@ -143,6 +137,7 @@ async function runWithMastra(
   const workflow = new MastraEngine().compile(harness.workflow);
   return workflow.run(
     {
+      workflow: harness.workflow,
       task: input.task ?? "t",
       slug: input.slug ?? "t",
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",

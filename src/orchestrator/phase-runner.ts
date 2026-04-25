@@ -3,7 +3,12 @@ import type { ArtefactPointer, ComposedPrompt, Feedback, SkillHint } from "../do
 import { Composer } from "../domain/composer";
 import type { HarnessConfig } from "../domain/config";
 import type { Skill } from "../domain/skill";
-import type { Phase } from "../domain/workflow";
+import {
+  type Phase,
+  resolvePhaseRuntime,
+  resolvePromptDefaults,
+  type WorkflowManifest,
+} from "../domain/workflow";
 import type { AgentRuntime, InvokeResult } from "../runtimes/types";
 import { promoteRuntimeEvent, type RunEvent } from "./events";
 import type { PhaseMeta } from "./run-store";
@@ -14,6 +19,7 @@ import type { PhaseMeta } from "./run-store";
  */
 export interface PhaseExecutionContext {
   readonly runId: string;
+  readonly workflow: WorkflowManifest;
   readonly runDir: string;
   readonly workspaceRoot: string;
   readonly task: string;
@@ -62,7 +68,7 @@ export class PhaseRunner {
   async run(req: PhaseExecutionRequest): Promise<PhaseRunResult> {
     const { context, emit, phase } = req;
     const agent = this.agentFor(phase);
-    const runtime = this.runtimeFor(phase);
+    const runtime = this.runtimeFor(phase, context.workflow);
     const prompt = this.composePrompt(phase, context, agent);
 
     const phaseMeta: PhaseMeta = {
@@ -125,10 +131,11 @@ export class PhaseRunner {
     return agent;
   }
 
-  private runtimeFor(phase: Phase): AgentRuntime {
-    const runtime = this.opts.runtimes.get(phase.runtime);
+  private runtimeFor(phase: Phase, workflow: WorkflowManifest): AgentRuntime {
+    const runtimeName = resolvePhaseRuntime(phase, workflow, this.opts.config.defaultRuntime);
+    const runtime = this.opts.runtimes.get(runtimeName);
     if (!runtime) {
-      throw new Error(`Runtime "${phase.runtime}" declared by phase "${phase.id}" not registered`);
+      throw new Error(`Runtime "${runtimeName}" resolved for phase "${phase.id}" not registered`);
     }
     return runtime;
   }
@@ -138,7 +145,13 @@ export class PhaseRunner {
     context: PhaseExecutionRequest["context"],
     agent: Agent,
   ): ComposedPrompt {
-    const defaults = this.opts.config.resolveDefaults(phase.id, context.tier);
+    const defaults = resolvePromptDefaults(
+      phase,
+      context.workflow,
+      this.opts.config.tierModel(context.tier),
+      this.opts.config.defaultModel,
+      this.opts.config.allowedTools,
+    );
     return this.composer.compose({
       phase,
       agent,

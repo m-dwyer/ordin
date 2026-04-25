@@ -122,19 +122,32 @@ describe("ClaudeCliRuntime.buildArgs", () => {
   it("applies per-phase fallback_model and max_turns from runtime config", () => {
     const configured = new ClaudeCliRuntime({
       phaseOverrides: {
-        plan: { fallback_model: "claude-sonnet-4-6", max_turns: 60 },
+        plan: { fallback_model: "claude-haiku-4-6", max_turns: 60 },
         build: { max_turns: 80 },
       },
     });
     const planArgs = configured.buildArgs({ runId: "r", prompt: makePrompt("plan") }, "/run-dir");
     expect(planArgs).toContain("--fallback-model");
-    expect(planArgs[planArgs.indexOf("--fallback-model") + 1]).toBe("claude-sonnet-4-6");
+    expect(planArgs[planArgs.indexOf("--fallback-model") + 1]).toBe("claude-haiku-4-6");
     expect(planArgs).toContain("--max-turns");
     expect(planArgs[planArgs.indexOf("--max-turns") + 1]).toBe("60");
 
     const buildArgs = configured.buildArgs({ runId: "r", prompt: makePrompt("build") }, "/run-dir");
     expect(buildArgs).not.toContain("--fallback-model");
     expect(buildArgs[buildArgs.indexOf("--max-turns") + 1]).toBe("80");
+  });
+
+  it("omits fallback_model when it matches the selected main model", () => {
+    const configured = new ClaudeCliRuntime({
+      phaseOverrides: {
+        plan: { fallback_model: "claude-sonnet-4-6", max_turns: 60 },
+      },
+    });
+
+    const args = configured.buildArgs({ runId: "r", prompt: makePrompt("plan") }, "/run-dir");
+
+    expect(args).not.toContain("--fallback-model");
+    expect(args[args.indexOf("--max-turns") + 1]).toBe("60");
   });
 
   it("gates --no-session-persistence on ephemeralSession", () => {

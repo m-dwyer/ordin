@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { WorkflowLoader } from "../../src/domain/workflow";
+import { resolvePhaseRuntime, WorkflowLoader } from "../../src/domain/workflow";
 
 async function writeTempYaml(contents: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "harness-wf-"));
@@ -29,6 +29,23 @@ phases:
     expect(wf.nextPhase("plan")?.id).toBe("build");
     expect(wf.nextPhase("review")).toBeUndefined();
     expect(wf.findPhase("review").on_reject?.goto).toBe("build");
+  });
+
+  it("supports workflow-level runtime with phase overrides", async () => {
+    const path = await writeTempYaml(
+      `name: t
+version: 1
+runtime: ai-sdk
+phases:
+  - { id: plan, agent: p, gate: human }
+  - { id: review, agent: r, runtime: claude-cli, gate: human }
+`,
+    );
+    const wf = await loader.load(path);
+
+    expect(wf.runtime).toBe("ai-sdk");
+    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "fallback")).toBe("ai-sdk");
+    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "fallback")).toBe("claude-cli");
   });
 
   it("rejects duplicate phase ids", async () => {
