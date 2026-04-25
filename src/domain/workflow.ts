@@ -53,21 +53,22 @@ export function resolveArtefactPath(contract: ArtefactContract, slug: string): s
   return contract.path.replace(/\{slug\}/g, slug);
 }
 
-export const WorkflowSchema = z.object({
+export const WorkflowManifestSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   version: z.union([z.string(), z.number()]).transform((v) => String(v)),
   phases: z.array(PhaseSchema).min(1),
 });
-type WorkflowShape = z.infer<typeof WorkflowSchema>;
+export const WorkflowSchema = WorkflowManifestSchema;
+type WorkflowManifestShape = z.infer<typeof WorkflowManifestSchema>;
 
-export class Workflow {
+export class WorkflowManifest {
   readonly name: string;
   readonly description?: string;
   readonly version: string;
   readonly phases: readonly Phase[];
 
-  constructor(shape: WorkflowShape) {
+  constructor(shape: WorkflowManifestShape) {
     this.name = shape.name;
     this.description = shape.description;
     this.version = shape.version;
@@ -97,11 +98,11 @@ export class Workflow {
   }
 
   /**
-   * Return a new Workflow that begins at `phaseId`. Earlier phases are
+   * Return a new manifest that begins at `phaseId`. Earlier phases are
    * dropped; on_reject edges that point into the dropped range are
    * preserved only if the target still exists in the slice.
    */
-  startingAt(phaseId: string): Workflow {
+  startingAt(phaseId: string): WorkflowManifest {
     const idx = this.phases.findIndex((p) => p.id === phaseId);
     if (idx < 0) {
       throw new Error(`Phase "${phaseId}" not found in workflow "${this.name}"`);
@@ -111,11 +112,11 @@ export class Workflow {
   }
 
   /**
-   * Return a new Workflow containing only the named phases, preserving
+   * Return a new manifest containing only the named phases, preserving
    * their workflow-defined order. on_reject edges pointing outside the
    * selection are stripped (we can't jump to a phase we're not running).
    */
-  only(phaseIds: readonly string[]): Workflow {
+  only(phaseIds: readonly string[]): WorkflowManifest {
     const keep = new Set(phaseIds);
     const kept = this.phases.filter((p) => keep.has(p.id));
     if (kept.length === 0) {
@@ -130,8 +131,8 @@ export class Workflow {
     return this.buildSubWorkflow(trimmed);
   }
 
-  private buildSubWorkflow(phases: Phase[]): Workflow {
-    return new Workflow({
+  private buildSubWorkflow(phases: Phase[]): WorkflowManifest {
+    return new WorkflowManifest({
       name: this.name,
       ...(this.description ? { description: this.description } : {}),
       version: this.version,
@@ -140,16 +141,18 @@ export class Workflow {
   }
 }
 
+export type Workflow = WorkflowManifest;
+
 function stripOnReject(phase: Phase): Phase {
   const { on_reject: _omit, ...rest } = phase;
   return rest;
 }
 
 export class WorkflowLoader {
-  async load(path: string): Promise<Workflow> {
+  async load(path: string): Promise<WorkflowManifest> {
     const raw = await readFile(path, "utf8");
     const parsed: unknown = parseYaml(raw);
-    const result = WorkflowSchema.safeParse(parsed);
+    const result = WorkflowManifestSchema.safeParse(parsed);
     if (!result.success) {
       throw new Error(
         `Invalid workflow at ${path}: ${result.error.issues
@@ -157,12 +160,12 @@ export class WorkflowLoader {
           .join("; ")}`,
       );
     }
-    const workflow = new Workflow(result.data);
+    const workflow = new WorkflowManifest(result.data);
     this.validate(workflow, path);
     return workflow;
   }
 
-  private validate(workflow: Workflow, path: string): void {
+  private validate(workflow: WorkflowManifest, path: string): void {
     const seen = new Set<string>();
     for (const phase of workflow.phases) {
       if (seen.has(phase.id)) {

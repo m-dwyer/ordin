@@ -14,6 +14,7 @@ import type { PhaseMeta } from "./run-store";
  */
 export interface PhaseExecutionContext {
   readonly runId: string;
+  readonly runDir: string;
   readonly workspaceRoot: string;
   readonly task: string;
   readonly tier: "S" | "M" | "L";
@@ -84,6 +85,7 @@ export class PhaseRunner {
 
     const invokeResult = await runtime.invoke({
       runId: context.runId,
+      runDir: context.runDir,
       prompt,
       onEvent: (event) => emit(promoteRuntimeEvent(event, context.runId, phase.id)),
       ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),

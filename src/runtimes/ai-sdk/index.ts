@@ -76,7 +76,7 @@ export class AiSdkRuntime implements AgentRuntime {
   }
 
   async invoke(req: InvokeRequest): Promise<InvokeResult> {
-    const runDir = resolve(this.runsDir, req.runId);
+    const runDir = req.runDir ?? resolve(this.runsDir, req.runId);
     const transcriptPath = join(runDir, `${req.prompt.phaseId}.jsonl`);
     await mkdir(runDir, { recursive: true });
 

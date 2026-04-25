@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AutoGate } from "../../src/gates/auto";
+import type { Engine } from "../../src/orchestrator/engine";
 import { HarnessRuntime } from "../../src/runtime/harness";
 import type {
   AgentRuntime,
@@ -34,6 +35,39 @@ class FakeRuntime implements AgentRuntime {
 }
 
 describe("HarnessRuntime", () => {
+  it("can run through an injected engine adapter", async () => {
+    const root = await makeHarnessRoot();
+    const engine: Engine = {
+      name: "custom",
+      compile: (manifest) => ({
+        engineName: "custom",
+        manifest,
+        run: async (input) => ({
+          runId: `custom-${input.slug}`,
+          workflow: manifest.name,
+          tier: input.tier,
+          task: input.task,
+          slug: input.slug,
+          repo: input.workspaceRoot,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: "2026-01-01T00:00:00.000Z",
+          status: "completed",
+          phases: [],
+        }),
+      }),
+    };
+
+    const harness = new HarnessRuntime({ root, engine: "custom", engines: [engine] });
+    const meta = await harness.startRun({
+      task: "Use custom engine",
+      slug: "custom-engine",
+      repoPath: "/tmp/repo",
+    });
+
+    expect(meta.runId).toBe("custom-custom-engine");
+    expect(meta.workflow).toBe("software-delivery");
+  });
+
   it("passes phase-specific artefact inputs through a full run", async () => {
     const root = await makeHarnessRoot();
     const runtime = new FakeRuntime();
@@ -51,6 +85,11 @@ describe("HarnessRuntime", () => {
     });
 
     expect(runtime.invocations.map((i) => i.prompt.phaseId)).toEqual(["plan", "build", "review"]);
+    expect(
+      runtime.invocations.every(
+        (i) => typeof i.runDir === "string" && i.runDir.startsWith(join(root, "runs")),
+      ),
+    ).toBe(true);
 
     const [planPrompt, buildPrompt, reviewPrompt] = runtime.invocations.map(
       (i) => i.prompt.userPrompt,

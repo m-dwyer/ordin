@@ -12,7 +12,7 @@ import type { EngineServices } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
 import { PhaseRunner } from "../../src/orchestrator/phase-runner";
-import { RunStore } from "../../src/orchestrator/run-store";
+import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -128,6 +128,31 @@ function makeServices(harness: Harness, runtime: AgentRuntime, gate: Gate): Engi
   };
 }
 
+async function runWithMastra(
+  harness: Harness,
+  runtime: AgentRuntime,
+  gate: Gate,
+  input: {
+    readonly task?: string;
+    readonly slug?: string;
+    readonly workspaceRoot?: string;
+    readonly tier?: "S" | "M" | "L";
+    readonly onEvent?: (event: RunEvent) => void;
+  } = {},
+): Promise<RunMeta> {
+  const workflow = new MastraEngine().compile(harness.workflow);
+  return workflow.run(
+    {
+      task: input.task ?? "t",
+      slug: input.slug ?? "t",
+      workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
+      tier: input.tier ?? "M",
+      ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+    },
+    makeServices(harness, runtime, gate),
+  );
+}
+
 describe("MastraEngine", () => {
   let runtime: FakeRuntime;
 
@@ -144,10 +169,7 @@ describe("MastraEngine", () => {
     ]);
 
     const events: RunEvent[] = [];
-    const engine = new MastraEngine(makeServices(harness, runtime, gate));
-
-    const meta = await engine.run({
-      workflow: harness.workflow,
+    const meta = await runWithMastra(harness, runtime, gate, {
       task: "do the thing",
       slug: "do-thing",
       workspaceRoot: "/tmp/repo",
@@ -200,9 +222,7 @@ describe("MastraEngine", () => {
       { status: "approved" }, // review #2
     ]);
 
-    const engine = new MastraEngine(makeServices(harness, runtime, gate));
-    const meta = await engine.run({
-      workflow: harness.workflow,
+    const meta = await runWithMastra(harness, runtime, gate, {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -234,9 +254,7 @@ describe("MastraEngine", () => {
       { status: "rejected", reason: "r2" }, // review #2 → would be build #3 (blocked)
     ]);
 
-    const engine = new MastraEngine(makeServices(harness, runtime, gate));
-    const meta = await engine.run({
-      workflow: harness.workflow,
+    const meta = await runWithMastra(harness, runtime, gate, {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -258,10 +276,7 @@ describe("MastraEngine", () => {
       durationMs: 50,
       error: "claude crashed",
     };
-    const engine = new MastraEngine(makeServices(harness, runtime, new AutoGate()));
-
-    const meta = await engine.run({
-      workflow: harness.workflow,
+    const meta = await runWithMastra(harness, runtime, new AutoGate(), {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -281,9 +296,7 @@ describe("MastraEngine", () => {
       { status: "approved" }, // plan
       { status: "rejected", reason: "build no good" }, // build
     ]);
-    const engine = new MastraEngine(makeServices(harness, runtime, gate));
-    const meta = await engine.run({
-      workflow: harness.workflow,
+    const meta = await runWithMastra(harness, runtime, gate, {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -304,21 +317,7 @@ phases:
 `,
       ),
     );
-    const harness = await makeHarness();
-    const engine = new MastraEngine(
-      makeServices({ ...harness, workflow }, runtime, new AutoGate()),
-    );
-    // Compile error surfaces inside engine.run — wrapped try/catch converts
-    // unknown throws to rethrow, so this should reject.
-    await expect(
-      engine.run({
-        workflow,
-        task: "t",
-        slug: "t",
-        workspaceRoot: "/tmp/repo",
-        tier: "M",
-      }),
-    ).rejects.toThrow(/at most one on_reject/);
+    expect(() => new MastraEngine().compile(workflow)).toThrow(/at most one on_reject/);
   });
 
   it("runs a linear workflow with no on_reject back-edge", async () => {
@@ -332,12 +331,8 @@ phases:
 `,
       ),
     );
-    const harness = await makeHarness();
-    const engine = new MastraEngine(
-      makeServices({ ...harness, workflow }, runtime, new AutoGate()),
-    );
-    const meta = await engine.run({
-      workflow,
+    const harness = { ...(await makeHarness()), workflow };
+    const meta = await runWithMastra(harness, runtime, new AutoGate(), {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",

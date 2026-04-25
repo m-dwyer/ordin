@@ -4,10 +4,15 @@ import { type Agent, AgentLoader } from "../domain/agent";
 import { HarnessConfig } from "../domain/config";
 import { ProjectRegistry } from "../domain/project";
 import { type Skill, SkillLoader } from "../domain/skill";
-import { type Phase, type Workflow, WorkflowLoader } from "../domain/workflow";
+import { type Phase, WorkflowLoader, type WorkflowManifest } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
 import type { Gate } from "../gates/types";
-import type { EngineRunInput, EngineServices } from "../orchestrator/engine";
+import {
+  type Engine,
+  EngineRegistry,
+  type EngineRunInput,
+  type EngineServices,
+} from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
 import { PhaseRunner } from "../orchestrator/phase-runner";
@@ -30,6 +35,10 @@ export interface HarnessRuntimeOptions {
    * Resolved as `<root>/workflows/<name>.yaml`.
    */
   readonly workflow?: string;
+  /** Engine adapter used to compile and run workflows. Defaults to "mastra". */
+  readonly engine?: string;
+  /** Additional engine adapters that can be selected via `engine`. */
+  readonly engines?: Iterable<Engine>;
   /**
    * Override the runtime map. Keys are the runtime names the workflow
    * references (today: "claude-cli"). When provided, the default
@@ -66,7 +75,7 @@ export interface StartRunInput {
 
 interface LoadedState {
   readonly config: HarnessConfig;
-  readonly workflow: Workflow;
+  readonly workflow: WorkflowManifest;
   readonly agents: ReadonlyMap<string, Agent>;
   readonly skills: ReadonlyMap<string, Skill>;
   readonly projects: ProjectRegistry;
@@ -78,62 +87,37 @@ export class HarnessRuntime {
 
   private readonly root: string;
   private readonly workflowName: string;
+  private readonly engineName: string;
   private readonly runtimesOverride?: ReadonlyMap<string, AgentRuntime>;
   private readonly gateResolver?: (kind: Phase["gate"]) => Gate;
+  private readonly engines: EngineRegistry;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
+    this.engineName = opts.engine ?? "mastra";
     this.runtimesOverride = opts.runtimes;
     this.gateResolver = opts.gateForKind;
+    this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
   }
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
-    const { config, workflow, agents, skills, projects, runStore } = await this.load();
-
-    const workspaceRoot = this.resolveWorkspaceRoot(input, projects);
+    const state = await this.load();
     const slug = requireSlug(input.slug);
-    const tier = input.tier ?? "M";
-
-    const trimmedWorkflow = input.onlyPhases
-      ? workflow.only(input.onlyPhases)
-      : input.startAt
-        ? workflow.startingAt(input.startAt)
-        : workflow;
-
-    const runtimes =
-      this.runtimesOverride ??
-      new Map<string, AgentRuntime>([
-        [
-          "claude-cli",
-          ClaudeCliRuntime.fromConfig(config.runtimeConfig("claude-cli"), {
-            // The ordin repo itself is a Claude Code plugin
-            // (.claude-plugin/plugin.json + top-level skills/). Loading it
-            // per-invocation means zero pollution of ~/.claude/.
-            pluginDirs: [this.root],
-            runsDirFallback: config.runStoreDir(),
-          }),
-        ],
-      ]);
-
-    const gateResolver = this.gateResolver ?? this.gateForKind.bind(this);
-    const services: EngineServices = {
-      phaseRunner: new PhaseRunner({ config, agents, skills, runtimes }),
-      gateFor: (phase) => gateResolver(phase.gate),
-      runStore,
-    };
-    const engine = new MastraEngine(services);
+    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
+    const compiledWorkflow = this.engines
+      .get(this.engineName)
+      .compile(this.workflowForRun(state.workflow, input));
 
     const runInput: EngineRunInput = {
-      workflow: trimmedWorkflow,
       task: input.task,
       slug,
       workspaceRoot,
-      tier,
+      tier: input.tier ?? "M",
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
-    return engine.run(runInput);
+    return compiledWorkflow.run(runInput, this.engineServices(state));
   }
 
   async listRuns(): Promise<RunMeta[]> {
@@ -146,7 +130,7 @@ export class HarnessRuntime {
     return runStore.readMeta(runId);
   }
 
-  async workflowDefinition(): Promise<Workflow> {
+  async workflowDefinition(): Promise<WorkflowManifest> {
     const { workflow } = await this.load();
     return workflow;
   }
@@ -189,6 +173,44 @@ export class HarnessRuntime {
     if (input.repoPath) return resolve(input.repoPath);
     if (input.projectName) return projects.get(input.projectName).path;
     throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
+  }
+
+  private workflowForRun(workflow: WorkflowManifest, input: StartRunInput): WorkflowManifest {
+    if (input.onlyPhases) return workflow.only(input.onlyPhases);
+    if (input.startAt) return workflow.startingAt(input.startAt);
+    return workflow;
+  }
+
+  private engineServices(state: LoadedState): EngineServices {
+    const gateResolver = this.gateResolver ?? this.gateForKind.bind(this);
+    return {
+      phaseRunner: new PhaseRunner({
+        config: state.config,
+        agents: state.agents,
+        skills: state.skills,
+        runtimes: this.runtimesFor(state.config),
+      }),
+      gateFor: (phase) => gateResolver(phase.gate),
+      runStore: state.runStore,
+    };
+  }
+
+  private runtimesFor(config: HarnessConfig): ReadonlyMap<string, AgentRuntime> {
+    return (
+      this.runtimesOverride ??
+      new Map<string, AgentRuntime>([
+        [
+          "claude-cli",
+          ClaudeCliRuntime.fromConfig(config.runtimeConfig("claude-cli"), {
+            // The ordin repo itself is a Claude Code plugin
+            // (.claude-plugin/plugin.json + top-level skills/). Loading it
+            // per-invocation means zero pollution of ~/.claude/.
+            pluginDirs: [this.root],
+            runsDirFallback: config.runStoreDir(),
+          }),
+        ],
+      ])
+    );
   }
 
   /**
