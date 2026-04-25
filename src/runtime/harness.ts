@@ -2,6 +2,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Agent, AgentLoader } from "../domain/agent";
 import { HarnessConfig } from "../domain/config";
+import type { PhasePreview } from "../domain/phase-preview";
 import { ProjectRegistry } from "../domain/project";
 import { SkillLoader } from "../domain/skill";
 import { type Phase, WorkflowLoader, type WorkflowManifest } from "../domain/workflow";
@@ -13,6 +14,8 @@ import {
   type EngineRunInput,
   type EngineServices,
   type GateRequest,
+  type PreviewInput,
+  type PreviewServices,
 } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
@@ -21,6 +24,7 @@ import { AiSdkRuntime } from "../runtimes/ai-sdk";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
 import type { AgentRuntime } from "../runtimes/types";
 
+export type { PhasePreview } from "../domain/phase-preview";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
 
@@ -120,6 +124,34 @@ export class HarnessRuntime {
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
     return compiledWorkflow.run(runInput, this.engineServices(state));
+  }
+
+  /**
+   * Compose the prompt for every phase without invoking any runtime.
+   * Mirrors `startRun` shape (load → compile → delegate) so dry-run
+   * inherits all the same workflow slicing semantics (`onlyPhases`,
+   * `startAt`, project resolution, slug validation).
+   */
+  async previewRun(input: StartRunInput): Promise<readonly PhasePreview[]> {
+    const state = await this.load();
+    const slug = requireSlug(input.slug);
+    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
+    const compiledWorkflow = this.engines
+      .get(this.engineName)
+      .compile(this.workflowForRun(state.workflow, input));
+
+    const previewInput: PreviewInput = {
+      workflow: compiledWorkflow.manifest,
+      task: input.task,
+      slug,
+      workspaceRoot,
+      tier: input.tier ?? "M",
+    };
+    const previewServices: PreviewServices = {
+      config: state.config,
+      agents: state.agents,
+    };
+    return compiledWorkflow.preview(previewInput, previewServices);
   }
 
   async listRuns(): Promise<RunMeta[]> {

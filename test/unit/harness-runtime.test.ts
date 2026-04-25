@@ -62,6 +62,7 @@ describe("HarnessRuntime", () => {
       compile: (manifest) => ({
         engineName: "custom",
         manifest,
+        preview: async () => [],
         run: async (input) => ({
           runId: `custom-${input.slug}`,
           workflow: manifest.name,
@@ -168,6 +169,31 @@ describe("HarnessRuntime", () => {
     expect(meta.phases[0]?.status).toBe("failed");
     expect(meta.phases[0]?.error).toMatch(/declared outputs that were not written/);
     expect(meta.phases[0]?.error).toContain("docs/rfcs/should-fail-rfc.md");
+  });
+
+  it("previewRun() returns composed prompts without invoking the runtime", async () => {
+    const root = await makeHarnessRoot();
+    const runtime = new FakeRuntime();
+    const harness = new HarnessRuntime({
+      root,
+      runtimes: new Map([["ai-sdk", runtime]]),
+      gateForKind: () => new AutoGate(),
+    });
+
+    const previews = await harness.previewRun({
+      task: "Preview the whole thing",
+      slug: "preview-it",
+      repoPath: "/tmp/repo",
+      tier: "M",
+    });
+
+    expect(previews.map((p) => p.phase.id)).toEqual(["plan", "build", "review"]);
+    expect(previews.every((p) => p.runtimeName === "ai-sdk")).toBe(true);
+    expect(previews[0]?.prompt.userPrompt).toContain("Preview the whole thing");
+    // Build phase's prompt should mention the (declared) RFC input path
+    // even though no plan ever ran — preview is first-iteration only.
+    expect(previews[1]?.prompt.userPrompt).toContain("docs/rfcs/preview-it-rfc.md");
+    expect(runtime.invocations).toHaveLength(0);
   });
 
   it("fails the phase before invoking the runtime when declared inputs are missing", async () => {

@@ -1,7 +1,15 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
+import { PhasePreparer, type PhasePreview, resolveArtefacts } from "../../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../../domain/workflow";
-import type { CompiledWorkflow, Engine, EngineRunInput, EngineServices } from "../engine";
+import type {
+  CompiledWorkflow,
+  Engine,
+  EngineRunInput,
+  EngineServices,
+  PreviewInput,
+  PreviewServices,
+} from "../engine";
 import type { RunEvent } from "../events";
 import { executePhase, type PhaseExecutorContext } from "../phase-executor";
 import { PhaseRunner } from "../phase-runner";
@@ -67,11 +75,8 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
     await services.runStore.writeMeta(meta);
     emit({ type: "run.started", runId });
 
-    const phaseRunner = new PhaseRunner({
-      config: services.config,
-      agents: services.agents,
-      runtimes: services.runtimes,
-    });
+    const phaseRunner = new PhaseRunner();
+    const preparer = new PhasePreparer();
 
     const ctx: RunCtx = {
       runId,
@@ -79,6 +84,7 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
       input,
       services,
       phaseRunner,
+      preparer,
       emit,
       iterations: new Map(),
       feedback: undefined,
@@ -109,6 +115,27 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
     await services.runStore.writeMeta(meta);
     emit({ type: "run.completed", runId, status: meta.status });
     return meta;
+  }
+
+  async preview(input: PreviewInput, services: PreviewServices): Promise<readonly PhasePreview[]> {
+    const preparer = new PhasePreparer();
+    return this.manifest.phases.map((phase) => {
+      const agent = services.agents.get(phase.agent);
+      if (!agent) {
+        throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
+      }
+      return preparer.prepare({
+        phase,
+        agent,
+        workflow: this.manifest,
+        config: services.config,
+        task: input.task,
+        cwd: input.workspaceRoot,
+        tier: input.tier,
+        artefactInputs: resolveArtefacts(phase.inputs, input.slug),
+        artefactOutputs: resolveArtefacts(phase.outputs, input.slug),
+      });
+    });
   }
 }
 

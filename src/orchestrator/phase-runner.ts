@@ -1,56 +1,35 @@
-import type { Agent } from "../domain/agent";
-import type { ArtefactPointer, ComposedPrompt, Feedback } from "../domain/composer";
-import { Composer } from "../domain/composer";
-import type { HarnessConfig } from "../domain/config";
-import {
-  type Phase,
-  resolvePhaseRuntime,
-  resolvePromptDefaults,
-  type WorkflowManifest,
-} from "../domain/workflow";
+import type { PhasePreview } from "../domain/phase-preview";
+import type { Phase } from "../domain/workflow";
 import type { AgentRuntime, InvokeResult } from "../runtimes/types";
 import { promoteRuntimeEvent, type RunEvent } from "./events";
 import type { PhaseMeta } from "./run-store";
 
 /**
- * Per-phase execution context. Data-only so any engine (sequential,
- * Mastra, future LangGraph) can construct it cleanly.
+ * `PhaseRunner` invokes one prepared phase: takes a `PhasePreview`
+ * plus the chosen `AgentRuntime` plus per-run execution context,
+ * dispatches the prompt to the runtime, and collects the result. It
+ * emits `phase.started` / `phase.completed` / `phase.failed`
+ * lifecycle events plus the runtime's observation stream, tagged
+ * with runId + phaseId.
+ *
+ * Stateless on purpose. The runtime registry lives one layer up
+ * (`PhaseTransaction` reads it from `EngineServices`) — `PhaseRunner`
+ * just receives the chosen runtime per call. Composition is also not
+ * this class's concern; that lives in `PhasePreparer` so dry-run and
+ * real-run share one path. Gates live above the engine entirely.
  */
 export interface PhaseExecutionContext {
   readonly runId: string;
-  readonly workflow: WorkflowManifest;
   readonly runDir: string;
-  readonly workspaceRoot: string;
-  readonly task: string;
-  readonly tier: "S" | "M" | "L";
   readonly iteration: number;
-  readonly artefactInputs: readonly ArtefactPointer[];
-  readonly artefactOutputs: readonly ArtefactPointer[];
-  readonly feedback?: Feedback;
 }
 
 export interface PhaseExecutionRequest {
-  readonly phase: Phase;
+  readonly preview: PhasePreview;
+  readonly runtime: AgentRuntime;
   readonly context: PhaseExecutionContext;
   readonly emit: (event: RunEvent) => void;
   readonly abortSignal?: AbortSignal;
-}
-
-/**
- * `PhaseRunner` executes one phase: compose prompt → invoke runtime →
- * collect result. It emits `phase.started` / `phase.completed` /
- * `phase.failed` lifecycle events plus the runtime's observation
- * stream, tagged with runId + phaseId.
- *
- * Gates are deliberately NOT this class's concern — the engine calls
- * the gate after receiving the phase result and decides what happens
- * on rejection. Keeps PhaseRunner gate-agnostic so `MastraEngine`,
- * `SequentialEngine`, and future engines can wire gating differently.
- */
-export interface PhaseRunnerOptions {
-  readonly config: HarnessConfig;
-  readonly agents: ReadonlyMap<string, Agent>;
-  readonly runtimes: ReadonlyMap<string, AgentRuntime>;
 }
 
 export interface PhaseRunResult {
@@ -59,39 +38,32 @@ export interface PhaseRunResult {
 }
 
 export class PhaseRunner {
-  private readonly composer = new Composer();
-
-  constructor(private readonly opts: PhaseRunnerOptions) {}
-
   async run(req: PhaseExecutionRequest): Promise<PhaseRunResult> {
-    const { context, emit, phase } = req;
-    const agent = this.agentFor(phase);
-    const runtime = this.runtimeFor(phase, context.workflow);
-    const prompt = this.composePrompt(phase, context, agent);
+    const { preview, runtime, context, emit } = req;
 
     const phaseMeta: PhaseMeta = {
-      phaseId: phase.id,
+      phaseId: preview.phase.id,
       iteration: context.iteration,
       startedAt: new Date().toISOString(),
       status: "running",
       runtime: runtime.name,
-      model: prompt.model,
+      model: preview.prompt.model,
     };
 
     emit({
       type: "phase.started",
       runId: context.runId,
-      phaseId: phase.id,
+      phaseId: preview.phase.id,
       iteration: context.iteration,
-      model: prompt.model,
+      model: preview.prompt.model,
       runtime: runtime.name,
     });
 
     const invokeResult = await runtime.invoke({
       runId: context.runId,
       runDir: context.runDir,
-      prompt,
-      onEvent: (event) => emit(promoteRuntimeEvent(event, context.runId, phase.id)),
+      prompt: preview.prompt,
+      onEvent: (event) => emit(promoteRuntimeEvent(event, context.runId, preview.phase.id)),
       ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
     });
 
@@ -103,7 +75,7 @@ export class PhaseRunner {
       emit({
         type: "phase.failed",
         runId: context.runId,
-        phaseId: phase.id,
+        phaseId: preview.phase.id,
         iteration: context.iteration,
         error: phaseMeta.error,
       });
@@ -113,54 +85,12 @@ export class PhaseRunner {
     emit({
       type: "phase.completed",
       runId: context.runId,
-      phaseId: phase.id,
+      phaseId: preview.phase.id,
       iteration: context.iteration,
       tokens: invokeResult.tokens,
       durationMs: invokeResult.durationMs,
     });
     return { meta: phaseMeta, invokeResult };
-  }
-
-  private agentFor(phase: Phase): Agent {
-    const agent = this.opts.agents.get(phase.agent);
-    if (!agent) {
-      throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
-    }
-    return agent;
-  }
-
-  private runtimeFor(phase: Phase, workflow: WorkflowManifest): AgentRuntime {
-    const runtimeName = resolvePhaseRuntime(phase, workflow, this.opts.config.defaultRuntime);
-    const runtime = this.opts.runtimes.get(runtimeName);
-    if (!runtime) {
-      throw new Error(`Runtime "${runtimeName}" resolved for phase "${phase.id}" not registered`);
-    }
-    return runtime;
-  }
-
-  private composePrompt(
-    phase: Phase,
-    context: PhaseExecutionRequest["context"],
-    agent: Agent,
-  ): ComposedPrompt {
-    const defaults = resolvePromptDefaults(
-      phase,
-      context.workflow,
-      this.opts.config.tierModel(context.tier),
-      this.opts.config.defaultModel,
-      this.opts.config.allowedTools,
-    );
-    return this.composer.compose({
-      phase,
-      agent,
-      defaults,
-      task: context.task,
-      cwd: context.workspaceRoot,
-      tier: context.tier,
-      artefactInputs: context.artefactInputs,
-      artefactOutputs: context.artefactOutputs,
-      ...(context.feedback ? { feedback: context.feedback } : {}),
-    });
   }
 
   private applyInvokeResult(phaseMeta: PhaseMeta, invokeResult: InvokeResult): void {
@@ -183,3 +113,6 @@ export function summariseInvocation(result: InvokeResult): string {
   }
   return parts.join("  |  ");
 }
+
+// Re-exported for engines/executors that previously named these.
+export type { Phase };

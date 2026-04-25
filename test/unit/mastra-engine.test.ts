@@ -291,6 +291,27 @@ phases:
     expect(() => new MastraEngine().compile(workflow)).toThrow(/at most one on_reject/);
   });
 
+  it("preview() returns composed prompts for every phase without invoking the runtime", async () => {
+    const harness = await makeHarness();
+    const compiled = new MastraEngine().compile(harness.workflow);
+    const previews = await compiled.preview(
+      {
+        workflow: harness.workflow,
+        task: "preview only",
+        slug: "preview-only",
+        workspaceRoot: "/tmp/repo",
+        tier: "M",
+      },
+      { config: harness.config, agents: harness.agents },
+    );
+
+    expect(previews.map((p) => p.phase.id)).toEqual(["plan", "build", "review"]);
+    expect(previews.every((p) => p.runtimeName === "fake")).toBe(true);
+    expect(previews.every((p) => p.prompt.userPrompt.includes("preview only"))).toBe(true);
+    // No runtime was invoked because preview never touches one.
+    expect(runtime.invocations).toHaveLength(0);
+  });
+
   it("runs a linear workflow with no on_reject back-edge", async () => {
     const workflow = await new WorkflowLoader().load(
       await writeTempYaml(

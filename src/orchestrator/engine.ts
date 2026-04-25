@@ -1,10 +1,13 @@
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
+import type { PhasePreview } from "../domain/phase-preview";
 import type { GateKind, WorkflowManifest } from "../domain/workflow";
 import type { GateArtefact, GateDecision } from "../gates/types";
 import type { AgentRuntime } from "../runtimes/types";
 import type { RunEvent } from "./events";
 import type { RunMeta, RunStore } from "./run-store";
+
+export type { PhasePreview } from "../domain/phase-preview";
 
 /**
  * Engines compile a declarative workflow manifest into an executable
@@ -20,6 +23,18 @@ export interface CompiledWorkflow {
   readonly engineName: string;
   readonly manifest: WorkflowManifest;
   run(input: EngineRunInput, services: EngineServices): Promise<RunMeta>;
+  /**
+   * Compose the prompt for every phase without invoking any runtime.
+   * Used by `ordin run --dry-run` so users can verify their agents,
+   * skills, and artefact contracts produce the expected prompt before
+   * burning inference. First-iteration only (no feedback); no gate
+   * decisions, no run-store writes, no events.
+   *
+   * `PreviewServices` is a strict subset of `EngineServices` — proves
+   * by type that the preview path needs no runtime registry, no run
+   * store, and no gate dispatch.
+   */
+  preview(input: PreviewInput, services: PreviewServices): Promise<readonly PhasePreview[]>;
 }
 
 /**
@@ -61,6 +76,28 @@ export interface EngineRunInput {
   readonly onEvent?: (event: RunEvent) => void;
   readonly onGateRequested: (request: GateRequest) => Promise<GateDecision>;
   readonly abortSignal?: AbortSignal;
+}
+
+/**
+ * Per-run inputs used by `CompiledWorkflow.preview()`. Same shape as
+ * `EngineRunInput` minus the runtime/event/gate fields — preview
+ * doesn't invoke, doesn't emit, doesn't gate.
+ */
+export interface PreviewInput {
+  readonly workflow: WorkflowManifest;
+  readonly task: string;
+  readonly slug: string;
+  readonly workspaceRoot: string;
+  readonly tier: "S" | "M" | "L";
+}
+
+/**
+ * Strict subset of `EngineServices` — only what's needed to compose
+ * a phase's prompt. No runtimes, no run store, no gates.
+ */
+export interface PreviewServices {
+  readonly config: HarnessConfig;
+  readonly agents: ReadonlyMap<string, Agent>;
 }
 
 export class EngineRegistry {

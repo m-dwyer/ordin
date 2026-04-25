@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { buildRunInput, registerRun } from "../../src/cli/run";
-import type { StartRunInput } from "../../src/runtime/harness";
+import type { PhasePreview, StartRunInput } from "../../src/runtime/harness";
 
 describe("buildRunInput", () => {
   it("builds a full workflow run input", () => {
@@ -90,6 +90,7 @@ describe("registerRun", () => {
               phases: [],
             };
           },
+          previewRun: async () => [],
         };
       },
       onEventSink: () => ({ onEvent: () => {}, finish: () => {} }),
@@ -126,5 +127,57 @@ describe("registerRun", () => {
       tier: "S",
       onlyPhases: ["ship"],
     });
+  });
+
+  it("--dry-run calls previewRun, prints prompts, and never invokes startRun", async () => {
+    const program = new Command();
+    program.exitOverride();
+
+    let startRunCalls = 0;
+    let previewInput: StartRunInput | undefined;
+    const fakePreview: PhasePreview = {
+      phase: { id: "plan", agent: "planner", gate: "human" },
+      runtimeName: "ai-sdk",
+      prompt: {
+        systemPrompt: "system body",
+        userPrompt: "user prompt body",
+        tools: ["Read", "Grep"],
+        model: "qwen3-8b",
+        cwd: "/tmp/repo",
+        phaseId: "plan",
+        tier: "S",
+        freshContext: true,
+      },
+    };
+
+    let captured = "";
+    registerRun(program, {
+      createRuntime: () => ({
+        startRun: async () => {
+          startRunCalls++;
+          throw new Error("startRun should not run during --dry-run");
+        },
+        previewRun: async (input) => {
+          previewInput = input;
+          return [fakePreview];
+        },
+      }),
+      print: (text) => {
+        captured += text;
+      },
+    });
+
+    await program.parseAsync(
+      ["node", "ordin", "run", "--repo", ".scratch/repo", "--dry-run", "Try", "dry"],
+      { from: "node" },
+    );
+
+    expect(startRunCalls).toBe(0);
+    expect(previewInput?.task).toBe("Try dry");
+    expect(captured).toContain("PHASE  plan");
+    expect(captured).toContain("system body");
+    expect(captured).toContain("user prompt body");
+    expect(captured).toContain("ai-sdk");
+    expect(captured).toContain("qwen3-8b");
   });
 });

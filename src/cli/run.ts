@@ -1,16 +1,20 @@
 import { intro, outro } from "@clack/prompts";
 import type { Command } from "commander";
-import type { HarnessRuntime, RunEvent } from "../runtime/harness";
+import type { HarnessRuntime, PhasePreview, RunEvent } from "../runtime/harness";
 import { clackEventSink, ordin, parseTier, slugify } from "./common";
 
 export interface RunCommandDeps {
-  readonly createRuntime?: (opts: { workflow?: string }) => Pick<HarnessRuntime, "startRun">;
+  readonly createRuntime?: (opts: {
+    workflow?: string;
+  }) => Pick<HarnessRuntime, "startRun" | "previewRun">;
   readonly onEventSink?: () => {
     readonly onEvent: (event: RunEvent) => void;
     readonly finish: () => void;
   };
   readonly intro?: (message: string) => void;
   readonly outro?: (message: string) => void;
+  /** Capture printed text instead of writing to stdout. Test seam. */
+  readonly print?: (text: string) => void;
 }
 
 interface RunCommandOpts {
@@ -21,11 +25,13 @@ interface RunCommandOpts {
   readonly slug?: string;
   readonly only?: string;
   readonly from?: string;
+  readonly dryRun?: boolean;
 }
 
 /**
  * `ordin run <task>` — execute a workflow, optionally sliced to a
- * single phase or a suffix beginning at a phase.
+ * single phase or a suffix beginning at a phase. With `--dry-run`,
+ * print each phase's composed prompt without invoking any runtime.
  */
 export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
   program
@@ -38,17 +44,26 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
     .option("-s, --slug <slug>", "Artefact slug (inferred from task if omitted)")
     .option("--only <phase>", "Run only this phase id")
     .option("--from <phase>", "Start at this phase id and run the remaining workflow")
+    .option("--dry-run", "Print each phase's composed prompt without invoking any runtime")
     .action(async (taskParts: string[], opts: RunCommandOpts) => {
       const input = buildRunInput(taskParts, opts);
+      const createRuntime = deps.createRuntime ?? ordin;
+      const runtime = createRuntime({ workflow: opts.workflow });
+
+      if (opts.dryRun) {
+        const previews = await runtime.previewRun(input);
+        const print = deps.print ?? ((text) => process.stdout.write(text));
+        printPreviews(previews, input.task, print);
+        return;
+      }
+
       const sayIntro = deps.intro ?? intro;
       const sayOutro = deps.outro ?? outro;
-      const createRuntime = deps.createRuntime ?? ordin;
       const eventSink = deps.onEventSink ?? clackEventSink;
 
       sayIntro(`ordin run · ${input.task}`);
       const { onEvent, finish } = eventSink();
       try {
-        const runtime = createRuntime({ workflow: opts.workflow });
         const result = await runtime.startRun({
           ...input,
           onEvent,
@@ -89,4 +104,28 @@ export function buildRunInput(
     ...(opts.only ? { onlyPhases: [opts.only] } : {}),
     ...(opts.from ? { startAt: opts.from } : {}),
   };
+}
+
+function printPreviews(
+  previews: readonly PhasePreview[],
+  task: string,
+  print: (text: string) => void,
+): void {
+  print(`# ordin run --dry-run · ${task}\n`);
+  print(`# ${previews.length} phase${previews.length === 1 ? "" : "s"}\n\n`);
+  for (const preview of previews) {
+    const { phase, runtimeName, prompt } = preview;
+    const tools = prompt.tools.length > 0 ? prompt.tools.join(", ") : "(none)";
+    print(`${"─".repeat(78)}\n`);
+    print(`PHASE  ${phase.id}\n`);
+    print(`agent: ${phase.agent}    runtime: ${runtimeName}    model: ${prompt.model}\n`);
+    print(`tools: ${tools}\n`);
+    print(`cwd:   ${prompt.cwd}\n`);
+    print(`${"─".repeat(78)}\n`);
+    print("## SYSTEM PROMPT\n\n");
+    print(prompt.systemPrompt);
+    print("\n\n## USER PROMPT\n\n");
+    print(prompt.userPrompt);
+    print("\n\n");
+  }
 }
