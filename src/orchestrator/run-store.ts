@@ -30,8 +30,10 @@ export interface PhaseMeta {
   completedAt?: string;
   status: "running" | "completed" | "failed" | "rejected";
   iteration: number;
-  runtime: string;
-  model: string;
+  /** Filled once the phase reaches the runtime. Absent when a phase
+   * fails before invocation (e.g. missing input artefacts). */
+  runtime?: string;
+  model?: string;
   tokens?: {
     input: number;
     output: number;

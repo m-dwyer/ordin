@@ -1,17 +1,25 @@
+import { ArtefactManager } from "../domain/artefact";
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import { type Phase, resolveArtefactPath } from "../domain/workflow";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
-import { summariseInvocation } from "./phase-runner";
+import { type PhaseRunner, summariseInvocation } from "./phase-runner";
 import type { RunMeta } from "./run-store";
 
 export type EngineOutcome = "halted" | "failed";
 
+/**
+ * Engine-internal context for one phase transaction. The engine builds
+ * this once per run; `phaseRunner` is constructed inside the engine
+ * (not handed in by the harness), and gate decisions arrive via the
+ * `onGateRequested` callback the application supplied on `EngineRunInput`.
+ */
 export interface PhaseExecutorContext {
   readonly runId: string;
   readonly meta: RunMeta;
   readonly input: EngineRunInput;
   readonly services: EngineServices;
+  readonly phaseRunner: PhaseRunner;
   readonly emit: (event: RunEvent) => void;
   readonly iterations: Map<string, number>;
   feedback: Feedback | undefined;
@@ -24,18 +32,35 @@ export interface PhaseExecutionOutcome {
 
 /**
  * Engine-neutral phase transaction:
- * execute runtime phase, persist phase meta, request gate, and update
- * feedback/outcome for the caller's workflow-control layer.
+ * execute runtime phase, persist phase meta, surface a `GateRequest`
+ * via the application-supplied callback, and update feedback/outcome
+ * for the caller's workflow-control layer. Engine has no `Gate` impl
+ * — gate logic lives at the harness layer.
  */
 export async function executePhase(
   phase: Phase,
   ctx: PhaseExecutorContext,
 ): Promise<PhaseExecutionOutcome> {
   const iteration = nextIteration(phase, ctx);
-  const runDir = await ctx.services.runStore.ensureRunDir(ctx.runId);
+  const artefactInputs = resolveArtefacts(phase.inputs, ctx.input.slug);
   const artefactOutputs = resolveArtefacts(phase.outputs, ctx.input.slug);
+  const artefacts = new ArtefactManager(ctx.input.workspaceRoot);
 
-  const { meta: phaseMeta, invokeResult } = await ctx.services.phaseRunner.run({
+  const missingIn = await artefacts.findMissing(artefactInputs);
+  if (missingIn.length > 0) {
+    return await failBeforeRuntime(
+      phase,
+      ctx,
+      iteration,
+      `Phase "${phase.id}" declared inputs that are missing on disk: ${missingIn
+        .map((m) => m.path)
+        .join(", ")}`,
+    );
+  }
+
+  const runDir = await ctx.services.runStore.ensureRunDir(ctx.runId);
+
+  const { meta: phaseMeta, invokeResult } = await ctx.phaseRunner.run({
     phase,
     context: {
       runId: ctx.runId,
@@ -45,7 +70,7 @@ export async function executePhase(
       task: ctx.input.task,
       tier: ctx.input.tier,
       iteration,
-      artefactInputs: resolveArtefacts(phase.inputs, ctx.input.slug),
+      artefactInputs,
       artefactOutputs,
       ...(ctx.feedback ? { feedback: ctx.feedback } : {}),
     },
@@ -61,11 +86,30 @@ export async function executePhase(
     return { approved: false };
   }
 
-  const gate = ctx.services.gateFor(phase);
+  const missingOut = await artefacts.findMissing(artefactOutputs);
+  if (missingOut.length > 0) {
+    const error = `Phase "${phase.id}" declared outputs that were not written: ${missingOut
+      .map((m) => m.path)
+      .join(", ")}`;
+    phaseMeta.status = "failed";
+    phaseMeta.error = error;
+    await ctx.services.runStore.writeMeta(ctx.meta);
+    ctx.emit({
+      type: "phase.failed",
+      runId: ctx.runId,
+      phaseId: phase.id,
+      iteration,
+      error,
+    });
+    ctx.outcome = "failed";
+    return { approved: false };
+  }
+
   ctx.emit({ type: "gate.requested", runId: ctx.runId, phaseId: phase.id });
-  const decision = await gate.request({
+  const decision = await ctx.input.onGateRequested({
     runId: ctx.runId,
     phaseId: phase.id,
+    gateKind: phase.gate,
     cwd: ctx.input.workspaceRoot,
     artefacts: artefactOutputs,
     summary: summariseInvocation(invokeResult),
@@ -73,7 +117,7 @@ export async function executePhase(
 
   if (decision.status === "approved") {
     phaseMeta.status = "completed";
-    phaseMeta.gateDecision = gate.kind === "auto" ? "auto" : "approved";
+    phaseMeta.gateDecision = phase.gate === "auto" ? "auto" : "approved";
     if (decision.note) phaseMeta.gateNote = decision.note;
     ctx.feedback = undefined;
     ctx.emit({
@@ -128,4 +172,37 @@ function resolveArtefacts(
     path: resolveArtefactPath(contract, slug),
     ...(contract.description ? { description: contract.description } : {}),
   }));
+}
+
+/**
+ * Records a phase failure that happened before the runtime got involved
+ * (e.g. missing input artefacts). PhaseMeta has no runtime/model in
+ * this case — they're decided inside `PhaseRunner.run()`, which we
+ * never reached.
+ */
+async function failBeforeRuntime(
+  phase: Phase,
+  ctx: PhaseExecutorContext,
+  iteration: number,
+  error: string,
+): Promise<PhaseExecutionOutcome> {
+  const now = new Date().toISOString();
+  ctx.meta.phases.push({
+    phaseId: phase.id,
+    iteration,
+    startedAt: now,
+    completedAt: now,
+    status: "failed",
+    error,
+  });
+  await ctx.services.runStore.writeMeta(ctx.meta);
+  ctx.emit({
+    type: "phase.failed",
+    runId: ctx.runId,
+    phaseId: phase.id,
+    iteration,
+    error,
+  });
+  ctx.outcome = "failed";
+  return { approved: false };
 }

@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AutoGate } from "../../src/gates/auto";
 import type { Engine } from "../../src/orchestrator/engine";
@@ -12,6 +12,12 @@ import type {
   RuntimeCapabilities,
 } from "../../src/runtimes/types";
 
+/**
+ * Stand-in agent runtime. Records invocations and materialises any
+ * output paths the prompt declares — mimics a real agent calling
+ * `Write` so the engine's post-phase artefact verification is
+ * satisfied without us spinning up a real model.
+ */
 class FakeRuntime implements AgentRuntime {
   readonly name = "fake";
   readonly capabilities: RuntimeCapabilities = {
@@ -24,6 +30,7 @@ class FakeRuntime implements AgentRuntime {
 
   async invoke(req: InvokeRequest): Promise<InvokeResult> {
     this.invocations.push(req);
+    await materializeDeclaredOutputs(req.prompt.userPrompt, req.prompt.cwd);
     return {
       status: "ok",
       exitCode: 0,
@@ -31,6 +38,19 @@ class FakeRuntime implements AgentRuntime {
       tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0 },
       durationMs: 5,
     };
+  }
+}
+
+async function materializeDeclaredOutputs(userPrompt: string, cwd: string): Promise<void> {
+  const section = /## Produce these artefacts\n([\s\S]*?)(?=\n## |\nWorking directory:|$)/.exec(
+    userPrompt,
+  );
+  if (!section?.[1]) return;
+  const paths = [...section[1].matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? "").filter(Boolean);
+  for (const rel of paths) {
+    const abs = resolvePath(cwd, rel);
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, "", "utf8");
   }
 }
 
@@ -104,6 +124,99 @@ describe("HarnessRuntime", () => {
     expect(reviewPrompt).toContain("docs/rfcs/ship-feature-x-rfc.md");
     expect(reviewPrompt).toContain("docs/rfcs/ship-feature-x-build-notes.md");
     expect(reviewPrompt).toContain("Build-phase summary");
+  });
+
+  it("fails the phase when declared outputs are not written to disk", async () => {
+    const root = await makeHarnessRoot();
+    // Runtime that returns ok but writes nothing — mimics a model that
+    // emitted file content as inline text instead of calling Write.
+    const silentRuntime: AgentRuntime = {
+      name: "fake",
+      capabilities: {
+        nativeSkillDiscovery: false,
+        streaming: false,
+        mcpSupport: false,
+        maxContextTokens: 200_000,
+      },
+      async invoke(): Promise<InvokeResult> {
+        return {
+          status: "ok",
+          exitCode: 0,
+          transcriptPath: "/tmp/transcript.jsonl",
+          tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0 },
+          durationMs: 5,
+        };
+      },
+    };
+    const repoPath = await mkdtemp(join(tmpdir(), "ordin-empty-repo-"));
+    const harness = new HarnessRuntime({
+      root,
+      runtimes: new Map([["ai-sdk", silentRuntime]]),
+      gateForKind: () => new AutoGate(),
+    });
+
+    const meta = await harness.startRun({
+      task: "Should fail",
+      slug: "should-fail",
+      repoPath,
+      tier: "M",
+    });
+
+    expect(meta.status).toBe("failed");
+    expect(meta.phases).toHaveLength(1);
+    expect(meta.phases[0]?.phaseId).toBe("plan");
+    expect(meta.phases[0]?.status).toBe("failed");
+    expect(meta.phases[0]?.error).toMatch(/declared outputs that were not written/);
+    expect(meta.phases[0]?.error).toContain("docs/rfcs/should-fail-rfc.md");
+  });
+
+  it("fails the phase before invoking the runtime when declared inputs are missing", async () => {
+    const root = await makeHarnessRoot();
+    let invoked = 0;
+    const tripwireRuntime: AgentRuntime = {
+      name: "fake",
+      capabilities: {
+        nativeSkillDiscovery: false,
+        streaming: false,
+        mcpSupport: false,
+        maxContextTokens: 200_000,
+      },
+      async invoke(): Promise<InvokeResult> {
+        invoked++;
+        return {
+          status: "ok",
+          exitCode: 0,
+          transcriptPath: "/tmp/transcript.jsonl",
+          tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
+          durationMs: 0,
+        };
+      },
+    };
+    const repoPath = await mkdtemp(join(tmpdir(), "ordin-empty-repo-"));
+    const harness = new HarnessRuntime({
+      root,
+      runtimes: new Map([["ai-sdk", tripwireRuntime]]),
+      gateForKind: () => new AutoGate(),
+    });
+
+    // Start at build, which declares the RFC as a required input — but
+    // the workspace is empty, so the phase should fail before runtime.
+    const meta = await harness.startRun({
+      task: "Skip plan",
+      slug: "skip-plan",
+      repoPath,
+      tier: "M",
+      onlyPhases: ["build"],
+    });
+
+    expect(invoked).toBe(0);
+    expect(meta.status).toBe("failed");
+    expect(meta.phases[0]?.status).toBe("failed");
+    expect(meta.phases[0]?.error).toMatch(/declared inputs that are missing on disk/);
+    expect(meta.phases[0]?.error).toContain("docs/rfcs/skip-plan-rfc.md");
+    // Pre-runtime failures don't have a runtime/model decided.
+    expect(meta.phases[0]?.runtime).toBeUndefined();
+    expect(meta.phases[0]?.model).toBeUndefined();
   });
 });
 

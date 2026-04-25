@@ -37,6 +37,26 @@ export class ArtefactManager {
     await mkdir(dirname(this.resolve(relPath)), { recursive: true });
   }
 
+  /**
+   * Returns the subset of declared artefacts whose files don't exist
+   * on disk under the workspace root. Used by the engine pre-runtime
+   * (verifying inputs are present before invoking) and post-runtime
+   * (verifying outputs were actually written — catches the failure
+   * mode where a model emits file content as inline text instead of
+   * structurally calling `Write`).
+   */
+  async findMissing<T extends { readonly path: string }>(
+    artefacts: readonly T[],
+  ): Promise<readonly T[]> {
+    const missing: T[] = [];
+    for (const artefact of artefacts) {
+      if (!(await this.exists(artefact.path))) {
+        missing.push(artefact);
+      }
+    }
+    return missing;
+  }
+
   resolve(relPath: string): string {
     return isAbsolute(relPath) ? relPath : resolve(this.repoPath, relPath);
   }

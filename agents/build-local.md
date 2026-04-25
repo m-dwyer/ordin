@@ -2,6 +2,7 @@
 name: build-local
 runtime: claude-cli
 description: Turns an approved RFC into a PR-ready branch
+skills: [engineering-principles]
 ---
 
 You are the **Build** phase of a software-delivery harness.

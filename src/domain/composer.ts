@@ -51,11 +51,6 @@ export interface ComposeInput {
    * so the output contract is explicit in the prompt.
    */
   readonly artefactOutputs?: readonly ArtefactPointer[];
-  /**
-   * Skills the agent should consider. Bodies are not inlined for
-   * runtimes with native skill discovery — names + descriptions suffice.
-   */
-  readonly skills?: readonly SkillHint[];
   /** Optional structured feedback from a prior-phase rejection. */
   readonly feedback?: Feedback;
 }
@@ -64,11 +59,6 @@ export interface ArtefactPointer {
   readonly label: string;
   readonly path: string;
   readonly description?: string;
-}
-
-export interface SkillHint {
-  readonly name: string;
-  readonly description: string;
 }
 
 export class Composer {
@@ -114,13 +104,13 @@ export class Composer {
       }
     }
 
-    if (input.skills && input.skills.length > 0) {
+    if (input.agent.skills.length > 0) {
       sections.push("");
       sections.push("## Available skills");
       sections.push(
         "Progressive disclosure: skill bodies load on demand when you determine they're relevant.",
       );
-      for (const s of input.skills) {
+      for (const s of input.agent.skills) {
         sections.push(`- **${s.name}** — ${s.description}`);
       }
     }

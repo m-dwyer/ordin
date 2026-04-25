@@ -3,19 +3,19 @@ import { fileURLToPath } from "node:url";
 import { type Agent, AgentLoader } from "../domain/agent";
 import { HarnessConfig } from "../domain/config";
 import { ProjectRegistry } from "../domain/project";
-import { type Skill, SkillLoader } from "../domain/skill";
+import { SkillLoader } from "../domain/skill";
 import { type Phase, WorkflowLoader, type WorkflowManifest } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
-import type { Gate } from "../gates/types";
+import type { Gate, GateDecision } from "../gates/types";
 import {
   type Engine,
   EngineRegistry,
   type EngineRunInput,
   type EngineServices,
+  type GateRequest,
 } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
-import { PhaseRunner } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
 import { AiSdkRuntime } from "../runtimes/ai-sdk";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
@@ -78,7 +78,6 @@ interface LoadedState {
   readonly config: HarnessConfig;
   readonly workflow: WorkflowManifest;
   readonly agents: ReadonlyMap<string, Agent>;
-  readonly skills: ReadonlyMap<string, Skill>;
   readonly projects: ProjectRegistry;
   readonly runStore: RunStore;
 }
@@ -116,6 +115,7 @@ export class HarnessRuntime {
       slug,
       workspaceRoot,
       tier: input.tier ?? "M",
+      onGateRequested: (request) => this.handleGateRequest(request),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
@@ -153,18 +153,17 @@ export class HarnessRuntime {
   private async load(): Promise<LoadedState> {
     if (this.loaded) return this.loaded;
     const paths = this.paths();
-    const [config, workflow, agents, skills, projects] = await Promise.all([
+    const [config, workflow, skills, projects] = await Promise.all([
       HarnessConfig.load(paths.configFile),
       new WorkflowLoader().load(paths.workflowFile),
-      new AgentLoader().loadAll(paths.agentsDir),
       new SkillLoader().loadAll(paths.skillsDir),
       ProjectRegistry.load(paths.projectsFile, paths.projectsLocalFile),
     ]);
+    const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
     this.loaded = {
       config,
       workflow,
       agents,
-      skills,
       projects,
       runStore: new RunStore(config.runStoreDir()),
     };
@@ -184,17 +183,30 @@ export class HarnessRuntime {
   }
 
   private engineServices(state: LoadedState): EngineServices {
-    const gateResolver = this.gateResolver ?? this.gateForKind.bind(this);
     return {
-      phaseRunner: new PhaseRunner({
-        config: state.config,
-        agents: state.agents,
-        skills: state.skills,
-        runtimes: this.runtimesFor(state.config),
-      }),
-      gateFor: (phase) => gateResolver(phase.gate),
+      config: state.config,
+      agents: state.agents,
+      runtimes: this.runtimesFor(state.config),
       runStore: state.runStore,
     };
+  }
+
+  /**
+   * Adapts the engine's gate-agnostic `GateRequest` to whichever
+   * `Gate` impl the harness has wired for the requested kind. Engine
+   * doesn't know about `Gate`, `clack`, `AutoGate`, etc. — that
+   * vocabulary stops here at the harness boundary.
+   */
+  private async handleGateRequest(request: GateRequest): Promise<GateDecision> {
+    const resolver = this.gateResolver ?? this.gateForKind.bind(this);
+    const gate = resolver(request.gateKind);
+    return gate.request({
+      runId: request.runId,
+      phaseId: request.phaseId,
+      cwd: request.cwd,
+      artefacts: request.artefacts,
+      summary: request.summary,
+    });
   }
 
   private runtimesFor(config: HarnessConfig): ReadonlyMap<string, AgentRuntime> {

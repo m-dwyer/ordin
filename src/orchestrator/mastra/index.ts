@@ -4,6 +4,7 @@ import type { Phase, WorkflowManifest } from "../../domain/workflow";
 import type { CompiledWorkflow, Engine, EngineRunInput, EngineServices } from "../engine";
 import type { RunEvent } from "../events";
 import { executePhase, type PhaseExecutorContext } from "../phase-executor";
+import { PhaseRunner } from "../phase-runner";
 import { generateRunId, type RunMeta } from "../run-store";
 import { createExecutionPlan, type ExecutionPlan } from "../workflow-plan";
 
@@ -66,11 +67,18 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
     await services.runStore.writeMeta(meta);
     emit({ type: "run.started", runId });
 
+    const phaseRunner = new PhaseRunner({
+      config: services.config,
+      agents: services.agents,
+      runtimes: services.runtimes,
+    });
+
     const ctx: RunCtx = {
       runId,
       meta,
       input,
       services,
+      phaseRunner,
       emit,
       iterations: new Map(),
       feedback: undefined,

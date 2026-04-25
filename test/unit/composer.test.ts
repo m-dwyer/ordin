@@ -16,6 +16,7 @@ const agent: Agent = {
   runtime: "claude-cli",
   body: "You are a planner.",
   source: "/tmp/agents/planner.md",
+  skills: [],
 };
 
 describe("Composer", () => {
@@ -62,17 +63,26 @@ describe("Composer", () => {
     expect(out.tier).toBe("S");
   });
 
-  it("renders artefact inputs, outputs, skills, and structured feedback into the prompt", () => {
+  it("renders artefact inputs, outputs, agent skills, and structured feedback into the prompt", () => {
     const out = composer.compose({
       phase,
-      agent,
+      agent: {
+        ...agent,
+        skills: [
+          {
+            name: "rfc-template",
+            description: "RFC structure",
+            body: "",
+            source: "/tmp/skills/rfc-template/SKILL.md",
+          },
+        ],
+      },
       defaults: { model: "x", allowedTools: [] },
       task: "t",
       cwd: "/repo",
       tier: "M",
       artefactInputs: [{ label: "Brief", path: "problem.md" }],
       artefactOutputs: [{ label: "RFC", path: "docs/rfcs/t-rfc.md" }],
-      skills: [{ name: "rfc-template", description: "RFC structure" }],
       feedback: { fromPhase: "review", decision: "rejected", reason: "tests missing" },
     });
     expect(out.userPrompt).toContain("Brief");

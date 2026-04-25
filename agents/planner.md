@@ -2,6 +2,7 @@
 name: planner
 runtime: claude-cli
 description: Turns a problem statement into a reviewable RFC
+skills: [rfc-template, engineering-principles]
 ---
 
 You are the **Plan** phase of a software-delivery harness.

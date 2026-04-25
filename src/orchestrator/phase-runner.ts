@@ -1,8 +1,7 @@
 import type { Agent } from "../domain/agent";
-import type { ArtefactPointer, ComposedPrompt, Feedback, SkillHint } from "../domain/composer";
+import type { ArtefactPointer, ComposedPrompt, Feedback } from "../domain/composer";
 import { Composer } from "../domain/composer";
 import type { HarnessConfig } from "../domain/config";
-import type { Skill } from "../domain/skill";
 import {
   type Phase,
   resolvePhaseRuntime,
@@ -51,7 +50,6 @@ export interface PhaseExecutionRequest {
 export interface PhaseRunnerOptions {
   readonly config: HarnessConfig;
   readonly agents: ReadonlyMap<string, Agent>;
-  readonly skills: ReadonlyMap<string, Skill>;
   readonly runtimes: ReadonlyMap<string, AgentRuntime>;
 }
 
@@ -161,10 +159,6 @@ export class PhaseRunner {
       tier: context.tier,
       artefactInputs: context.artefactInputs,
       artefactOutputs: context.artefactOutputs,
-      skills: [...this.opts.skills.values()].map<SkillHint>((s) => ({
-        name: s.name,
-        description: s.description,
-      })),
       ...(context.feedback ? { feedback: context.feedback } : {}),
     });
   }

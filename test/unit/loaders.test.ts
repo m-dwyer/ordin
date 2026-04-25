@@ -27,9 +27,10 @@ describe("AgentLoader.loadAll", () => {
     // non-.md files and dotfiles should be ignored
     await writeFile(join(dir, "README.txt"), "nope", "utf8");
 
-    const agents = await loader.loadAll(dir);
+    const agents = await loader.loadAll(dir, new Map());
     expect([...agents.keys()].sort()).toEqual(["build-local", "planner"]);
     expect(agents.get("planner")?.body).toBe("plan body");
+    expect(agents.get("planner")?.skills).toEqual([]);
   });
 
   it("rejects duplicate agent names", async () => {
@@ -44,7 +45,39 @@ describe("AgentLoader.loadAll", () => {
       "---\nname: dup\nruntime: claude-cli\n---\n\nbody\n",
       "utf8",
     );
-    await expect(loader.loadAll(dir)).rejects.toThrow(/Duplicate agent name "dup"/);
+    await expect(loader.loadAll(dir, new Map())).rejects.toThrow(/Duplicate agent name "dup"/);
+  });
+
+  it("resolves declared skill names against the registry", async () => {
+    const dir = await tempDir();
+    await writeFile(
+      join(dir, "planner.md"),
+      "---\nname: planner\nruntime: claude-cli\nskills: [rfc-template]\n---\n\nplan body\n",
+      "utf8",
+    );
+    const registry = new Map([
+      [
+        "rfc-template",
+        {
+          name: "rfc-template",
+          description: "RFC structure",
+          body: "skill body",
+          source: "/virtual/rfc-template/SKILL.md",
+        },
+      ],
+    ]);
+    const agents = await loader.loadAll(dir, registry);
+    expect(agents.get("planner")?.skills.map((s) => s.name)).toEqual(["rfc-template"]);
+  });
+
+  it("throws when a declared skill is not in the registry", async () => {
+    const dir = await tempDir();
+    await writeFile(
+      join(dir, "planner.md"),
+      "---\nname: planner\nruntime: claude-cli\nskills: [nope]\n---\n\nbody\n",
+      "utf8",
+    );
+    await expect(loader.loadAll(dir, new Map())).rejects.toThrow(/references unknown skill "nope"/);
   });
 });
 

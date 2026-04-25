@@ -4,14 +4,11 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Agent } from "../../src/domain/agent";
 import { HarnessConfig } from "../../src/domain/config";
-import type { Skill } from "../../src/domain/skill";
 import { type Workflow, WorkflowLoader } from "../../src/domain/workflow";
-import { AutoGate } from "../../src/gates/auto";
-import type { Gate, GateContext, GateDecision } from "../../src/gates/types";
-import type { EngineServices } from "../../src/orchestrator/engine";
+import type { GateDecision } from "../../src/gates/types";
+import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
-import { PhaseRunner } from "../../src/orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
   AgentRuntime,
@@ -21,9 +18,11 @@ import type {
 } from "../../src/runtimes/types";
 
 /**
- * Behaviour parity between MastraEngine and SequentialEngine. Scenarios
- * are deliberately the same as `orchestrator.test.ts` — we want proof
- * that the swap doesn't change observable outputs.
+ * Verifies MastraEngine drives topology correctly: phase ordering,
+ * `on_reject` back-edges, retry caps, failure halting, compile-time
+ * topology validation, and the linear-vs-loop plan path. Gate decisions
+ * are inputs that select which topology path the test exercises —
+ * each test inlines a phase-keyed callback expressing intent.
  */
 class FakeRuntime implements AgentRuntime {
   readonly name = "fake";
@@ -45,16 +44,6 @@ class FakeRuntime implements AgentRuntime {
   async invoke(req: InvokeRequest): Promise<InvokeResult> {
     this.invocations.push(req);
     return this.result;
-  }
-}
-
-class QueuedGate implements Gate {
-  readonly kind = "human";
-  constructor(private readonly queue: GateDecision[]) {}
-  async request(_ctx: GateContext): Promise<GateDecision> {
-    const next = this.queue.shift();
-    if (!next) throw new Error("QueuedGate exhausted");
-    return next;
   }
 }
 
@@ -84,13 +73,13 @@ const fakeAgent = (name: string): Agent => ({
   runtime: "fake",
   body: `system prompt for ${name}`,
   source: `/virtual/${name}.md`,
+  skills: [],
 });
 
 interface Harness {
   readonly workflow: Workflow;
   readonly config: HarnessConfig;
   readonly agents: Map<string, Agent>;
-  readonly skills: Map<string, Skill>;
   readonly runStore: RunStore;
 }
 
@@ -103,21 +92,16 @@ async function makeHarness(): Promise<Harness> {
     ["builder", fakeAgent("builder")],
     ["reviewer", fakeAgent("reviewer")],
   ]);
-  const skills = new Map<string, Skill>();
   const runsDir = await mkdtemp(join(tmpdir(), "mastra-runs-"));
   const runStore = new RunStore(runsDir);
-  return { workflow, config, agents, skills, runStore };
+  return { workflow, config, agents, runStore };
 }
 
-function makeServices(harness: Harness, runtime: AgentRuntime, gate: Gate): EngineServices {
+function makeServices(harness: Harness, runtime: AgentRuntime): EngineServices {
   return {
-    phaseRunner: new PhaseRunner({
-      config: harness.config,
-      agents: harness.agents,
-      skills: harness.skills,
-      runtimes: new Map([[runtime.name, runtime]]),
-    }),
-    gateFor: () => gate,
+    config: harness.config,
+    agents: harness.agents,
+    runtimes: new Map([[runtime.name, runtime]]),
     runStore: harness.runStore,
   };
 }
@@ -125,7 +109,7 @@ function makeServices(harness: Harness, runtime: AgentRuntime, gate: Gate): Engi
 async function runWithMastra(
   harness: Harness,
   runtime: AgentRuntime,
-  gate: Gate,
+  onGateRequested: (request: GateRequest) => Promise<GateDecision>,
   input: {
     readonly task?: string;
     readonly slug?: string;
@@ -142,9 +126,10 @@ async function runWithMastra(
       slug: input.slug ?? "t",
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
       tier: input.tier ?? "M",
+      onGateRequested,
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
     },
-    makeServices(harness, runtime, gate),
+    makeServices(harness, runtime),
   );
 }
 
@@ -157,14 +142,9 @@ describe("MastraEngine", () => {
 
   it("runs phases in order when every gate approves", async () => {
     const harness = await makeHarness();
-    const gate = new QueuedGate([
-      { status: "approved" },
-      { status: "approved" },
-      { status: "approved" },
-    ]);
 
     const events: RunEvent[] = [];
-    const meta = await runWithMastra(harness, runtime, gate, {
+    const meta = await runWithMastra(harness, runtime, async () => ({ status: "approved" }), {
       task: "do the thing",
       slug: "do-thing",
       workspaceRoot: "/tmp/repo",
@@ -209,20 +189,19 @@ describe("MastraEngine", () => {
 
   it("follows Review→Build back-edge on rejection and passes structured feedback", async () => {
     const harness = await makeHarness();
-    const gate = new QueuedGate([
-      { status: "approved" }, // plan
-      { status: "approved" }, // build #1
-      { status: "rejected", reason: "tests missing" }, // review #1 → build #2
-      { status: "approved" }, // build #2
-      { status: "approved" }, // review #2
-    ]);
+    let reviewCount = 0;
 
-    const meta = await runWithMastra(harness, runtime, gate, {
-      task: "t",
-      slug: "t",
-      workspaceRoot: "/tmp/repo",
-      tier: "M",
-    });
+    const meta = await runWithMastra(
+      harness,
+      runtime,
+      async (req) => {
+        if (req.phaseId === "review" && ++reviewCount === 1) {
+          return { status: "rejected", reason: "tests missing" };
+        }
+        return { status: "approved" };
+      },
+      { task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" },
+    );
 
     expect(meta.status).toBe("completed");
     expect(meta.phases.map((p) => `${p.phaseId}#${p.iteration}`)).toEqual([
@@ -241,20 +220,16 @@ describe("MastraEngine", () => {
 
   it("halts when max_iterations is exceeded", async () => {
     const harness = await makeHarness();
-    const gate = new QueuedGate([
-      { status: "approved" }, // plan
-      { status: "approved" }, // build #1
-      { status: "rejected", reason: "r1" }, // review #1 → build #2
-      { status: "approved" }, // build #2
-      { status: "rejected", reason: "r2" }, // review #2 → would be build #3 (blocked)
-    ]);
 
-    const meta = await runWithMastra(harness, runtime, gate, {
-      task: "t",
-      slug: "t",
-      workspaceRoot: "/tmp/repo",
-      tier: "M",
-    });
+    const meta = await runWithMastra(
+      harness,
+      runtime,
+      async (req) =>
+        req.phaseId === "review"
+          ? { status: "rejected", reason: "always rejects" }
+          : { status: "approved" },
+      { task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" },
+    );
 
     expect(meta.status).toBe("halted");
     const buildIterations = meta.phases.filter((p) => p.phaseId === "build").length;
@@ -271,7 +246,8 @@ describe("MastraEngine", () => {
       durationMs: 50,
       error: "claude crashed",
     };
-    const meta = await runWithMastra(harness, runtime, new AutoGate(), {
+
+    const meta = await runWithMastra(harness, runtime, async () => ({ status: "approved" }), {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
@@ -286,17 +262,17 @@ describe("MastraEngine", () => {
 
   it("halts when a non-rejecter phase gate rejects (no on_reject back-edge)", async () => {
     const harness = await makeHarness();
-    // Build rejects but has no on_reject → halt without retry.
-    const gate = new QueuedGate([
-      { status: "approved" }, // plan
-      { status: "rejected", reason: "build no good" }, // build
-    ]);
-    const meta = await runWithMastra(harness, runtime, gate, {
-      task: "t",
-      slug: "t",
-      workspaceRoot: "/tmp/repo",
-      tier: "M",
-    });
+
+    const meta = await runWithMastra(
+      harness,
+      runtime,
+      async (req) =>
+        req.phaseId === "build"
+          ? { status: "rejected", reason: "build no good" }
+          : { status: "approved" },
+      { task: "t", slug: "t", workspaceRoot: "/tmp/repo", tier: "M" },
+    );
+
     expect(meta.status).toBe("halted");
     expect(meta.phases.map((p) => p.phaseId)).toEqual(["plan", "build"]);
   });
@@ -327,7 +303,7 @@ phases:
       ),
     );
     const harness = { ...(await makeHarness()), workflow };
-    const meta = await runWithMastra(harness, runtime, new AutoGate(), {
+    const meta = await runWithMastra(harness, runtime, async () => ({ status: "approved" }), {
       task: "t",
       slug: "t",
       workspaceRoot: "/tmp/repo",
