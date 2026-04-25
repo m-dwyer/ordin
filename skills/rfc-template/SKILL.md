@@ -13,7 +13,7 @@ This skill is the *delta* from a generic RFC template — it captures the discip
 2. **Problem** — what we're solving and for whom. Include the trigger (incident, metric, user report, strategic ask). Avoid "we need X" — explain why.
 3. **Options** — two or more. For each: one-paragraph description + bulleted trade-offs. If you genuinely can't find a second option, say so and explain the constraint that collapses the design space.
 4. **Recommendation** — which option and why. One short paragraph.
-5. **Work breakdown** — numbered milestones. Each milestone has acceptance criteria that are observable in a diff, a test, or a log line. "Refactor X cleanly" is not acceptance criteria; "function Y now returns `Result<T>` and all call sites are updated; added test at z.test.ts" is.
+5. **Work breakdown** — numbered milestones. Each milestone has acceptance criteria that are observable in a diff, a test, or a log line. "Refactor X cleanly" is not acceptance criteria; "function Y now returns `Result<T>` and all call sites are updated; added test at z.test.ts" is. If related work is intentionally deferred (e.g. tests will land in a follow-up, README update is a separate PR), mark it explicitly — either inline under the relevant milestone as "Deferred: …" or in the optional Non-goals section below. Build executes this list literally and treats unmarked omissions as oversights.
 6. **Risks** — top three. Each: risk, likelihood, impact, mitigation. Don't fill to three if you only have two — padding dilutes signal.
 
 ## Optional sections
@@ -35,3 +35,4 @@ This skill is the *delta* from a generic RFC template — it captures the discip
 - Work breakdown milestones that are tasks ("implement auth module") rather than observable deltas.
 - Risks that are generic ("could introduce bugs") — specific or omit.
 - "Out of scope" lists longer than the Work breakdown — that's a sign the RFC is too small for its topic.
+- **Implicit deferrals** — work clearly related to the change that the RFC neither addresses nor names as deferred. Build will either fill the gap with guesses or correctly leave it out; either is a worse outcome than naming it. Be explicit.

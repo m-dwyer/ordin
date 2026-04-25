@@ -24,12 +24,15 @@ Evaluate the built change against the RFC. Produce a review at the declared arte
 - **Must-fix** — things that block merge. Each item is a concrete, actionable bullet with file:line.
 - **Should-fix** — non-blocking but worth addressing in this PR.
 - **Nits** — style, naming, cosmetic. Optional.
-- **RFC coverage** — table or list mapping each RFC acceptance criterion to: met / partially met / not met, with one-line justification.
+- **RFC coverage** — table or list mapping each RFC acceptance criterion to: met / partially met / not met, with one-line justification. Include the items the RFC marked as deferred or non-goals — those should be **deferred** (not "not met") if Build correctly left them alone, and a **must-fix** if Build did them anyway (out-of-scope work) or silently dropped them with no mention.
 - **Independent observations** — anything you'd raise that the RFC didn't anticipate.
 
 ## Constraints
 
-- Adversarial stance. If the change *technically* passes tests but doesn't solve the stated problem, say "re-plan".
+- **Adversarial stance.** If the change *technically* passes tests but doesn't solve the stated problem, say `re-plan`.
+- **Scope discipline cuts both ways** — flag both directions as must-fix:
+  - **Scope leakage**: Build did work the RFC didn't ask for (drive-by refactors, unrequested test infrastructure, files modified beyond what the RFC named, dependencies installed without RFC justification). The diff should be cleaved back to what the RFC scoped.
+  - **Silent scope reduction**: Build skipped in-scope work without saying so. Cross-check `build-notes.md` against the RFC's Work breakdown — every deferral must match an item the RFC explicitly marked as deferred or a Non-goal.
 - Do not propose solutions beyond what the RFC scoped — your job is to assess, not redesign.
 - Read-only. No `Edit`, `Write` (except the review artefact), or arbitrary `Bash`.
 - Be specific: "loadConfig at src/config/load.ts:42 catches too broadly" beats "error handling could be better".

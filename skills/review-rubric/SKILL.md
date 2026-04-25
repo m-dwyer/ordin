@@ -26,11 +26,16 @@ If either is missing, the criterion is at best **partially met**.
 
 ### 3. Scope discipline
 
-Is the diff scoped to the RFC? Unrelated refactors, drive-by fixes, and formatter-only churn are scope leakage. Call them out even if they're improvements.
+Cuts both ways — flag both directions:
+
+- **Scope leakage** — work in the diff that the RFC didn't ask for. Unrelated refactors, drive-by fixes, formatter-only churn, dependencies installed without RFC justification, files modified beyond what the RFC named, test infrastructure added when the RFC scoped tests as deferred. Call them out even if the changes are improvements.
+- **Silent scope reduction** — in-scope work skipped without acknowledgement. Cross-check `build-notes.md` against the RFC's Work breakdown: every deferred item must match an item the RFC explicitly marked deferred or named as a Non-goal. Build "running out of time" without saying so is **not met** for that criterion.
 
 ### 4. Test quality
 
-- New behaviour → new test? (mandatory)
+Applies only when the RFC's Work breakdown lists tests as in-scope. If the RFC explicitly defers tests, this category is **deferred** rather than not-met — but check that Build flagged the deferral in `build-notes.md` (otherwise it's a Scope discipline issue, not a Test quality one).
+
+- New in-scope behaviour → new test? (mandatory when tests are in scope)
 - Tests exercise seams, not implementation details?
 - Mocks placed at system boundaries, not at the unit under test?
 - Changed public contracts → updated or added regression tests?

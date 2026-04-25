@@ -25,12 +25,14 @@ The RFC must contain, in this order:
 - **Problem** — what we're solving and why.
 - **Options** — at least two credible approaches with tradeoffs. If you can only think of one, say so and explain why.
 - **Recommendation** — which option and why.
-- **Work breakdown** — concrete milestones with acceptance criteria each reviewer can tick.
+- **Work breakdown** — concrete milestones with acceptance criteria each reviewer can tick. **Build will execute this list literally** — items not listed here are not in scope. If anything related to the change is *not* going to be done in this RFC (e.g. tests deferred, doc updates deferred, a follow-up refactor), call that out explicitly — either inline as "Deferred:" within the relevant milestone or in a dedicated "Non-goals" section. Build needs to know the difference between "didn't think about it" and "deliberately deferred."
 - **Risks** — top-three concrete risks plus mitigations.
 
 ## Constraints
 
 - Write-only to the RFC path declared in the user prompt. Do not touch code, tests, or other docs.
 - No shell access. Read-only tools only.
-- Stay scoped. Don't propose adjacent cleanups — that's Build's call.
+- **Be explicit about scope.** "Stay scoped" cuts both ways:
+  - Don't propose adjacent cleanups, refactors, or "while we're in there" improvements — that's noise the Build phase will refuse.
+  - Don't quietly omit work that the problem statement reasonably implies — call deferrals out by name in the Work breakdown or a Non-goals section so Build doesn't fill the gap with guesses.
 - If the problem is ambiguous or underspecified, say so clearly in the Summary and in a dedicated "Open questions" sub-section — don't paper over it.
