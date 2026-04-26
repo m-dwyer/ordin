@@ -149,6 +149,7 @@ describe("registerRun", () => {
         phaseId: "plan",
         tier: "S",
         freshContext: true,
+        skills: [],
       },
     };
 

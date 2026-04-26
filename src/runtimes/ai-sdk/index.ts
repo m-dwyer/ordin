@@ -73,7 +73,7 @@ export type AiSdkRuntimeConfigRaw = z.infer<typeof AiSdkRuntimeConfigSchema>;
 export class AiSdkRuntime implements AgentRuntime {
   readonly name = "ai-sdk";
   readonly capabilities: RuntimeCapabilities = {
-    nativeSkillDiscovery: false,
+    nativeSkillDiscovery: true,
     streaming: false,
     mcpSupport: false,
     maxContextTokens: 200_000,
@@ -139,7 +139,7 @@ export class AiSdkRuntime implements AgentRuntime {
         model: provider.chatModel(modelId),
         system: req.prompt.systemPrompt,
         prompt: req.prompt.userPrompt,
-        tools: buildTools(req.prompt.cwd, req.prompt.tools),
+        tools: buildTools(req.prompt.cwd, req.prompt.tools, req.prompt.skills),
         stopWhen: stepCountIs(this.maxSteps),
         ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
         onStepFinish: (step) => this.onStep(step, tokens, emit),

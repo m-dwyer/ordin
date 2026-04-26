@@ -1,4 +1,5 @@
 import type { Agent } from "./agent";
+import type { Skill } from "./skill";
 import type { Phase, ResolvedPromptDefaults } from "./workflow";
 
 /**
@@ -20,6 +21,15 @@ export interface ComposedPrompt {
   readonly tier: "S" | "M" | "L";
   readonly freshContext: boolean;
   readonly softTokenBudget?: number;
+  /**
+   * Agent-declared skills resolved at agent-load time. The runtime is
+   * responsible for the activation step of the agentskills.io
+   * progressive-disclosure protocol — typically by exposing a `Skill`
+   * tool that returns SKILL.md bodies on demand. Runtimes whose
+   * underlying agent platform handles skills natively (Claude Code via
+   * its plugin system) may ignore this list.
+   */
+  readonly skills: readonly Skill[];
 }
 
 /**
@@ -82,6 +92,7 @@ export class Composer {
       tier: input.tier,
       freshContext: input.phase.fresh_context ?? true,
       softTokenBudget: input.phase.budgets?.soft_tokens ?? input.defaults.softTokenBudget,
+      skills: input.agent.skills,
     };
   }
 
@@ -114,7 +125,7 @@ export class Composer {
       sections.push("");
       sections.push("## Available skills");
       sections.push(
-        "Progressive disclosure: skill bodies load on demand when you determine they're relevant.",
+        "Call the `Skill` tool with a skill's name to load its full instructions when you decide one is relevant. Only the names and descriptions are listed here — bodies load on demand.",
       );
       for (const s of input.agent.skills) {
         sections.push(`- **${s.name}** — ${s.description}`);

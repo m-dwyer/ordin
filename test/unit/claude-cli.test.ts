@@ -47,6 +47,7 @@ function makePrompt(phaseId = "plan", overrides: Partial<ComposedPrompt> = {}): 
     phaseId,
     tier: "M",
     freshContext: true,
+    skills: [],
     ...overrides,
   };
 }

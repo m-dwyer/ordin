@@ -237,6 +237,11 @@ function logEvent(event: RunEvent): void {
         `\n  [${event.phaseId}] start  agent: ${event.model}  judge: ${judgeModel()}\n`,
       );
       return;
+    case "agent.text": {
+      const trimmed = event.text.trim();
+      if (trimmed) process.stderr.write(`  · ${truncate(firstLine(trimmed), 140)}\n`);
+      return;
+    }
     case "agent.tool.use":
       pendingCalls.set(event.id, {
         name: event.name,
@@ -343,6 +348,11 @@ function renderTool(
       return {
         args: truncate(s("command"), 80),
         outcome: preview ? truncate(preview.replace(/\s+/g, " "), 60) : "ok",
+      };
+    case "Skill":
+      return {
+        args: s("name"),
+        outcome: preview ? `${preview.length}+ B body` : "loaded",
       };
     default:
       return { args: "", outcome: "" };

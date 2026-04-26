@@ -3,6 +3,7 @@ import { glob as fsGlob, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { type ToolSet, tool } from "ai";
 import { z } from "zod";
+import type { Skill } from "../../domain/skill";
 
 /**
  * Tool definitions for AiSdkRuntime. Each tool is a zod schema + async
@@ -25,8 +26,18 @@ export function parseToolSpec(spec: string): ToolSpec {
   return match ? { name: match[1] as string, pattern: match[2] } : { name: spec.trim() };
 }
 
-/** Build the AI SDK tool map filtered by the phase's allowlist. */
-export function buildTools(cwd: string, specs: readonly string[]): ToolSet {
+/**
+ * Build the AI SDK tool map filtered by the phase's allowlist. The
+ * `Skill` tool is added unconditionally when the agent has any skills
+ * declared — it's the activation step of the agentskills.io
+ * progressive-disclosure protocol, not a phase-author choice, so it
+ * isn't gated by `allowed_tools`.
+ */
+export function buildTools(
+  cwd: string,
+  specs: readonly string[],
+  skills: readonly Skill[] = [],
+): ToolSet {
   const allowed = new Set(specs.map((s) => parseToolSpec(s).name));
   const all = allTools(cwd);
   const out: ToolSet = {};
@@ -34,7 +45,27 @@ export function buildTools(cwd: string, specs: readonly string[]): ToolSet {
     const t = all[name];
     if (t) out[name] = t;
   }
+  if (skills.length > 0) {
+    out["Skill"] = skillTool(skills);
+  }
   return out;
+}
+
+function skillTool(skills: readonly Skill[]): ToolSet[string] {
+  const byName = new Map(skills.map((s) => [s.name, s]));
+  const known = skills.map((s) => s.name).join(", ");
+  return tool({
+    inputSchema: z.object({
+      name: z.string().describe(`Name of the skill to load. Available: ${known}.`),
+    }),
+    execute: async ({ name }) => {
+      const skill = byName.get(name);
+      if (!skill) {
+        throw new Error(`Unknown skill "${name}". Available: ${known || "(none for this phase)"}.`);
+      }
+      return skill.body;
+    },
+  });
 }
 
 function abs(cwd: string, p: string): string {
