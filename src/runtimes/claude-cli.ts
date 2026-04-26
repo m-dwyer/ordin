@@ -190,10 +190,10 @@ export class ClaudeCliRuntime implements AgentRuntime {
     let timedOut = false;
     const timer = this.timeoutMs
       ? setTimeout(() => {
-        timedOut = true;
-        emit({ type: "error", message: `Timed out after ${this.timeoutMs}ms` });
-        if (!child.killed) child.kill("SIGTERM");
-      }, this.timeoutMs)
+          timedOut = true;
+          emit({ type: "error", message: `Timed out after ${this.timeoutMs}ms` });
+          if (!child.killed) child.kill("SIGTERM");
+        }, this.timeoutMs)
       : undefined;
 
     const exitInfo: { code: number; signal: NodeJS.Signals | null } = await new Promise(
@@ -216,11 +216,11 @@ export class ClaudeCliRuntime implements AgentRuntime {
     const failure: RuntimeFailure | undefined =
       status === "failed"
         ? classifyFailure({
-          exitCode,
-          signal: exitInfo.signal,
-          stderr: stderrBlob,
-          timedOut,
-        })
+            exitCode,
+            signal: exitInfo.signal,
+            stderr: stderrBlob,
+            timedOut,
+          })
         : undefined;
 
     return {
