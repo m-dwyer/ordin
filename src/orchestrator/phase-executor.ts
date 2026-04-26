@@ -1,6 +1,6 @@
 import type { Feedback } from "../domain/composer";
 import type { PhasePreparer } from "../domain/phase-preview";
-import type { Phase } from "../domain/workflow";
+import type { Phase, WorkflowManifest } from "../domain/workflow";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
@@ -22,6 +22,7 @@ export type EngineOutcome = "halted" | "failed";
 export interface PhaseExecutorContext {
   readonly runId: string;
   readonly meta: RunMeta;
+  readonly manifest: WorkflowManifest;
   readonly input: EngineRunInput;
   readonly services: EngineServices;
   readonly phaseRunner: PhaseRunner;
@@ -95,7 +96,13 @@ class PhaseTransaction {
       );
     }
 
-    const invocation = this.invocationPlanner.plan(phase, inputs, outputs, this.ctx.feedback);
+    const invocation = this.invocationPlanner.plan(
+      this.ctx.manifest,
+      phase,
+      inputs,
+      outputs,
+      this.ctx.feedback,
+    );
     if (!invocation.ok) {
       return await this.failBeforeRuntime(phase, iteration, invocation.error);
     }

@@ -64,7 +64,6 @@ export interface GateRequest {
 }
 
 export interface EngineRunInput {
-  readonly workflow: WorkflowManifest;
   readonly task: string;
   readonly slug: string;
   readonly workspaceRoot: string;
@@ -80,7 +79,6 @@ export interface EngineRunInput {
  * doesn't invoke, doesn't emit, doesn't gate.
  */
 export interface PreviewInput {
-  readonly workflow: WorkflowManifest;
   readonly task: string;
   readonly slug: string;
   readonly workspaceRoot: string;

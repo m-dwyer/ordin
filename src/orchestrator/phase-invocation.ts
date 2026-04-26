@@ -1,6 +1,6 @@
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import type { PhasePreparer, PhasePreview } from "../domain/phase-preview";
-import type { Phase } from "../domain/workflow";
+import type { Phase, WorkflowManifest } from "../domain/workflow";
 import type { AgentRuntime } from "../runtimes/types";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
@@ -23,6 +23,7 @@ export class PhaseInvocationPlanner {
   ) {}
 
   plan(
+    manifest: WorkflowManifest,
     phase: Phase,
     artefactInputs: readonly ArtefactPointer[],
     artefactOutputs: readonly ArtefactPointer[],
@@ -39,7 +40,7 @@ export class PhaseInvocationPlanner {
     const preview = this.preparer.prepare({
       phase,
       agent,
-      workflow: this.input.workflow,
+      workflow: manifest,
       config: this.services.config,
       task: this.input.task,
       cwd: this.input.workspaceRoot,
