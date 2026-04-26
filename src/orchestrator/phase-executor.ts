@@ -1,6 +1,7 @@
 import type { Feedback } from "../domain/composer";
 import type { PhasePreparer } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
+import { withSpan } from "../observability/spans";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
@@ -180,5 +181,25 @@ export async function executePhase(
   phase: Phase,
   ctx: PhaseExecutorContext,
 ): Promise<PhaseExecutionOutcome> {
-  return new PhaseTransaction(ctx).execute(phase);
+  const iteration = (ctx.iterations.get(phase.id) ?? 0) + 1;
+  return withSpan(
+    `ordin.phase.${phase.id}`,
+    {
+      "ordin.run_id": ctx.runId,
+      "ordin.phase_id": phase.id,
+      "ordin.agent": phase.agent,
+      "ordin.iteration": iteration,
+      "langfuse.observation.input": `phase=${phase.id} agent=${phase.agent} iteration=${iteration}\n${ctx.input.task}`,
+    },
+    async (span) => {
+      const result = await new PhaseTransaction(ctx).execute(phase);
+      span.setAttribute("ordin.approved", result.approved);
+      if (ctx.outcome) span.setAttribute("ordin.outcome", ctx.outcome);
+      span.setAttribute(
+        "langfuse.observation.output",
+        ctx.outcome ? `outcome=${ctx.outcome}` : `approved=${result.approved}`,
+      );
+      return result;
+    },
+  );
 }

@@ -5,6 +5,13 @@ export default defineConfig({
     include: ["test/**/*.test.ts", "src/**/*.test.ts"],
     environment: "node",
     globals: false,
+    env: {
+      // Tests construct HarnessRuntime, which boots OTel tracing if
+      // LANGFUSE_* env vars are set. Without this guard, mise-sourced
+      // .env.local would ship test traces to whatever Langfuse the
+      // developer has configured.
+      ORDIN_TRACING_DISABLED: "1",
+    },
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "json", "lcov"],

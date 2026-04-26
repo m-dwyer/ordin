@@ -10,6 +10,7 @@ import { ArtefactManager } from "../src/infrastructure/artefact-manager";
 import { HarnessConfigLoader } from "../src/infrastructure/config-loader";
 import { SkillLoader } from "../src/infrastructure/skill-loader";
 import { WorkflowLoader } from "../src/infrastructure/workflow-loader";
+import { withSpan } from "../src/observability/spans";
 import type { RunEvent } from "../src/orchestrator/events";
 import { PhaseRunner } from "../src/orchestrator/phase-runner";
 import { generateRunId, RunStore } from "../src/orchestrator/run-store";
@@ -106,77 +107,95 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
     );
   }
 
-  await stageRepo();
-  if (input.seed) await input.seed(EVAL_REPO);
-
-  const paths = harnessPaths();
-  const [config, workflow, skills] = await Promise.all([
-    new HarnessConfigLoader().load(paths.configFile),
-    new WorkflowLoader().load(paths.workflowFile),
-    new SkillLoader().loadAll(paths.skillsDir),
-  ]);
-  const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
-
-  const phase = workflow.findPhase(input.phase);
-  const agent = agents.get(phase.agent);
-  if (!agent) {
-    throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
-  }
-
-  const tier = input.tier ?? "S";
   const slug = input.slug;
-  const artefactInputs = resolveArtefacts(phase.inputs, slug);
-  const artefactOutputs = resolveArtefacts(phase.outputs, slug);
-
-  const artefacts = new ArtefactManager(EVAL_REPO);
-  const missingIn = await artefacts.findMissing(artefactInputs);
-  if (missingIn.length > 0) {
-    throw new Error(
-      `Phase "${phase.id}" inputs missing on disk: ${missingIn.map((m) => m.path).join(", ")}`,
-    );
-  }
-
-  const preview = new PhasePreparer().prepare({
-    phase,
-    agent,
-    workflow,
-    config,
-    task: input.task,
-    cwd: EVAL_REPO,
-    tier,
-    artefactInputs,
-    artefactOutputs,
-    model,
-  });
-
-  const runtime = new AiSdkRuntime({
-    baseUrl: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
-    apiKey,
-  });
-
-  const runStore = new RunStore(config.runStoreDir());
+  const tier = input.tier ?? "S";
   const runId = generateRunId(slug);
-  const runDir = await runStore.ensureRunDir(runId);
 
-  const result = await new PhaseRunner().run({
-    preview,
-    runtime,
-    context: { runId, runDir, iteration: 1 },
-    emit: logEvent,
-  });
+  return withSpan(
+    `ordin.eval.phase.${input.phase}`,
+    {
+      "ordin.run_id": runId,
+      "ordin.phase_id": input.phase,
+      "ordin.eval": true,
+      "ordin.model": model,
+      "ordin.tier": tier,
+      "langfuse.trace.name": `${input.phase}: ${input.slug}`,
+      "langfuse.trace.input": input.task,
+      "langfuse.session.id": runId,
+    },
+    async (span) => {
+      await stageRepo();
+      if (input.seed) await input.seed(EVAL_REPO);
 
-  if (result.invokeResult.status === "failed") {
-    throw new Error(result.invokeResult.error ?? `phase "${phase.id}" runtime failed`);
-  }
+      const paths = harnessPaths();
+      const [config, workflow, skills] = await Promise.all([
+        new HarnessConfigLoader().load(paths.configFile),
+        new WorkflowLoader().load(paths.workflowFile),
+        new SkillLoader().loadAll(paths.skillsDir),
+      ]);
+      const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
 
-  const missingOut = await artefacts.findMissing(artefactOutputs);
-  if (missingOut.length > 0) {
-    throw new Error(
-      `Phase "${phase.id}" declared outputs that were not written: ${missingOut.map((m) => m.path).join(", ")}`,
-    );
-  }
+      const phase = workflow.findPhase(input.phase);
+      const agent = agents.get(phase.agent);
+      if (!agent) {
+        throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
+      }
 
-  return artefacts.read(artefactRelPath(input.phase, slug));
+      const artefactInputs = resolveArtefacts(phase.inputs, slug);
+      const artefactOutputs = resolveArtefacts(phase.outputs, slug);
+
+      const artefacts = new ArtefactManager(EVAL_REPO);
+      const missingIn = await artefacts.findMissing(artefactInputs);
+      if (missingIn.length > 0) {
+        throw new Error(
+          `Phase "${phase.id}" inputs missing on disk: ${missingIn.map((m) => m.path).join(", ")}`,
+        );
+      }
+
+      const preview = new PhasePreparer().prepare({
+        phase,
+        agent,
+        workflow,
+        config,
+        task: input.task,
+        cwd: EVAL_REPO,
+        tier,
+        artefactInputs,
+        artefactOutputs,
+        model,
+      });
+
+      const runtime = new AiSdkRuntime({
+        baseUrl: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
+        apiKey,
+      });
+
+      const runStore = new RunStore(config.runStoreDir());
+      const runDir = await runStore.ensureRunDir(runId);
+
+      const result = await new PhaseRunner().run({
+        preview,
+        runtime,
+        context: { runId, runDir, iteration: 1 },
+        emit: logEvent,
+      });
+
+      if (result.invokeResult.status === "failed") {
+        throw new Error(result.invokeResult.error ?? `phase "${phase.id}" runtime failed`);
+      }
+
+      const missingOut = await artefacts.findMissing(artefactOutputs);
+      if (missingOut.length > 0) {
+        throw new Error(
+          `Phase "${phase.id}" declared outputs that were not written: ${missingOut.map((m) => m.path).join(", ")}`,
+        );
+      }
+
+      const artefact = await artefacts.read(artefactRelPath(input.phase, slug));
+      span.setAttribute("langfuse.trace.output", artefact.path);
+      return artefact;
+    },
+  );
 }
 
 interface HarnessPaths {

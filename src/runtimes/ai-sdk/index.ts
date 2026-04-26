@@ -143,6 +143,18 @@ export class AiSdkRuntime implements AgentRuntime {
         stopWhen: stepCountIs(this.maxSteps),
         ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
         onStepFinish: (step) => this.onStep(step, tokens, emit),
+        experimental_telemetry: {
+          isEnabled: true,
+          functionId: `ordin.phase.${req.prompt.phaseId}`,
+          metadata: {
+            "ordin.run_id": req.runId,
+            "ordin.phase_id": req.prompt.phaseId,
+            "ordin.model": req.prompt.model,
+            "ordin.runtime": "ai-sdk",
+            "ordin.base_url": this.baseUrl,
+            "langfuse.sessionId": req.runId,
+          },
+        },
       });
     } catch (err) {
       status = "failed";
@@ -176,12 +188,26 @@ export class AiSdkRuntime implements AgentRuntime {
     }
     for (const result of step.toolResults) {
       const preview = typeof result.output === "string" ? previewLines(result.output) : undefined;
-      const hasError = "error" in result && result.error !== undefined;
       emit({
         type: "tool.result",
         id: result.toolCallId,
-        ok: !hasError,
+        ok: true,
         ...(preview ? { preview } : {}),
+      });
+    }
+    // AI SDK v6 surfaces tool execution failures only in `step.content`
+    // (entries with type "tool-error"), not in `toolResults`. Without
+    // this, a thrown tool execute (e.g. Read on a directory) silently
+    // disappears from the transcript and the CLI never logs it.
+    for (const part of step.content) {
+      if (part.type !== "tool-error") continue;
+      const error = (part as { error?: unknown }).error;
+      const message = error instanceof Error ? error.message : String(error ?? "tool failed");
+      emit({
+        type: "tool.result",
+        id: part.toolCallId,
+        ok: false,
+        preview: previewLines(message),
       });
     }
 

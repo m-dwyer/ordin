@@ -12,6 +12,7 @@ import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
 import { SkillLoader } from "../infrastructure/skill-loader";
 import { WorkflowLoader } from "../infrastructure/workflow-loader";
+import { startTracing } from "../observability/tracing";
 import {
   type Engine,
   EngineRegistry,
@@ -110,6 +111,7 @@ export class HarnessRuntime {
   private readonly engines: EngineRegistry;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
+    startTracing();
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
     this.engineName = opts.engine ?? "mastra";

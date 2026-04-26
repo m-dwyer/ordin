@@ -39,6 +39,150 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # Phase 7 will add langfuse (postgres + clickhouse + app) to this file.
-  # Phase 8 onwards may add more. Keep additions additive — don't reshape
-  # the litellm service when new ones land.
+  # ---- Langfuse v3 self-host stack (Phase 7 — observability) ----
+  # Web UI on 127.0.0.1:3000. Six services: web, worker, postgres,
+  # clickhouse, redis, minio. Tracked against upstream
+  # https://github.com/langfuse/langfuse/blob/main/docker-compose.yml —
+  # bump image tags + env shape together when re-syncing.
+  #
+  # Local-dev defaults: passwords/keys are weak placeholders since the
+  # stack binds to 127.0.0.1. Rotate before exposing on a network.
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: ordin-langfuse-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment: &langfuse-env
+      # Auto-provision an org, project, user, and API keys on first
+      # boot so a fresh clone works with `cp .env.local.example
+      # .env.local && mise run langfuse-up`. Idempotent — re-running
+      # with the same IDs is a no-op. Read by langfuse-web only;
+      # harmless duplicates on langfuse-worker.
+      LANGFUSE_INIT_ORG_ID: ordin
+      LANGFUSE_INIT_ORG_NAME: ordin
+      LANGFUSE_INIT_PROJECT_ID: ordin
+      LANGFUSE_INIT_PROJECT_NAME: ordin
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-ordin-local-dev
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-ordin-local-dev
+      LANGFUSE_INIT_USER_EMAIL: dev@ordin.local
+      LANGFUSE_INIT_USER_NAME: ordin
+      LANGFUSE_INIT_USER_PASSWORD: ordin-local-dev
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      SALT: "ordin-langfuse-salt-rotate-me"
+      ENCRYPTION_KEY: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+      NEXTAUTH_SECRET: "ordin-langfuse-nextauth-secret-rotate-me"
+      NEXTAUTH_URL: "http://localhost:3000"
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: redis
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: ordin-langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment: *langfuse-env
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:3030/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  postgres:
+    image: postgres:15
+    container_name: ordin-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: ordin-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+      - langfuse-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: ordin-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "redis"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: ordin-minio
+    restart: unless-stopped
+    command: server --address ":9000" --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    volumes:
+      - langfuse-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  langfuse-postgres:
+  langfuse-clickhouse-data:
+  langfuse-clickhouse-logs:
+  langfuse-minio:
