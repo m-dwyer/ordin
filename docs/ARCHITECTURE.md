@@ -28,7 +28,7 @@ This document describes ordin as it exists today in `src/`. ordin is one impleme
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** the orchestrator imports from domain, infrastructure, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Domain also cannot import infrastructure; file/YAML/frontmatter concerns adapt inward. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
+**Dependency rule:** the orchestrator imports from domain, infrastructure, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Domain also cannot import infrastructure; file/YAML/frontmatter concerns adapt inward. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `bun run deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
 
 Why these boundaries: each is independently swappable because dependencies flow one direction.
 
@@ -92,7 +92,7 @@ So: LiteLLM is a **provider** that `AiSdkRuntime` points at by default — it is
 
 ## Module graph (live)
 
-The diagram below is regenerated from the actual code graph via `pnpm deps:graph`. It renders inline on GitHub.
+The diagram below is regenerated from the actual code graph via `bun run deps:graph`. It renders inline on GitHub.
 
 See [`ARCHITECTURE-graph.md`](./ARCHITECTURE-graph.md).
 

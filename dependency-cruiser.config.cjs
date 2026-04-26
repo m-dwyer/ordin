@@ -3,7 +3,7 @@
  * (see harness-plan.md Part 2 — Architecture).
  *
  * Stage 1: rules are authored but not CI-enforced. Run locally via
- * `pnpm deps:check` to catch layer violations while you work.
+ * `bun run deps:check` to catch layer violations while you work.
  */
 /** @type {import("dependency-cruiser").IConfiguration} */
 module.exports = {

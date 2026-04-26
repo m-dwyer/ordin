@@ -19,9 +19,9 @@ import { judgeModel } from "./judge";
 
 /**
  * Load `.env.local` explicitly at module import. In an activated mise
- * shell this is redundant (mise already sourced it), but `pnpm eval`
+ * shell this is redundant (mise already sourced it), but `bun run eval`
  * invoked from an IDE terminal, a fresh subshell, or anywhere without
- * mise active would otherwise lose LITELLM_MASTER_KEY. Node 22's built-in
+ * mise active would otherwise lose LITELLM_MASTER_KEY. Bun's built-in
  * loader keeps us dependency-free.
  */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

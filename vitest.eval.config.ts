@@ -2,13 +2,13 @@ import { defineConfig } from "vitest/config";
 import { BaseSequencer, type TestSpecification } from "vitest/node";
 
 /**
- * Separate Vitest config for the eval suite so `pnpm test` stays fast.
+ * Separate Vitest config for the eval suite so `bun run test` stays fast.
  *
  * Evals stage ephemeral repos, run real phases via AiSdkRuntime against
  * a LiteLLM proxy, and score artefacts (deterministic + LLM-as-judge).
  * A single fixture can take tens of seconds; a suite easily runs minutes.
  * They're the harness developer's regression gate, not part of the
- * pre-commit sweep — invoke via `pnpm eval` when iterating on prompts.
+ * pre-commit sweep — invoke via `bun run eval` when iterating on prompts.
  */
 
 /**

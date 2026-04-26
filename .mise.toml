@@ -1,6 +1,5 @@
 [tools]
-node = "22"
-pnpm = "10.33.2"
+bun = "1.3.13"
 
 # Dev secrets live in `.env.local` (gitignored) — copy `.env.local.example`
 # on first clone and drop in real values. Currently needed only for
@@ -12,31 +11,31 @@ _.file = ".env.local"
 
 [tasks.test]
 description = "Run the unit-test suite"
-run = "pnpm test"
+run = "bun run test"
 
 [tasks.coverage]
 description = "Run tests with coverage (text + HTML report under coverage/)"
-run = "pnpm test:coverage"
+run = "bun run test:coverage"
 
 [tasks.typecheck]
 description = "Type-check the project (tsc --noEmit)"
-run = "pnpm typecheck"
+run = "bun run typecheck"
 
 [tasks.lint]
 description = "Biome lint + format check"
-run = "pnpm lint"
+run = "bun run lint"
 
 [tasks.deps-check]
 description = "Dependency-cruiser — architectural layer rules"
-run = "pnpm deps:check"
+run = "bun run deps:check"
 
 [tasks.deps-graph]
 description = "Regenerate docs/ARCHITECTURE-graph.md from the live module graph"
-run = "pnpm deps:graph"
+run = "bun run deps:graph"
 
 [tasks.fixture-setup]
 description = "Stage the fixture target repo at .scratch/target-repo for dev-loop ordin runs"
-run = "pnpm fixture:setup"
+run = "bun run fixture:setup"
 
 [tasks.litellm-up]
 description = "Start the LiteLLM proxy (Docker) for eval runs"
@@ -64,7 +63,7 @@ run = "docker compose -f infra/docker-compose.yml logs -f langfuse-web"
 
 [tasks.eval]
 description = "Run the eval suite (requires `mise run litellm-up` first)"
-run = "pnpm eval"
+run = "bun run eval"
 
 [tasks.check]
 description = "Full pre-commit sweep: typecheck + test + lint + deps-check"
