@@ -53,6 +53,12 @@ export interface ComposeInput {
   readonly artefactOutputs?: readonly ArtefactPointer[];
   /** Optional structured feedback from a prior-phase rejection. */
   readonly feedback?: Feedback;
+  /**
+   * Top-priority model override. Wins over `agent.model` and
+   * `defaults.model`. Set by `PhasePreparer` when the caller specified
+   * a model explicitly (evals, programmatic invocations).
+   */
+  readonly modelOverride?: string;
 }
 
 export interface ArtefactPointer {
@@ -63,7 +69,7 @@ export interface ArtefactPointer {
 
 export class Composer {
   compose(input: ComposeInput): ComposedPrompt {
-    const model = input.agent.model ?? input.defaults.model;
+    const model = input.modelOverride ?? input.agent.model ?? input.defaults.model;
     const tools = input.agent.tools ?? input.defaults.allowedTools;
 
     return {

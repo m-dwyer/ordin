@@ -12,18 +12,32 @@ import type { Artefact } from "../src/domain/artefact";
 }
 
 /**
- * LLM-as-judge wrapper. Asks a cheap model (by default `claude-haiku-4-5`,
- * which LiteLLM's `model_list` routes to whatever backend you've picked
- * — qwen3:4b locally, real Anthropic if you swap providers) whether an
- * output satisfies a yes/no criterion, returning a 0..1 score.
+ * LLM-as-judge wrapper. Asks a model whether an output satisfies a
+ * yes/no criterion, returning a 0..1 score.
+ *
+ * Judge model resolution (explicit, no silent fallback):
+ *   1. `ORDIN_EVAL_JUDGE_MODEL` — explicit override.
+ *   2. `ORDIN_EVAL_MODEL` — same model as the agent under test. The
+ *      common "I want one model in play for this run" case.
+ *   3. Throw — neither set, no implicit default. Forces the eval
+ *      author to know what's judging.
  *
  * Autoevals handles the rubric prompt structure, chain-of-thought, and
- * choice parsing — we just supply the natural-language criterion. Vary
- * the judge model by editing its LiteLLM routing, or by setting
- * `ORDIN_EVAL_JUDGE_MODEL` to a different LiteLLM alias per-run.
+ * choice parsing — we just supply the natural-language criterion.
  */
 
 let initialised = false;
+let resolvedJudgeModel: string | undefined;
+
+export function judgeModel(): string {
+  const model = process.env.ORDIN_EVAL_JUDGE_MODEL ?? process.env.ORDIN_EVAL_MODEL;
+  if (!model) {
+    throw new Error(
+      "Judge model not configured. Set ORDIN_EVAL_MODEL (preferred — the same model judges its own output) or ORDIN_EVAL_JUDGE_MODEL (explicit override).",
+    );
+  }
+  return model;
+}
 
 function ensureInit(): void {
   if (initialised) return;
@@ -33,18 +47,12 @@ function ensureInit(): void {
       "LITELLM_MASTER_KEY is unset. Copy .env.local.example to .env.local and set the key.",
     );
   }
+  resolvedJudgeModel = judgeModel();
   const client = new OpenAI({
     baseURL: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
     apiKey,
   });
-  init({
-    client,
-    // LiteLLM alias — matches the harness-side Claude name; routes to
-    // a cheap local model (qwen3:4b) via model_list, or to real
-    // Anthropic if the user swaps backends. Override with
-    // `ORDIN_EVAL_JUDGE_MODEL` if you want a different alias.
-    defaultModel: process.env.ORDIN_EVAL_JUDGE_MODEL ?? "claude-haiku-4-5",
-  });
+  init({ client, defaultModel: resolvedJudgeModel });
   initialised = true;
 }
 

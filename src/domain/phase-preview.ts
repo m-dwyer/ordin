@@ -39,6 +39,13 @@ export interface PreparePhaseInput {
   readonly artefactInputs: readonly ArtefactPointer[];
   readonly artefactOutputs: readonly ArtefactPointer[];
   readonly feedback?: Feedback;
+  /**
+   * Top-priority model override. Wins over `agent.model`, `phase.model`,
+   * `workflow.model`, tier defaults, and config defaults. Used by callers
+   * that want to compose a phase with a specific model independent of
+   * what the workflow declared (evals, programmatic invocations).
+   */
+  readonly model?: string;
 }
 
 /**
@@ -85,6 +92,7 @@ export class PhasePreparer {
       artefactInputs: input.artefactInputs,
       artefactOutputs: input.artefactOutputs,
       ...(input.feedback ? { feedback: input.feedback } : {}),
+      ...(input.model ? { modelOverride: input.model } : {}),
     });
     return { phase: input.phase, runtimeName, prompt };
   }

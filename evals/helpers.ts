@@ -3,11 +3,17 @@ import { cp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { simpleGit } from "simple-git";
+import { AgentLoader } from "../src/domain/agent";
 import { type Artefact, ArtefactManager } from "../src/domain/artefact";
-import { AutoGate } from "../src/gates/auto";
-import type { RunEvent } from "../src/runtime/harness";
-import { HarnessRuntime } from "../src/runtime/harness";
+import { HarnessConfig } from "../src/domain/config";
+import { PhasePreparer, resolveArtefacts } from "../src/domain/phase-preview";
+import { SkillLoader } from "../src/domain/skill";
+import { WorkflowLoader } from "../src/domain/workflow";
+import type { RunEvent } from "../src/orchestrator/events";
+import { PhaseRunner } from "../src/orchestrator/phase-runner";
+import { generateRunId, RunStore } from "../src/orchestrator/run-store";
 import { AiSdkRuntime } from "../src/runtimes/ai-sdk";
+import { judgeModel } from "./judge";
 
 /**
  * Load `.env.local` explicitly at module import. In an activated mise
@@ -55,6 +61,13 @@ export interface RunPhaseInput {
   readonly slug: string;
   readonly tier?: "S" | "M" | "L";
   /**
+   * Model to compose the prompt with — wins over workflow YAML defaults.
+   * Optional; falls back to `ORDIN_EVAL_MODEL` env var. The eval owns
+   * the (agent, model, runtime) tuple it's testing, not the workflow's
+   * production declaration.
+   */
+  readonly model?: string;
+  /**
    * Optional hook to stage artefacts or files into the ephemeral repo
    * *after* the fixture template copy + git init but *before* the phase
    * runs. Used by isolation-per-phase fixtures: `build.eval.ts` seeds
@@ -64,14 +77,26 @@ export interface RunPhaseInput {
 }
 
 /**
- * Runs one phase and returns the produced artefact. The domain's
- * `Artefact` gives us { path, content, modifiedAt } — path is useful
- * for rubric-failure messages so authors can inspect the output
- * without hunting for it in `.scratch/`.
+ * Runs one phase as an isolated `(agent, model, runtime, inputs) →
+ * artefact` test. Composes the phase via `PhasePreparer` and invokes
+ * via `PhaseRunner` directly — bypasses `harness.startRun` and the
+ * workflow engine entirely. The eval owns the model under test; the
+ * workflow YAML supplies *defaults* for production runs but is not
+ * load-bearing for eval signal.
+ *
+ * The domain's `Artefact` returned here gives us `{ path, content,
+ * modifiedAt }` — path is useful for rubric-failure messages so
+ * authors can inspect the output without hunting for it in `.scratch/`.
  */
 export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
-  await stageRepo();
-  if (input.seed) await input.seed(EVAL_REPO);
+  judgeModel(); // fail-fast: judge model must be configured
+
+  const model = input.model ?? process.env.ORDIN_EVAL_MODEL;
+  if (!model) {
+    throw new Error(
+      "Agent model not configured. Pass `model` to runPhase or set ORDIN_EVAL_MODEL.",
+    );
+  }
 
   const apiKey = process.env.LITELLM_MASTER_KEY;
   if (!apiKey) {
@@ -79,40 +104,94 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
       "LITELLM_MASTER_KEY is unset. Copy .env.local.example to .env.local and set the key.",
     );
   }
-  // Optional: route all composer-side model names to one explicit backend
-  // alias. Lets you compare models across runs without editing configs —
-  // `ORDIN_EVAL_MODEL=qwen3-14b pnpm eval`. The alias must exist in
-  // litellm/config.yaml's model_list.
-  const overrideAlias = process.env.ORDIN_EVAL_MODEL;
-  const modelMap = overrideAlias
-    ? new Map<string, string>([
-        ["claude-opus-4-7", overrideAlias],
-        ["claude-sonnet-4-6", overrideAlias],
-      ])
-    : undefined;
+
+  await stageRepo();
+  if (input.seed) await input.seed(EVAL_REPO);
+
+  const paths = harnessPaths();
+  const [config, workflow, skills] = await Promise.all([
+    HarnessConfig.load(paths.configFile),
+    new WorkflowLoader().load(paths.workflowFile),
+    new SkillLoader().loadAll(paths.skillsDir),
+  ]);
+  const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
+
+  const phase = workflow.findPhase(input.phase);
+  const agent = agents.get(phase.agent);
+  if (!agent) {
+    throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
+  }
+
+  const tier = input.tier ?? "S";
+  const slug = input.slug;
+  const artefactInputs = resolveArtefacts(phase.inputs, slug);
+  const artefactOutputs = resolveArtefacts(phase.outputs, slug);
+
+  const artefacts = new ArtefactManager(EVAL_REPO);
+  const missingIn = await artefacts.findMissing(artefactInputs);
+  if (missingIn.length > 0) {
+    throw new Error(
+      `Phase "${phase.id}" inputs missing on disk: ${missingIn.map((m) => m.path).join(", ")}`,
+    );
+  }
+
+  const preview = new PhasePreparer().prepare({
+    phase,
+    agent,
+    workflow,
+    config,
+    task: input.task,
+    cwd: EVAL_REPO,
+    tier,
+    artefactInputs,
+    artefactOutputs,
+    model,
+  });
 
   const runtime = new AiSdkRuntime({
     baseUrl: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
     apiKey,
-    ...(modelMap ? { modelMap } : {}),
   });
 
-  const harness = new HarnessRuntime({
-    root: REPO_ROOT,
-    runtimes: new Map([["ai-sdk", runtime]]),
-    gateForKind: () => new AutoGate(),
+  const runStore = new RunStore(config.runStoreDir());
+  const runId = generateRunId(slug);
+  const runDir = await runStore.ensureRunDir(runId);
+
+  const result = await new PhaseRunner().run({
+    preview,
+    runtime,
+    context: { runId, runDir, iteration: 1 },
+    emit: logEvent,
   });
 
-  await harness.startRun({
-    task: input.task,
-    slug: input.slug,
-    repoPath: EVAL_REPO,
-    tier: input.tier ?? "S",
-    onlyPhases: [input.phase],
-    onEvent: logEvent,
-  });
+  if (result.invokeResult.status === "failed") {
+    throw new Error(result.invokeResult.error ?? `phase "${phase.id}" runtime failed`);
+  }
 
-  return new ArtefactManager(EVAL_REPO).read(artefactRelPath(input.phase, input.slug));
+  const missingOut = await artefacts.findMissing(artefactOutputs);
+  if (missingOut.length > 0) {
+    throw new Error(
+      `Phase "${phase.id}" declared outputs that were not written: ${missingOut.map((m) => m.path).join(", ")}`,
+    );
+  }
+
+  return artefacts.read(artefactRelPath(input.phase, slug));
+}
+
+interface HarnessPaths {
+  readonly configFile: string;
+  readonly workflowFile: string;
+  readonly agentsDir: string;
+  readonly skillsDir: string;
+}
+
+function harnessPaths(): HarnessPaths {
+  return {
+    configFile: join(REPO_ROOT, "ordin.config.yaml"),
+    workflowFile: join(REPO_ROOT, "workflows", "software-delivery.yaml"),
+    agentsDir: join(REPO_ROOT, "agents"),
+    skillsDir: join(REPO_ROOT, "skills"),
+  };
 }
 
 async function stageRepo(): Promise<void> {
@@ -151,11 +230,11 @@ const writtenSnapshots = new Map<string, string>();
 function logEvent(event: RunEvent): void {
   switch (event.type) {
     case "phase.started":
-      // Deliberately not printing event.model — see the three-layer
-      // routing in litellm/config.yaml and ARCHITECTURE.md.
       pendingCalls.clear();
       writtenSnapshots.clear();
-      process.stderr.write(`\n  [${event.phaseId}] start\n`);
+      process.stderr.write(
+        `\n  [${event.phaseId}] start  agent: ${event.model}  judge: ${judgeModel()}\n`,
+      );
       return;
     case "agent.tool.use":
       pendingCalls.set(event.id, {
