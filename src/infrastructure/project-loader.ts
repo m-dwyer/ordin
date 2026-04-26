@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ProjectRegistry, ProjectsFileSchema, type ProjectsFile } from "../domain/project";
+import { ProjectRegistry, type ProjectsFile, ProjectsFileSchema } from "../domain/project";
 
 export class ProjectRegistryLoader {
   async load(sharedPath: string, localPath?: string): Promise<ProjectRegistry> {

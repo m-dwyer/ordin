@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { SkillFrontmatterSchema, type Skill } from "../domain/skill";
+import { type Skill, SkillFrontmatterSchema } from "../domain/skill";
 import { FrontmatterReader } from "./frontmatter";
 
 export class SkillLoader {

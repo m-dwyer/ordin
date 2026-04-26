@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
-import { AgentFrontmatterSchema, type Agent } from "../domain/agent";
+import { type Agent, AgentFrontmatterSchema } from "../domain/agent";
 import type { Skill } from "../domain/skill";
 import { FrontmatterReader } from "./frontmatter";
 

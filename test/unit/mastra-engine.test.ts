@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Agent } from "../../src/domain/agent";
-import { HarnessConfig } from "../../src/domain/config";
+import type { HarnessConfig } from "../../src/domain/config";
 import type { Workflow } from "../../src/domain/workflow";
 import type { GateDecision } from "../../src/gates/types";
 import { HarnessConfigLoader } from "../../src/infrastructure/config-loader";

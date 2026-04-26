@@ -1,9 +1,9 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Agent } from "../domain/agent";
-import { HarnessConfig } from "../domain/config";
+import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
-import { ProjectRegistry } from "../domain/project";
+import type { ProjectRegistry } from "../domain/project";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
 import type { Gate, GateDecision } from "../gates/types";
