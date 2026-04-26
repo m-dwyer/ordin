@@ -1,7 +1,7 @@
-import { ArtefactManager } from "../domain/artefact";
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import { type PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
+import { ArtefactManager } from "../infrastructure/artefact-manager";
 import type { AgentRuntime } from "../runtimes/types";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
@@ -187,6 +187,14 @@ class PhaseTransaction {
         decision: phaseMeta.gateDecision,
         ...(decision.note ? { note: decision.note } : {}),
       });
+      this.ctx.emit({
+        type: "phase.completed",
+        runId: this.ctx.runId,
+        phaseId: phase.id,
+        iteration: phaseMeta.iteration,
+        tokens: invokeResult.tokens,
+        durationMs: invokeResult.durationMs,
+      });
       await this.ctx.services.runStore.writeMeta(this.ctx.meta);
       return { approved: true };
     }
@@ -250,9 +258,8 @@ class PhaseTransaction {
 
   /**
    * Records a phase failure detected after the runtime returned ok
-   * (declared outputs missing). PhaseMeta is already in the run state
-   * — mutate it in place and emit `phase.failed` to override the
-   * earlier `phase.completed` event from PhaseRunner.
+   * (declared outputs missing). PhaseMeta is already in the run state,
+   * so mutate it in place and emit the final phase failure.
    */
   private async failAfterRuntime(
     phase: Phase,

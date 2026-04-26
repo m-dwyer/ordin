@@ -5,7 +5,8 @@ import type { RuntimeEvent, TokenUsage } from "../runtimes/types";
  * a single temporally-ordered stream that interleaves:
  *
  *   • run lifecycle          (run.started, run.completed)
- *   • phase lifecycle        (phase.started, phase.completed, phase.failed)
+ *   • phase lifecycle        (phase.started, phase.runtime.completed,
+ *                             phase.completed, phase.failed)
  *   • gate lifecycle         (gate.requested, gate.decided)
  *   • runtime observations   (agent.*), tagged with the active phaseId
  *
@@ -31,6 +32,14 @@ export type RunEvent =
     }
   | {
       readonly type: "phase.completed";
+      readonly runId: string;
+      readonly phaseId: string;
+      readonly iteration: number;
+      readonly tokens: TokenUsage;
+      readonly durationMs: number;
+    }
+  | {
+      readonly type: "phase.runtime.completed";
       readonly runId: string;
       readonly phaseId: string;
       readonly iteration: number;

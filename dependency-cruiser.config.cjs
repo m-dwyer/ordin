@@ -14,7 +14,7 @@ module.exports = {
       comment:
         "Domain is pure TypeScript and must not know about the orchestrator.",
       from: { path: "^src/domain" },
-      to: { path: "^src/(orchestrator|runtime|cli)/" },
+      to: { path: "^src/(orchestrator|runtime|cli|infrastructure)/" },
     },
     {
       name: "domain-cannot-depend-on-runtimes",
@@ -49,12 +49,12 @@ module.exports = {
       name: "cli-cannot-reach-past-harness-runtime",
       severity: "error",
       comment:
-        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator directly. Exception: src/cli/gate-prompters/ assembles CLI-specific gate resolvers and legitimately imports Gate/HumanGate/AutoGate + the Phase type.",
+        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ assembles CLI-specific gate resolvers and legitimately imports Gate/HumanGate/AutoGate + the Phase type.",
       from: {
         path: "^src/cli",
         pathNot: "^src/cli/gate-prompters/",
       },
-      to: { path: "^src/(domain|runtimes|orchestrator|gates)/" },
+      to: { path: "^src/(domain|runtimes|orchestrator|gates|infrastructure)/" },
     },
     {
       name: "gate-prompters-scoped-to-gate-assembly",

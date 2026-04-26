@@ -1,13 +1,17 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Agent, AgentLoader } from "../domain/agent";
+import type { Agent } from "../domain/agent";
 import { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
 import { ProjectRegistry } from "../domain/project";
-import { SkillLoader } from "../domain/skill";
-import { type Phase, WorkflowLoader, type WorkflowManifest } from "../domain/workflow";
+import type { Phase, WorkflowManifest } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
 import type { Gate, GateDecision } from "../gates/types";
+import { AgentLoader } from "../infrastructure/agent-loader";
+import { HarnessConfigLoader } from "../infrastructure/config-loader";
+import { ProjectRegistryLoader } from "../infrastructure/project-loader";
+import { SkillLoader } from "../infrastructure/skill-loader";
+import { WorkflowLoader } from "../infrastructure/workflow-loader";
 import {
   type Engine,
   EngineRegistry,
@@ -185,11 +189,13 @@ export class HarnessRuntime {
   private async load(): Promise<LoadedState> {
     if (this.loaded) return this.loaded;
     const paths = this.paths();
+    const configLoader = new HarnessConfigLoader();
+    const projectLoader = new ProjectRegistryLoader();
     const [config, workflow, skills, projects] = await Promise.all([
-      HarnessConfig.load(paths.configFile),
+      configLoader.load(paths.configFile),
       new WorkflowLoader().load(paths.workflowFile),
       new SkillLoader().loadAll(paths.skillsDir),
-      ProjectRegistry.load(paths.projectsFile, paths.projectsLocalFile),
+      projectLoader.load(paths.projectsFile, paths.projectsLocalFile),
     ]);
     const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
     this.loaded = {

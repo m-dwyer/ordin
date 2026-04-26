@@ -8,9 +8,10 @@ import type { PhaseMeta } from "./run-store";
  * `PhaseRunner` invokes one prepared phase: takes a `PhasePreview`
  * plus the chosen `AgentRuntime` plus per-run execution context,
  * dispatches the prompt to the runtime, and collects the result. It
- * emits `phase.started` / `phase.completed` / `phase.failed`
- * lifecycle events plus the runtime's observation stream, tagged
- * with runId + phaseId.
+ * emits `phase.started` / `phase.runtime.completed` / `phase.failed`
+ * lifecycle events plus the runtime's observation stream, tagged with
+ * runId + phaseId. The full `phase.completed` event is emitted by the
+ * phase transaction after output verification and gate approval.
  *
  * Stateless on purpose. The runtime registry lives one layer up
  * (`PhaseTransaction` reads it from `EngineServices`) — `PhaseRunner`
@@ -83,7 +84,7 @@ export class PhaseRunner {
     }
 
     emit({
-      type: "phase.completed",
+      type: "phase.runtime.completed",
       runId: context.runId,
       phaseId: preview.phase.id,
       iteration: context.iteration,

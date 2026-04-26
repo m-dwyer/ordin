@@ -2,7 +2,8 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolvePhaseRuntime, WorkflowLoader } from "../../src/domain/workflow";
+import { resolvePhaseRuntime } from "../../src/domain/workflow";
+import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 
 async function writeTempYaml(contents: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "harness-wf-"));
@@ -44,8 +45,29 @@ phases:
     const wf = await loader.load(path);
 
     expect(wf.runtime).toBe("ai-sdk");
-    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "fallback")).toBe("ai-sdk");
-    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "fallback")).toBe("claude-cli");
+    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, undefined, "fallback")).toBe("ai-sdk");
+    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, undefined, "fallback")).toBe(
+      "claude-cli",
+    );
+  });
+
+  it("uses agent runtime when phase and workflow do not override it", async () => {
+    const path = await writeTempYaml(
+      `name: t
+version: 1
+phases:
+  - { id: plan, agent: p, gate: human }
+  - { id: review, agent: r, runtime: claude-cli, gate: human }
+`,
+    );
+    const wf = await loader.load(path);
+
+    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "agent-runtime", "fallback")).toBe(
+      "agent-runtime",
+    );
+    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "agent-runtime", "fallback")).toBe(
+      "claude-cli",
+    );
   });
 
   it("rejects duplicate phase ids", async () => {

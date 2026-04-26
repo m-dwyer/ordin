@@ -68,11 +68,13 @@ export function clackEventSink(): {
       case "phase.started":
         startPhase(event.phaseId, event.model, event.iteration);
         break;
-      case "phase.completed":
+      case "phase.runtime.completed":
         endPhase(
-          `${event.phaseId} complete — ${formatDuration(event.durationMs)} · out ${event.tokens.output.toLocaleString()} tok`,
+          `${event.phaseId} runtime complete — ${formatDuration(event.durationMs)} · out ${event.tokens.output.toLocaleString()} tok`,
           true,
         );
+        break;
+      case "phase.completed":
         break;
       case "phase.failed":
         endPhase(`${event.phaseId} failed — ${firstLine(event.error)}`, false);

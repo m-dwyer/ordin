@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ArtefactManager } from "../../src/domain/artefact";
+import { ArtefactManager } from "../../src/infrastructure/artefact-manager";
 
 describe("ArtefactManager", () => {
   it("reads a file and reports it exists", async () => {

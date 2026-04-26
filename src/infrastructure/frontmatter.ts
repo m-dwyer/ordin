@@ -4,8 +4,7 @@ import type { ZodType } from "zod";
 
 /**
  * Wrapper around gray-matter that validates frontmatter against a zod
- * schema and routes YAML through our primary `yaml` dep (so we don't ship
- * two YAML parsers — gray-matter bundles js-yaml@3 by default).
+ * schema and routes YAML through our primary `yaml` dep.
  */
 export interface FrontmatterDoc<T> {
   readonly meta: T;
@@ -14,7 +13,6 @@ export interface FrontmatterDoc<T> {
 
 export class FrontmatterReader {
   private static readonly YAML_ENGINES = {
-    // gray-matter types expect `object`; YAML frontmatter always parses to one.
     yaml: (input: string): object => (parseYaml(input) ?? {}) as object,
   };
 

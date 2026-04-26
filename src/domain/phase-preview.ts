@@ -73,6 +73,7 @@ export class PhasePreparer {
     const runtimeName = resolvePhaseRuntime(
       input.phase,
       input.workflow,
+      input.agent.runtime,
       input.config.defaultRuntime,
     );
     const defaults = resolvePromptDefaults(

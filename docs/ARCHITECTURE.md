@@ -2,7 +2,7 @@
 
 This document describes ordin as it exists today in `src/`. ordin is one implementation of the harness pattern; see [`harness-plan.md`](./harness-plan.md) for the full design rationale, stage progression, and deferred-phase triggers.
 
-## The four load-bearing separations
+## Load-Bearing Separations
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -15,7 +15,10 @@ This document describes ordin as it exists today in `src/`. ordin is one impleme
 │  — uses Domain and Runtimes via their interfaces         │
 ├──────────────────────────────────────────────────────────┤
 │  Domain (workflow, agent, skill, composer, artefact)     │
-│  — pure TypeScript; no orchestrator, no runtime          │
+│  — pure TypeScript; no filesystem/YAML, no runtime       │
+├──────────────────────────────────────────────────────────┤
+│  Infrastructure (loaders, frontmatter, artefact files)   │
+│  — adapts disk/YAML/frontmatter to domain objects        │
 ├──────────────────────────────────────────────────────────┤
 │  Runtimes (ClaudeCliRuntime, AiSdkRuntime; future SDK)   │
 │  — implement AgentRuntime; no orchestrator               │
@@ -25,14 +28,15 @@ This document describes ordin as it exists today in `src/`. ordin is one impleme
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** the orchestrator imports from domain, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
+**Dependency rule:** the orchestrator imports from domain, infrastructure, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Domain also cannot import infrastructure; file/YAML/frontmatter concerns adapt inward. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
 
-Why these five boundaries (the original four plus a now-pure gate layer): each is independently swappable because dependencies flow one direction.
+Why these boundaries: each is independently swappable because dependencies flow one direction.
 
 - Replace the engine (LangGraph, Temporal, custom) → new `Engine` impl alongside `MastraEngine`; domain/runtimes/gates untouched.
 - Add a new client (HTTP, MCP, ACP) → new adapter over `HarnessRuntime`; zero changes elsewhere.
 - Add a new runtime (Claude Agent SDK, etc.) → new adapter implementing `AgentRuntime`; zero changes elsewhere.
 - Add a new gate prompter (web, Slack, Github approval) → new `GatePrompter` impl in the client layer; gate business logic stays the same.
+- Change persistence/loading format (database, remote registry, package bundle) → new infrastructure adapters; domain objects stay unchanged.
 - Add observability (Langfuse) → sidecar decorator wrapping the runtime, or wire Mastra's built-in tracing inside `MastraEngine`.
 
 ## Key interfaces
@@ -55,7 +59,7 @@ Two event types, split cleanly along the layer boundary:
 - **`RuntimeEvent`** (`src/runtimes/types.ts`) — events a single `AgentRuntime.invoke()` emits. One invocation = one subprocess = one stream, including any subagents the runtime delegates to internally (Claude's Task tool). Neutral to runIds and phases.
 - **`RunEvent`** (`src/orchestrator/events.ts`) — the unified, temporally-ordered public stream. Merges three sources:
   - Run lifecycle: `run.started`, `run.completed`
-  - Phase lifecycle: `phase.started`, `phase.completed`, `phase.failed`
+  - Phase lifecycle: `phase.started`, `phase.runtime.completed`, `phase.completed`, `phase.failed`
   - Gate lifecycle: `gate.requested`, `gate.decided`
   - Agent observations: `agent.text`, `agent.thinking`, `agent.tool.use`, `agent.tool.result`, `agent.tokens`, `agent.error` — each tagged with `runId` + `phaseId`
 
