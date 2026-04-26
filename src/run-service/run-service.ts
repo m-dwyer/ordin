@@ -82,6 +82,23 @@ export class RunService {
     return bus.subscribe();
   }
 
+  /**
+   * Polling-friendly view of the same event stream `subscribe()` exposes.
+   * MCP tool calls are one-shot, so an MCP client can't hold an
+   * async-iterable open across the run; instead it pages through the
+   * buffer with a cursor until `done` is true.
+   */
+  getEvents(runId: string, since = 0): { events: RunEvent[]; nextCursor: number; done: boolean } {
+    const bus = this.buses.get(runId);
+    if (!bus) throw new Error(`No active run with id ${runId}`);
+    const buffered = bus.buffered();
+    return {
+      events: buffered.slice(since),
+      nextCursor: buffered.length,
+      done: bus.isClosed(),
+    };
+  }
+
   pendingGatesFor(runId: string): readonly PendingGate[] {
     return this.prompter.listFor(runId);
   }
