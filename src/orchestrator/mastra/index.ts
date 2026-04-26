@@ -80,6 +80,7 @@ export class MastraEngine implements Engine {
     const ctx: RunCtx = {
       runId,
       meta,
+      manifest: program.manifest,
       input,
       services,
       phaseRunner,

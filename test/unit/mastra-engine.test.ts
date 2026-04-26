@@ -125,7 +125,6 @@ async function runWithMastra(
   return engine.run(
     program,
     {
-      workflow: program.manifest,
       task: input.task ?? "t",
       slug: input.slug ?? "t",
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
@@ -306,7 +305,6 @@ phases:
     const previews = await engine.preview(
       program,
       {
-        workflow: program.manifest,
         task: "preview only",
         slug: "preview-only",
         workspaceRoot: "/tmp/repo",

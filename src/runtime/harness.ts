@@ -20,6 +20,7 @@ import {
   type GateRequest,
   type PreviewInput,
   type PreviewServices,
+  type WorkflowProgram,
 } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
@@ -90,6 +91,14 @@ interface LoadedState {
   readonly runStore: RunStore;
 }
 
+interface PreparedRun {
+  readonly state: LoadedState;
+  readonly engine: Engine;
+  readonly program: WorkflowProgram;
+  readonly slug: string;
+  readonly workspaceRoot: string;
+}
+
 export class HarnessRuntime {
   private loaded?: LoadedState;
 
@@ -97,7 +106,7 @@ export class HarnessRuntime {
   private readonly workflowName: string;
   private readonly engineName: string;
   private readonly runtimesOverride?: ReadonlyMap<string, AgentRuntime>;
-  private readonly gateResolver?: (kind: Phase["gate"]) => Gate;
+  private readonly gateResolver: (kind: Phase["gate"]) => Gate;
   private readonly engines: EngineRegistry;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
@@ -105,19 +114,13 @@ export class HarnessRuntime {
     this.workflowName = opts.workflow ?? "software-delivery";
     this.engineName = opts.engine ?? "mastra";
     this.runtimesOverride = opts.runtimes;
-    this.gateResolver = opts.gateForKind;
+    this.gateResolver = opts.gateForKind ?? defaultGateResolver;
     this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
   }
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
-    const state = await this.load();
-    const slug = requireSlug(input.slug);
-    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
-    const engine = this.engines.get(this.engineName);
-    const program = engine.compile(this.workflowForRun(state.workflow, input));
-
+    const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
     const runInput: EngineRunInput = {
-      workflow: program.manifest,
       task: input.task,
       slug,
       workspaceRoot,
@@ -131,19 +134,13 @@ export class HarnessRuntime {
 
   /**
    * Compose the prompt for every phase without invoking any runtime.
-   * Mirrors `startRun` shape (load → compile → delegate) so dry-run
+   * Mirrors `startRun` shape (prepareRun → delegate) so dry-run
    * inherits all the same workflow slicing semantics (`onlyPhases`,
    * `startAt`, project resolution, slug validation).
    */
   async previewRun(input: StartRunInput): Promise<readonly PhasePreview[]> {
-    const state = await this.load();
-    const slug = requireSlug(input.slug);
-    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
-    const engine = this.engines.get(this.engineName);
-    const program = engine.compile(this.workflowForRun(state.workflow, input));
-
+    const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
     const previewInput: PreviewInput = {
-      workflow: program.manifest,
       task: input.task,
       slug,
       workspaceRoot,
@@ -184,6 +181,15 @@ export class HarnessRuntime {
     };
   }
 
+  private async prepareRun(input: StartRunInput): Promise<PreparedRun> {
+    const state = await this.load();
+    const slug = requireSlug(input.slug);
+    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
+    const engine = this.engines.get(this.engineName);
+    const program = engine.compile(this.workflowForRun(state.workflow, input));
+    return { state, engine, program, slug, workspaceRoot };
+  }
+
   private async load(): Promise<LoadedState> {
     if (this.loaded) return this.loaded;
     const paths = this.paths();
@@ -207,6 +213,12 @@ export class HarnessRuntime {
   }
 
   private resolveWorkspaceRoot(input: StartRunInput, projects: ProjectRegistry): string {
+    if (input.repoPath && input.projectName) {
+      throw new Error(
+        "startRun accepts either `projectName` (registry) or `repoPath`, not both — " +
+          "pick the one that names the workspace you mean to run against.",
+      );
+    }
     if (input.repoPath) return resolve(input.repoPath);
     if (input.projectName) return projects.get(input.projectName).path;
     throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
@@ -234,8 +246,7 @@ export class HarnessRuntime {
    * vocabulary stops here at the harness boundary.
    */
   private async handleGateRequest(request: GateRequest): Promise<GateDecision> {
-    const resolver = this.gateResolver ?? this.gateForKind.bind(this);
-    const gate = resolver(request.gateKind);
+    const gate = this.gateResolver(request.gateKind);
     return gate.request({
       runId: request.runId,
       phaseId: request.phaseId,
@@ -268,24 +279,29 @@ export class HarnessRuntime {
       ])
     );
   }
+}
 
-  /**
-   * Headless default: auto-approve for every kind. Production callers
-   * (CLI, HTTP, Slack) supply their own resolver via `gateForKind` that
-   * wires `HumanGate` + the appropriate prompter. Kept in the harness
-   * (rather than forcing every caller to opt in) so CI / eval / library
-   * consumers just work out of the box.
-   */
-  private gateForKind(kind: Phase["gate"]): Gate {
-    switch (kind) {
-      case "human":
-      case "auto":
-      case "pre-commit":
-        return new AutoGate();
-      default: {
-        const _exhaustive: never = kind;
-        throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
-      }
+/**
+ * Strict default: only `auto` gates are auto-approved. `human` and
+ * `pre-commit` require an explicit `gateForKind` resolver — the CLI
+ * wires clack + HumanGate; eval/CI callers supply `() => new AutoGate()`
+ * to opt into headless approval. Failing closed here prevents a caller
+ * from silently shipping past a human checkpoint by forgetting to wire
+ * a resolver.
+ */
+function defaultGateResolver(kind: Phase["gate"]): Gate {
+  switch (kind) {
+    case "auto":
+      return new AutoGate();
+    case "human":
+    case "pre-commit":
+      throw new Error(
+        `Gate kind "${kind}" requires an explicit \`gateForKind\` resolver on HarnessRuntime. ` +
+          "Pass one (e.g. clack-backed HumanGate for CLI, or `() => new AutoGate()` for headless).",
+      );
+    default: {
+      const _exhaustive: never = kind;
+      throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
     }
   }
 }
