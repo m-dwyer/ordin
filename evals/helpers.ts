@@ -3,12 +3,13 @@ import { cp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { simpleGit } from "simple-git";
-import { AgentLoader } from "../src/domain/agent";
-import { type Artefact, ArtefactManager } from "../src/domain/artefact";
-import { HarnessConfig } from "../src/domain/config";
+import type { Artefact } from "../src/domain/artefact";
 import { PhasePreparer, resolveArtefacts } from "../src/domain/phase-preview";
-import { SkillLoader } from "../src/domain/skill";
-import { WorkflowLoader } from "../src/domain/workflow";
+import { AgentLoader } from "../src/infrastructure/agent-loader";
+import { ArtefactManager } from "../src/infrastructure/artefact-manager";
+import { HarnessConfigLoader } from "../src/infrastructure/config-loader";
+import { SkillLoader } from "../src/infrastructure/skill-loader";
+import { WorkflowLoader } from "../src/infrastructure/workflow-loader";
 import type { RunEvent } from "../src/orchestrator/events";
 import { PhaseRunner } from "../src/orchestrator/phase-runner";
 import { generateRunId, RunStore } from "../src/orchestrator/run-store";
@@ -110,7 +111,7 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
 
   const paths = harnessPaths();
   const [config, workflow, skills] = await Promise.all([
-    HarnessConfig.load(paths.configFile),
+    new HarnessConfigLoader().load(paths.configFile),
     new WorkflowLoader().load(paths.workflowFile),
     new SkillLoader().loadAll(paths.skillsDir),
   ]);

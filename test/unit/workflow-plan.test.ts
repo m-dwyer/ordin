@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowManifest } from "../../src/domain/workflow";
 import { type Engine, EngineRegistry } from "../../src/orchestrator/engine";
-import { createExecutionPlan } from "../../src/orchestrator/workflow-plan";
+import {
+  collectWorkflowDiagnostics,
+  compileWorkflowPlan,
+  WorkflowValidationError,
+} from "../../src/orchestrator/workflow-plan";
 
-describe("createExecutionPlan", () => {
+describe("compileWorkflowPlan", () => {
   it("keeps linear topology explicit", () => {
-    const plan = createExecutionPlan(
+    const plan = compileWorkflowPlan(
       new WorkflowManifest({
         name: "linear",
         version: "1",
@@ -23,7 +27,7 @@ describe("createExecutionPlan", () => {
   });
 
   it("extracts a single retry loop into neutral topology", () => {
-    const plan = createExecutionPlan(
+    const plan = compileWorkflowPlan(
       new WorkflowManifest({
         name: "with-loop",
         version: "1",
@@ -74,7 +78,7 @@ describe("createExecutionPlan", () => {
       ],
     });
 
-    expect(() => createExecutionPlan(manifest)).toThrow(/at most one on_reject/);
+    expect(() => compileWorkflowPlan(manifest)).toThrow(/at most one on_reject/);
   });
 
   it("rejects duplicate phase ids at compile time", () => {
@@ -87,7 +91,10 @@ describe("createExecutionPlan", () => {
       ],
     });
 
-    expect(() => createExecutionPlan(manifest)).toThrow(/Duplicate phase id "x"/);
+    expect(() => compileWorkflowPlan(manifest)).toThrow(WorkflowValidationError);
+    expect(collectWorkflowDiagnostics(manifest)).toEqual([
+      expect.objectContaining({ code: "duplicate_phase_id", phaseId: "x" }),
+    ]);
   });
 
   it("rejects unresolved on_reject targets at compile time", () => {
@@ -105,7 +112,31 @@ describe("createExecutionPlan", () => {
       ],
     });
 
-    expect(() => createExecutionPlan(manifest)).toThrow(/goto="build"/);
+    expect(() => compileWorkflowPlan(manifest)).toThrow(/goto="build"/);
+    expect(collectWorkflowDiagnostics(manifest)).toEqual([
+      expect.objectContaining({ code: "missing_reject_target", phaseId: "review" }),
+    ]);
+  });
+
+  it("reports invalid forward on_reject targets as diagnostics", () => {
+    const manifest = new WorkflowManifest({
+      name: "forward",
+      version: "1",
+      phases: [
+        {
+          id: "review",
+          agent: "agent",
+          runtime: "fake",
+          gate: "human",
+          on_reject: { goto: "build", max_iterations: 1 },
+        },
+        { id: "build", agent: "agent", runtime: "fake", gate: "human" },
+      ],
+    });
+
+    expect(collectWorkflowDiagnostics(manifest)).toEqual([
+      expect.objectContaining({ code: "invalid_reject_target", phaseId: "review" }),
+    ]);
   });
 });
 
@@ -115,7 +146,7 @@ describe("EngineRegistry", () => {
     compile: (manifest) => ({
       engineName: "fake",
       manifest,
-      plan: createExecutionPlan(manifest),
+      plan: compileWorkflowPlan(manifest),
     }),
     preview: async () => [],
     run: async () => {

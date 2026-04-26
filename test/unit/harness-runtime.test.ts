@@ -4,7 +4,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AutoGate } from "../../src/gates/auto";
 import type { Engine } from "../../src/orchestrator/engine";
-import { createExecutionPlan } from "../../src/orchestrator/workflow-plan";
+import { compileWorkflowPlan } from "../../src/orchestrator/workflow-plan";
 import { HarnessRuntime } from "../../src/runtime/harness";
 import type {
   AgentRuntime,
@@ -63,7 +63,7 @@ describe("HarnessRuntime", () => {
       compile: (manifest) => ({
         engineName: "custom",
         manifest,
-        plan: createExecutionPlan(manifest),
+        plan: compileWorkflowPlan(manifest),
       }),
       preview: async () => [],
       run: async (program, input) => ({

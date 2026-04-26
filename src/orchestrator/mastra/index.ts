@@ -14,7 +14,7 @@ import type { RunEvent } from "../events";
 import { executePhase, type PhaseExecutorContext } from "../phase-executor";
 import { PhaseRunner } from "../phase-runner";
 import { generateRunId, type RunMeta } from "../run-store";
-import { createExecutionPlan, type ExecutionPlan } from "../workflow-plan";
+import { compileWorkflowPlan, type ExecutionPlan } from "../workflow-plan";
 
 /**
  * Mastra-backed engine. Each phase is a `createStep`; a single
@@ -49,7 +49,7 @@ export class MastraEngine implements Engine {
     return {
       engineName: this.name,
       manifest,
-      plan: createExecutionPlan(manifest),
+      plan: compileWorkflowPlan(manifest),
     };
   }
 

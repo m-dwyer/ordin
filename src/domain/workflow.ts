@@ -127,7 +127,7 @@ export class WorkflowManifest {
       throw new Error(`Phase "${phaseId}" not found in workflow "${this.name}"`);
     }
     if (idx === 0) return this;
-    return this.buildSubWorkflow(this.phases.slice(idx));
+    return this.buildSubWorkflow(stripRejectsOutsideSelection(this.phases.slice(idx)));
   }
 
   /**
@@ -143,11 +143,7 @@ export class WorkflowManifest {
         `No matching phases found for ${JSON.stringify([...phaseIds])} in workflow "${this.name}"`,
       );
     }
-    const allowed = new Set(kept.map((p) => p.id));
-    const trimmed = kept.map((p) =>
-      p.on_reject && !allowed.has(p.on_reject.goto) ? stripOnReject(p) : p,
-    );
-    return this.buildSubWorkflow(trimmed);
+    return this.buildSubWorkflow(stripRejectsOutsideSelection(kept));
   }
 
   private buildSubWorkflow(phases: Phase[]): WorkflowManifest {
@@ -199,4 +195,9 @@ export type Workflow = WorkflowManifest;
 function stripOnReject(phase: Phase): Phase {
   const { on_reject: _omit, ...rest } = phase;
   return rest;
+}
+
+function stripRejectsOutsideSelection(phases: readonly Phase[]): Phase[] {
+  const allowed = new Set(phases.map((p) => p.id));
+  return phases.map((p) => (p.on_reject && !allowed.has(p.on_reject.goto) ? stripOnReject(p) : p));
 }

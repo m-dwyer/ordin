@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolvePhaseRuntime } from "../../src/domain/workflow";
 import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
+import { compileWorkflowPlan } from "../../src/orchestrator/workflow-plan";
 
 async function writeTempYaml(contents: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "harness-wf-"));
@@ -119,6 +120,15 @@ phases:
       const sliced = wf.startingAt("build");
       expect(sliced.phases.map((p) => p.id)).toEqual(["build", "review"]);
       expect(sliced.findPhase("review").on_reject?.goto).toBe("build");
+      expect(compileWorkflowPlan(sliced).kind).toBe("single-retry-loop");
+    });
+
+    it("startingAt strips on_reject when the target was skipped", async () => {
+      const wf = await threePhase();
+      const sliced = wf.startingAt("review");
+      expect(sliced.phases.map((p) => p.id)).toEqual(["review"]);
+      expect(sliced.findPhase("review").on_reject).toBeUndefined();
+      expect(compileWorkflowPlan(sliced).kind).toBe("linear");
     });
 
     it("startingAt throws on an unknown phase", async () => {
@@ -136,12 +146,14 @@ phases:
       const wf = await threePhase();
       const filtered = wf.only(["review"]);
       expect(filtered.findPhase("review").on_reject).toBeUndefined();
+      expect(compileWorkflowPlan(filtered).kind).toBe("linear");
     });
 
     it("only() preserves on_reject when the target is still present", async () => {
       const wf = await threePhase();
       const filtered = wf.only(["build", "review"]);
       expect(filtered.findPhase("review").on_reject?.goto).toBe("build");
+      expect(compileWorkflowPlan(filtered).kind).toBe("single-retry-loop");
     });
 
     it("only() throws if no phases match", async () => {
