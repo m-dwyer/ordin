@@ -252,12 +252,13 @@ All client adapters translate their transport to this interface:
 | Adapter | Stage 1 | Purpose |
 |---|---|---|
 | **CLI** | ✓ | Primary user interface; clack for interactive prompts; `$EDITOR` for artefact review at gates. |
-| **HTTP server** | deferred | Hono + `@hono/zod-openapi` generates OpenAPI spec; any language can generate a typed SDK via `openapi-typescript-codegen`. Trigger: a non-CLI client (web UI, CI integration, editor plugin) actually wants to drive the harness. |
-| **ACP server** | deferred | For editors speaking Zed's Agent Client Protocol (Zed, OpenCode). Trigger: you or a teammate starts daily-driving an ACP editor. |
+| **HTTP server** | active | Hono + `@hono/zod-openapi`; SSE for events. |
+| **MCP server** | active (after HTTP) | In-process adapter over `HarnessRuntime`. Reaches Claude Code, Cursor, Claude Desktop, Continue, Cline. |
+| **ACP server** | deferred | Native fit for phases/gates; trigger: Zed or Neovim user daily-driving. |
 | **IDE plugins** | deferred | VS Code, JetBrains — thin extensions over the HTTP API once that lands. |
 | **Slack / webhooks** | deferred | Async gate approval if gates become a collaboration bottleneck. |
 
-No HTTP, ACP, or IDE plugin is required for Stage 1. CLI is sufficient. HTTP + OpenAPI lands when a concrete second-client need fires; the industry-standard codegen pattern (GitHub, Stripe, Linear) then covers everything that isn't ACP.
+CLI was sufficient for Stage 1. HTTP (Phase 2) lands first as the universal substrate; MCP (Phase 2b) follows on top of `HarnessRuntime` for the mixed-host audience. ACP deferred to Phase 9.
 
 ### Standards and skills
 
@@ -604,23 +605,29 @@ Phases 1, 4, 5, 6 are the Stage 1 + Stage 2 mainline. Phases 2, 3, 7+ are condit
 - **Tests:** 43 unit tests across 10 files. Domain coverage ~93%, orchestrator ~96% (state machine including Review→Build back-edge + max_iteration halt paths exercised). `ClaudeCliRuntime`, `ClackGate`, HTTP/CLI wrappers intentionally uncovered — deferred to Phase 4's eval suite + a future `MockRuntime` for local UX iteration.
 - **Deferred from Phase 1:** `BASELINE.md` exists as a template but real numbers await first 2 weeks of production use. A `MockRuntime` for sink/orchestrator iteration (noted during Phase 1 but not built) would make future UX changes cheap to test.
 
-### Phase 2 — HTTP adapter + OpenAPI (conditional)
+### Phase 2 — HTTP adapter + OpenAPI (active)
 
-**Trigger.** A non-CLI client (web UI, CI integration, editor plugin, script) actually wants to drive the harness.
+**Trigger fired.** Mixed external-client need; no single editor-shaped target dominates.
 
 **Deliverables:**
-- `src/http/` — Hono server implementing `HarnessRuntime` methods as REST routes
-- `@hono/zod-openapi` generating OpenAPI spec from zod schemas
-- `/openapi.json` endpoint
-- SSE stream for `subscribe(runId)` → `RunEvent`
-- `harness serve [--port 8787]` CLI command
-- README section: "Generate a typed client" with codegen one-liner
+- `src/http/` — Hono server over `HarnessRuntime`, `@hono/zod-openapi` for schemas
+- `/openapi.json` + SSE for `subscribe(runId)`
+- `ordin serve [--port 8787]` CLI command
 
 **Exit criteria:**
-- `harness serve` starts HTTP server; CLI and HTTP both drive the same runtime
-- `curl` can drive a full run via HTTP
-- TypeScript SDK generated from `/openapi.json`, used in a one-page integration test
-- OpenAPI doc validates cleanly in Swagger UI
+- `curl` drives a full run; TypeScript SDK generated from `/openapi.json` used in an integration test
+
+### Phase 2b — MCP adapter (active, after Phase 2)
+
+**Trigger fired.** Reaches Claude Code, Cursor, Claude Desktop, Continue, Cline.
+
+**Deliverables:**
+- `src/mcp/` — in-process consumer of `HarnessRuntime`
+- Tools: `startRun`, `preview`, `getRun`, `getEvents`, `resolveGate`, `listWorkflows`
+- `ordin mcp` stdio command
+
+**Exit criteria:**
+- Claude Code drives a run end-to-end including gate response; same server works in one other host (Cursor or Claude Desktop)
 
 ### Phase 3 — Triage and light-mode tiering (conditional)
 
@@ -747,14 +754,14 @@ The phases below are additive and only built when the named trigger fires. Don't
 - One phase runs on Claude Opus via LiteLlm adapter
 - Fallback chain works when primary model rate-limits
 
-### Phase 9 — ACP adapter
+### Phase 9 — ACP adapter (deferred)
 
-**Trigger.** A teammate uses Zed, OpenCode, or another ACP-compatible editor and wants to drive the harness from within their editor.
+**Trigger.** A Zed or Neovim user starts daily-driving an ACP-capable editor.
 
 **Deliverables:**
-- `src/acp/` — JSON-RPC over stdio server implementing ACP session/message verbs over `HarnessRuntime`
-- `harness acp` command launching the ACP server
-- Configuration docs for connecting Zed/OpenCode
+- `src/acp/` — stdio server over `HarnessRuntime`; gates → `session/request_permission`, artefacts → `fs/write_text_file`
+- `ordin acp` command
+- One session hosts many sequential runs; `/run <workflow> <task>` to invoke
 
 **Exit criteria:**
 - ACP-compatible editor starts a run, observes progress, approves gates from within the editor
@@ -832,6 +839,32 @@ The `Engine` seam already exists. Two concrete paths once a trigger fires:
 - Swapping an ingestion source in a fixture produces a measurable eval delta.
 
 **Relationship to Phase 12.** Phase 12 (`harness standards sync`) was scoped as a narrow "pull standards into skills" tool. Phase 14 supersedes it: standards-as-skills becomes one type of ingestion; Phase 14 formalises ingestion broadly. If Phase 14 lands, Phase 12 collapses into it.
+
+### Phase 15 — Async notifications
+
+**Trigger.** Long runs become common enough that polling `getEvents` or watching SSE in a terminal is friction; a teammate wants to be pinged on completion or pending gate.
+
+**Deliverables:**
+- Per-server / per-run webhook URLs that POST `RunEvent` JSON on `run.completed` and `gate.requested`
+- `--notify` flag on `ordin run` for a desktop notifier
+- HMAC signing for webhook payloads
+
+**Exit criteria:**
+- Slack/webhook receiver can verify-and-render a `run.completed` callback
+- Webhook delivery is best-effort — failure never affects the run
+
+### Phase 16 — Multi-user awareness
+
+**Trigger.** Two or more developers share an `ordin serve` instance and run/gate ownership becomes ambiguous.
+
+**Deliverables:**
+- Token-to-identity map (extends single `ORDIN_API_TOKEN` to `ORDIN_API_TOKENS`); each request carries the identity through to `RunMeta`
+- `RunMeta.startedBy` and per-gate `decidedBy`
+- Default listing scoped to the requester; `?all=true` for the unscoped view
+
+**Exit criteria:**
+- Two tokens drive runs against the same server; each user sees only their runs by default
+- Gate audit log records who decided each gate
 
 ### Phase 13+ — Deferred indefinitely (trigger-driven)
 

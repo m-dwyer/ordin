@@ -1,8 +1,11 @@
 import { Command } from "commander";
 import { registerDoctor } from "./doctor";
+import { registerMcp } from "./mcp";
+import { registerRemote } from "./remote";
 import { registerRetro } from "./retro";
 import { registerRun } from "./run";
 import { registerRuns } from "./runs";
+import { registerServe } from "./serve";
 import { registerStatus } from "./status";
 
 /**
@@ -21,6 +24,9 @@ registerRuns(program);
 registerRetro(program);
 registerStatus(program);
 registerDoctor(program);
+registerServe(program);
+registerRemote(program);
+registerMcp(program);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? (err.stack ?? err.message) : err);

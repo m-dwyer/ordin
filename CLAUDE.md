@@ -87,8 +87,7 @@ The plan commits to deferring infrastructure until concrete triggers fire. Avoid
 
 - Langfuse SDK as a direct dependency — tracing is wired via OpenTelemetry SDK (`src/observability/tracing.ts`) + AI SDK `experimental_telemetry`, with OTLP/HTTP pointed at self-hosted Langfuse. Vendor-neutral; switching backends is one URL.
 - LiteLLM *for production routing* — Phase 8 trigger. (Eval-only LiteLLM is already present per Phase 4 — don't touch it from production paths.)
-- HTTP server — Phase 2 trigger.
-- ACP server — Phase 9 trigger.
+- ACP server — Phase 9 trigger (Zed/Neovim daily-driver).
 - LangGraph engine implementation — Phase 11 trigger. The `Engine` seam exists; adding `LangGraphEngine` is a new file alongside `MastraEngine`. Don't build until concrete need (XL-tier parallel phases, mid-process resume).
 - Additional agent runtimes (Claude Agent SDK, etc.) — Phase 10 trigger; blocked on moving off Max plan billing.
 - Per-phase MCP ingestion / Confluence pulls / pinned external sources — Phase 14 trigger. (Mastra workflow steps natively support MCP servers; ordin doesn't wire them yet.)

@@ -2,8 +2,7 @@ import { spawn } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, text } from "@clack/prompts";
 import type { Phase } from "../../domain/workflow";
-import { AutoGate } from "../../gates/auto";
-import { HumanGate } from "../../gates/human";
+import { gateResolverFor } from "../../gates/resolver";
 import type {
   Gate,
   GateArtefact,
@@ -156,24 +155,11 @@ function resolveArtefactPath(path: string, cwd: string): string {
 }
 
 /**
- * CLI's gate resolver: `HumanGate` backed by a clack prompter for the
- * `human` kind, `AutoGate` everywhere else. `pre-commit` defers to the
- * host repository's pre-commit hook during Build — auto-approve here.
+ * CLI's gate resolver: clack-backed prompter feeding the shared
+ * `gateResolverFor` mapping.
  */
 export function clackGateResolver(
   prompter: GatePrompter = new ClackGatePrompter(),
 ): (kind: Phase["gate"]) => Gate {
-  return (kind) => {
-    switch (kind) {
-      case "human":
-        return new HumanGate(prompter);
-      case "auto":
-      case "pre-commit":
-        return new AutoGate();
-      default: {
-        const _exhaustive: never = kind;
-        throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
-      }
-    }
-  };
+  return gateResolverFor(prompter);
 }
