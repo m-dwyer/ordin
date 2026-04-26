@@ -6,35 +6,31 @@ import type { GateArtefact, GateDecision } from "../gates/types";
 import type { AgentRuntime } from "../runtimes/types";
 import type { RunEvent } from "./events";
 import type { RunMeta, RunStore } from "./run-store";
+import type { ExecutionPlan } from "./workflow-plan";
 
 export type { PhasePreview } from "../domain/phase-preview";
 
 /**
- * Engines compile a declarative workflow manifest into an executable
- * workflow. Compilation is pure topology work; per-run services and
- * inputs are supplied when the compiled workflow runs.
+ * Engines compile a declarative workflow manifest into a stable,
+ * engine-neutral execution program. Compilation is pure topology work;
+ * per-run services and inputs are supplied later when the selected
+ * engine executes or previews that program.
  */
 export interface Engine {
   readonly name: string;
-  compile(manifest: WorkflowManifest): CompiledWorkflow;
+  compile(manifest: WorkflowManifest): WorkflowProgram;
+  run(program: WorkflowProgram, input: EngineRunInput, services: EngineServices): Promise<RunMeta>;
+  preview(
+    program: WorkflowProgram,
+    input: PreviewInput,
+    services: PreviewServices,
+  ): Promise<readonly PhasePreview[]>;
 }
 
-export interface CompiledWorkflow {
+export interface WorkflowProgram {
   readonly engineName: string;
   readonly manifest: WorkflowManifest;
-  run(input: EngineRunInput, services: EngineServices): Promise<RunMeta>;
-  /**
-   * Compose the prompt for every phase without invoking any runtime.
-   * Used by `ordin run --dry-run` so users can verify their agents,
-   * skills, and artefact contracts produce the expected prompt before
-   * burning inference. First-iteration only (no feedback); no gate
-   * decisions, no run-store writes, no events.
-   *
-   * `PreviewServices` is a strict subset of `EngineServices` — proves
-   * by type that the preview path needs no runtime registry, no run
-   * store, and no gate dispatch.
-   */
-  preview(input: PreviewInput, services: PreviewServices): Promise<readonly PhasePreview[]>;
+  readonly plan: ExecutionPlan;
 }
 
 /**
@@ -79,7 +75,7 @@ export interface EngineRunInput {
 }
 
 /**
- * Per-run inputs used by `CompiledWorkflow.preview()`. Same shape as
+ * Per-run inputs used by `Engine.preview()`. Same shape as
  * `EngineRunInput` minus the runtime/event/gate fields — preview
  * doesn't invoke, doesn't emit, doesn't gate.
  */

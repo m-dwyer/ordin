@@ -113,12 +113,11 @@ export class HarnessRuntime {
     const state = await this.load();
     const slug = requireSlug(input.slug);
     const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
-    const compiledWorkflow = this.engines
-      .get(this.engineName)
-      .compile(this.workflowForRun(state.workflow, input));
+    const engine = this.engines.get(this.engineName);
+    const program = engine.compile(this.workflowForRun(state.workflow, input));
 
     const runInput: EngineRunInput = {
-      workflow: compiledWorkflow.manifest,
+      workflow: program.manifest,
       task: input.task,
       slug,
       workspaceRoot,
@@ -127,7 +126,7 @@ export class HarnessRuntime {
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
-    return compiledWorkflow.run(runInput, this.engineServices(state));
+    return engine.run(program, runInput, this.engineServices(state));
   }
 
   /**
@@ -140,12 +139,11 @@ export class HarnessRuntime {
     const state = await this.load();
     const slug = requireSlug(input.slug);
     const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
-    const compiledWorkflow = this.engines
-      .get(this.engineName)
-      .compile(this.workflowForRun(state.workflow, input));
+    const engine = this.engines.get(this.engineName);
+    const program = engine.compile(this.workflowForRun(state.workflow, input));
 
     const previewInput: PreviewInput = {
-      workflow: compiledWorkflow.manifest,
+      workflow: program.manifest,
       task: input.task,
       slug,
       workspaceRoot,
@@ -155,7 +153,7 @@ export class HarnessRuntime {
       config: state.config,
       agents: state.agents,
     };
-    return compiledWorkflow.preview(previewInput, previewServices);
+    return engine.preview(program, previewInput, previewServices);
   }
 
   async listRuns(): Promise<RunMeta[]> {

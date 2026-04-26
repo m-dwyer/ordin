@@ -4,6 +4,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AutoGate } from "../../src/gates/auto";
 import type { Engine } from "../../src/orchestrator/engine";
+import { createExecutionPlan } from "../../src/orchestrator/workflow-plan";
 import { HarnessRuntime } from "../../src/runtime/harness";
 import type {
   AgentRuntime,
@@ -62,19 +63,20 @@ describe("HarnessRuntime", () => {
       compile: (manifest) => ({
         engineName: "custom",
         manifest,
-        preview: async () => [],
-        run: async (input) => ({
-          runId: `custom-${input.slug}`,
-          workflow: manifest.name,
-          tier: input.tier,
-          task: input.task,
-          slug: input.slug,
-          repo: input.workspaceRoot,
-          startedAt: "2026-01-01T00:00:00.000Z",
-          completedAt: "2026-01-01T00:00:00.000Z",
-          status: "completed",
-          phases: [],
-        }),
+        plan: createExecutionPlan(manifest),
+      }),
+      preview: async () => [],
+      run: async (program, input) => ({
+        runId: `custom-${input.slug}`,
+        workflow: program.manifest.name,
+        tier: input.tier,
+        task: input.task,
+        slug: input.slug,
+        repo: input.workspaceRoot,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:00.000Z",
+        status: "completed",
+        phases: [],
       }),
     };
 

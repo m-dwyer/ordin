@@ -120,10 +120,12 @@ async function runWithMastra(
     readonly onEvent?: (event: RunEvent) => void;
   } = {},
 ): Promise<RunMeta> {
-  const workflow = new MastraEngine().compile(harness.workflow);
-  return workflow.run(
+  const engine = new MastraEngine();
+  const program = engine.compile(harness.workflow);
+  return engine.run(
+    program,
     {
-      workflow: harness.workflow,
+      workflow: program.manifest,
       task: input.task ?? "t",
       slug: input.slug ?? "t",
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
@@ -299,10 +301,12 @@ phases:
 
   it("preview() returns composed prompts for every phase without invoking the runtime", async () => {
     const harness = await makeHarness();
-    const compiled = new MastraEngine().compile(harness.workflow);
-    const previews = await compiled.preview(
+    const engine = new MastraEngine();
+    const program = engine.compile(harness.workflow);
+    const previews = await engine.preview(
+      program,
       {
-        workflow: harness.workflow,
+        workflow: program.manifest,
         task: "preview only",
         slug: "preview-only",
         workspaceRoot: "/tmp/repo",

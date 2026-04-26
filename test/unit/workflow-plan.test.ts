@@ -84,11 +84,12 @@ describe("EngineRegistry", () => {
     compile: (manifest) => ({
       engineName: "fake",
       manifest,
-      preview: async () => [],
-      run: async () => {
-        throw new Error("not implemented");
-      },
+      plan: createExecutionPlan(manifest),
     }),
+    preview: async () => [],
+    run: async () => {
+      throw new Error("not implemented");
+    },
   };
 
   it("resolves engines by name", () => {

@@ -3,12 +3,12 @@ import { z } from "zod";
 import { PhasePreparer, type PhasePreview, resolveArtefacts } from "../../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../../domain/workflow";
 import type {
-  CompiledWorkflow,
   Engine,
   EngineRunInput,
   EngineServices,
   PreviewInput,
   PreviewServices,
+  WorkflowProgram,
 } from "../engine";
 import type { RunEvent } from "../events";
 import { executePhase, type PhaseExecutorContext } from "../phase-executor";
@@ -45,25 +45,24 @@ type Bail = (result: { approved: boolean }) => { approved: boolean };
 export class MastraEngine implements Engine {
   readonly name = "mastra";
 
-  compile(manifest: WorkflowManifest): CompiledWorkflow {
-    return new MastraCompiledWorkflow(manifest, createExecutionPlan(manifest));
+  compile(manifest: WorkflowManifest): WorkflowProgram {
+    return {
+      engineName: this.name,
+      manifest,
+      plan: createExecutionPlan(manifest),
+    };
   }
-}
 
-class MastraCompiledWorkflow implements CompiledWorkflow {
-  readonly engineName = "mastra";
-
-  constructor(
-    readonly manifest: WorkflowManifest,
-    private readonly plan: ExecutionPlan,
-  ) {}
-
-  async run(input: EngineRunInput, services: EngineServices): Promise<RunMeta> {
+  async run(
+    program: WorkflowProgram,
+    input: EngineRunInput,
+    services: EngineServices,
+  ): Promise<RunMeta> {
     const runId = generateRunId(input.slug);
     const emit = input.onEvent ?? ((_: RunEvent) => {});
     const meta: RunMeta = {
       runId,
-      workflow: this.manifest.name,
+      workflow: program.manifest.name,
       tier: input.tier,
       task: input.task,
       slug: input.slug,
@@ -91,7 +90,7 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
       outcome: undefined,
     };
 
-    const wf = compileMastraWorkflow(this.manifest, this.plan, ctx);
+    const wf = compileMastraWorkflow(program.manifest, program.plan, ctx);
     const run = await wf.createRun();
     const result = await run.start({ inputData: {} });
 
@@ -117,9 +116,13 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
     return meta;
   }
 
-  async preview(input: PreviewInput, services: PreviewServices): Promise<readonly PhasePreview[]> {
+  async preview(
+    program: WorkflowProgram,
+    input: PreviewInput,
+    services: PreviewServices,
+  ): Promise<readonly PhasePreview[]> {
     const preparer = new PhasePreparer();
-    return this.manifest.phases.map((phase) => {
+    return program.manifest.phases.map((phase) => {
       const agent = services.agents.get(phase.agent);
       if (!agent) {
         throw new Error(`Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`);
@@ -127,7 +130,7 @@ class MastraCompiledWorkflow implements CompiledWorkflow {
       return preparer.prepare({
         phase,
         agent,
-        workflow: this.manifest,
+        workflow: program.manifest,
         config: services.config,
         task: input.task,
         cwd: input.workspaceRoot,
