@@ -50,6 +50,18 @@ run = "docker compose -f infra/docker-compose.yml down"
 description = "Tail LiteLLM proxy logs"
 run = "docker compose -f infra/docker-compose.yml logs -f litellm"
 
+[tasks.langfuse-up]
+description = "Start the Langfuse v3 stack (web on 127.0.0.1:3000)"
+run = "docker compose -f infra/docker-compose.yml up -d langfuse-web langfuse-worker postgres clickhouse redis minio"
+
+[tasks.langfuse-down]
+description = "Stop the Langfuse v3 stack (leaves litellm running)"
+run = "docker compose -f infra/docker-compose.yml stop langfuse-web langfuse-worker postgres clickhouse redis minio"
+
+[tasks.langfuse-logs]
+description = "Tail Langfuse web logs"
+run = "docker compose -f infra/docker-compose.yml logs -f langfuse-web"
+
 [tasks.eval]
 description = "Run the eval suite (requires `mise run litellm-up` first)"
 run = "pnpm eval"

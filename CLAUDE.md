@@ -10,7 +10,7 @@ Conventions for agents (and humans) working **on** the ordin repo itself. ordin 
 - **Package manager:** pnpm (pinned in `package.json` > `packageManager`).
 - **Linter / formatter:** Biome v2 — 2-space indent, double quotes, 100 col. Run `pnpm lint`/`pnpm format`.
 - **Tests:** Vitest v4.
-- **Deps:** commander (CLI), @clack/prompts (CLI gate prompter), yaml (config), gray-matter (frontmatter), zod (schemas), @mastra/core (workflow engine), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals).
+- **Deps:** commander (CLI), @clack/prompts (CLI gate prompter), yaml (config), gray-matter (frontmatter), zod (schemas), @mastra/core (workflow engine), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals), @opentelemetry/* (tracing — opt-in via `LANGFUSE_*` env vars).
 
 ## Architecture — the four load-bearing separations
 
@@ -85,7 +85,7 @@ LiteLLM is a provider, not a runtime. Name runtime modules after the API shape o
 
 The plan commits to deferring infrastructure until concrete triggers fire. Avoid adding these proactively:
 
-- Langfuse / OpenTelemetry / custom tracing — wait until the Phase 7 trigger. (Mastra's built-in observability hooks are available behind the engine but not wired.)
+- Langfuse SDK as a direct dependency — tracing is wired via OpenTelemetry SDK (`src/observability/tracing.ts`) + AI SDK `experimental_telemetry`, with OTLP/HTTP pointed at self-hosted Langfuse. Vendor-neutral; switching backends is one URL.
 - LiteLLM *for production routing* — Phase 8 trigger. (Eval-only LiteLLM is already present per Phase 4 — don't touch it from production paths.)
 - HTTP server — Phase 2 trigger.
 - ACP server — Phase 9 trigger.

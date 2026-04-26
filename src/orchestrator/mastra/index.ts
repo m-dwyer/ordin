@@ -2,6 +2,7 @@ import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
 import { PhasePreparer, type PhasePreview, resolveArtefacts } from "../../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../../domain/workflow";
+import { withSpan } from "../../observability/spans";
 import type {
   Engine,
   EngineRunInput,
@@ -59,62 +60,80 @@ export class MastraEngine implements Engine {
     services: EngineServices,
   ): Promise<RunMeta> {
     const runId = generateRunId(input.slug);
-    const emit = input.onEvent ?? ((_: RunEvent) => {});
-    const meta: RunMeta = {
-      runId,
-      workflow: program.manifest.name,
-      tier: input.tier,
-      task: input.task,
-      slug: input.slug,
-      repo: input.workspaceRoot,
-      startedAt: new Date().toISOString(),
-      status: "running",
-      phases: [],
-    };
-    await services.runStore.writeMeta(meta);
-    emit({ type: "run.started", runId });
+    return withSpan(
+      "ordin.run",
+      {
+        "ordin.run_id": runId,
+        "ordin.workflow": program.manifest.name,
+        "ordin.tier": input.tier,
+        "ordin.slug": input.slug,
+        "ordin.task": input.task.slice(0, 256),
+        "ordin.engine": this.name,
+        "langfuse.trace.name": input.slug,
+        "langfuse.trace.input": input.task,
+        "langfuse.session.id": runId,
+      },
+      async (span) => {
+        const emit = input.onEvent ?? ((_: RunEvent) => {});
+        const meta: RunMeta = {
+          runId,
+          workflow: program.manifest.name,
+          tier: input.tier,
+          task: input.task,
+          slug: input.slug,
+          repo: input.workspaceRoot,
+          startedAt: new Date().toISOString(),
+          status: "running",
+          phases: [],
+        };
+        await services.runStore.writeMeta(meta);
+        emit({ type: "run.started", runId });
 
-    const phaseRunner = new PhaseRunner();
-    const preparer = new PhasePreparer();
+        const phaseRunner = new PhaseRunner();
+        const preparer = new PhasePreparer();
 
-    const ctx: RunCtx = {
-      runId,
-      meta,
-      manifest: program.manifest,
-      input,
-      services,
-      phaseRunner,
-      preparer,
-      emit,
-      iterations: new Map(),
-      feedback: undefined,
-      outcome: undefined,
-    };
+        const ctx: RunCtx = {
+          runId,
+          meta,
+          manifest: program.manifest,
+          input,
+          services,
+          phaseRunner,
+          preparer,
+          emit,
+          iterations: new Map(),
+          feedback: undefined,
+          outcome: undefined,
+        };
 
-    const wf = compileMastraWorkflow(program.manifest, program.plan, ctx);
-    const run = await wf.createRun();
-    const result = await run.start({ inputData: {} });
+        const wf = compileMastraWorkflow(program.manifest, program.plan, ctx);
+        const run = await wf.createRun();
+        const result = await run.start({ inputData: {} });
 
-    if (ctx.outcome) {
-      // A step set the outcome before bailing — `result.status` will
-      // be "bailed" for halt/fail; ctx carries the intent.
-      meta.status = ctx.outcome;
-    } else if (result.status === "success") {
-      meta.status = "completed";
-    } else {
-      // Mastra returned failed/suspended/tripwire and no step set
-      // ctx.outcome — treat as a real engine error.
-      meta.completedAt = new Date().toISOString();
-      meta.status = "failed";
-      await services.runStore.writeMeta(meta);
-      const err = (result as { error?: unknown }).error;
-      throw err instanceof Error ? err : new Error(`Workflow ${result.status}`);
-    }
+        if (ctx.outcome) {
+          // A step set the outcome before bailing — `result.status` will
+          // be "bailed" for halt/fail; ctx carries the intent.
+          meta.status = ctx.outcome;
+        } else if (result.status === "success") {
+          meta.status = "completed";
+        } else {
+          // Mastra returned failed/suspended/tripwire and no step set
+          // ctx.outcome — treat as a real engine error.
+          meta.completedAt = new Date().toISOString();
+          meta.status = "failed";
+          await services.runStore.writeMeta(meta);
+          const err = (result as { error?: unknown }).error;
+          throw err instanceof Error ? err : new Error(`Workflow ${result.status}`);
+        }
 
-    meta.completedAt = new Date().toISOString();
-    await services.runStore.writeMeta(meta);
-    emit({ type: "run.completed", runId, status: meta.status });
-    return meta;
+        meta.completedAt = new Date().toISOString();
+        await services.runStore.writeMeta(meta);
+        emit({ type: "run.completed", runId, status: meta.status });
+        span.setAttribute("ordin.status", meta.status);
+        span.setAttribute("langfuse.trace.output", summariseRunOutput(meta));
+        return meta;
+      },
+    );
   }
 
   async preview(
@@ -141,6 +160,13 @@ export class MastraEngine implements Engine {
       });
     });
   }
+}
+
+function summariseRunOutput(meta: RunMeta): string {
+  const phases = meta.phases
+    .map((p) => `${p.phaseId}:${p.status}${p.iteration > 1 ? `(x${p.iteration})` : ""}`)
+    .join(", ");
+  return `${meta.status} — ${phases || "no phases"}`;
 }
 
 function compileMastraWorkflow(manifest: WorkflowManifest, plan: ExecutionPlan, ctx: RunCtx) {

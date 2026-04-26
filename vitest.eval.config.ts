@@ -48,6 +48,7 @@ export default defineConfig({
     fileParallelism: false,
     // Don't bail on the first failing rubric — show all regressions in one run.
     bail: 0,
+    setupFiles: ["./evals/setup.ts"],
     sequence: {
       sequencer: PhaseOrderSequencer,
     },

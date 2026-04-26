@@ -715,14 +715,21 @@ The phases below are additive and only built when the named trigger fires. Don't
 **Trigger.** Git + `.harness/runs/` is no longer sufficient. You can't answer questions like "which prompts regressed last week" or "which phases consistently hit token ceilings" without structured trace storage.
 
 **Deliverables:**
-- `docker-compose.yml` bringing up Langfuse (Postgres + ClickHouse + app)
-- `InstrumentedRuntime` decorator wrapping any `AgentRuntime`, emits traces to Langfuse
-- Dashboards versioned in `langfuse/dashboards/*.json`
-- Stage-3-ready: `LANGFUSE_REMOTE_URL` env var for shared instance
+- `infra/docker-compose.yml` Langfuse v3 stack (web, worker, postgres, clickhouse, redis, minio); web bound to 127.0.0.1:3000
+- `src/observability/tracing.ts` — single OTel `NodeSDK` bootstrap. Reads `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`; no exporter when unset
+- Run span (`ordin.run`) in `MastraEngine.run`; phase span (`ordin.phase`) in `executePhase` — engine-neutral so any future engine inherits tracing through the shared phase entry point
+- AI SDK `experimental_telemetry: { isEnabled, functionId, metadata }` on `generateText` — auto-emits nested spans for the model loop, tool calls, and step boundaries; nests under the phase span via OTel context
+- Eval bootstrap (`evals/setup.ts`) starts/shuts the SDK; `runPhase()` opens its own `ordin.eval.phase` root span since it bypasses `MastraEngine`
+- Stage-3-ready: `LANGFUSE_HOST` env var swaps to a shared instance with no code change
+
+**Non-deliverables (deferred):**
+- `ClaudeCliRuntime` instrumentation. The phase span still wraps subprocess invocations so phase boundaries are visible, but model/tool detail isn't auto-emitted (the subprocess speaks no OTel). Parsing the JSON event stream into spans is a follow-up.
+- Langfuse SDK as a direct harness dependency — OTLP/HTTP keeps the harness vendor-neutral
+- Dashboard provisioning. Defer until trace shape is observed in real use.
 
 **Exit criteria:**
-- Every harness run appears as a Langfuse trace with token counts, costs, durations
-- Three dashboards answer: "which phase regressed," "cost per tier," "artefact-diff trends"
+- Every harness run appears as a Langfuse trace with token counts, durations
+- Disabling tracing is a one-env-var change; harness behavior unchanged with no `LANGFUSE_*` set
 
 ### Phase 8 — LiteLLM for multi-provider routing
 
