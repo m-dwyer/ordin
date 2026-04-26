@@ -76,6 +76,37 @@ describe("createExecutionPlan", () => {
 
     expect(() => createExecutionPlan(manifest)).toThrow(/at most one on_reject/);
   });
+
+  it("rejects duplicate phase ids at compile time", () => {
+    const manifest = new WorkflowManifest({
+      name: "duplicate",
+      version: "1",
+      phases: [
+        { id: "x", agent: "agent", runtime: "fake", gate: "human" },
+        { id: "x", agent: "agent", runtime: "fake", gate: "human" },
+      ],
+    });
+
+    expect(() => createExecutionPlan(manifest)).toThrow(/Duplicate phase id "x"/);
+  });
+
+  it("rejects unresolved on_reject targets at compile time", () => {
+    const manifest = new WorkflowManifest({
+      name: "missing-target",
+      version: "1",
+      phases: [
+        {
+          id: "review",
+          agent: "agent",
+          runtime: "fake",
+          gate: "human",
+          on_reject: { goto: "build", max_iterations: 1 },
+        },
+      ],
+    });
+
+    expect(() => createExecutionPlan(manifest)).toThrow(/goto="build"/);
+  });
 });
 
 describe("EngineRegistry", () => {

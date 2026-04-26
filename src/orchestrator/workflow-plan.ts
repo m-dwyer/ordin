@@ -15,11 +15,15 @@ export type ExecutionPlan =
     };
 
 /**
- * Engine-neutral topology analysis. Engines consume this plan rather
- * than each re-validating workflow graph constraints in adapter code.
+ * Engine-neutral workflow compiler. This is the single executable
+ * validation boundary: loaders parse manifests, but this function
+ * decides whether a manifest can run and returns the topology plan
+ * engines consume.
  */
 export function createExecutionPlan(manifest: WorkflowManifest): ExecutionPlan {
   const phases = manifest.phases;
+  validateUniquePhaseIds(manifest);
+  validateRejectTargetsResolve(manifest);
   const rejecters = phases.filter((phase) => phase.on_reject);
 
   if (rejecters.length === 0) {
@@ -50,4 +54,25 @@ export function createExecutionPlan(manifest: WorkflowManifest): ExecutionPlan {
     rejecter,
     maxIterations: rejecter.on_reject?.max_iterations ?? 1,
   };
+}
+
+function validateUniquePhaseIds(manifest: WorkflowManifest): void {
+  const seen = new Set<string>();
+  for (const phase of manifest.phases) {
+    if (seen.has(phase.id)) {
+      throw new Error(`Duplicate phase id "${phase.id}" in workflow "${manifest.name}"`);
+    }
+    seen.add(phase.id);
+  }
+}
+
+function validateRejectTargetsResolve(manifest: WorkflowManifest): void {
+  const ids = new Set(manifest.phases.map((phase) => phase.id));
+  for (const phase of manifest.phases) {
+    if (phase.on_reject && !ids.has(phase.on_reject.goto)) {
+      throw new Error(
+        `Phase "${phase.id}" has on_reject.goto="${phase.on_reject.goto}" that does not match any phase id in workflow "${manifest.name}"`,
+      );
+    }
+  }
 }

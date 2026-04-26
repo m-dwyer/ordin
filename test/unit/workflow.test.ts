@@ -70,7 +70,7 @@ phases:
     );
   });
 
-  it("rejects duplicate phase ids", async () => {
+  it("loads duplicate phase ids for the workflow compiler to reject", async () => {
     const path = await writeTempYaml(
       `name: t
 version: 1
@@ -79,10 +79,11 @@ phases:
   - { id: x, agent: a, runtime: claude-cli, gate: human }
 `,
     );
-    await expect(loader.load(path)).rejects.toThrow(/Duplicate phase id "x"/);
+    const wf = await loader.load(path);
+    expect(wf.phases.map((phase) => phase.id)).toEqual(["x", "x"]);
   });
 
-  it("rejects on_reject.goto that doesn't resolve", async () => {
+  it("loads unresolved on_reject targets for the workflow compiler to reject", async () => {
     const path = await writeTempYaml(
       `name: t
 version: 1
@@ -90,7 +91,8 @@ phases:
   - { id: plan, agent: a, runtime: claude-cli, gate: human, on_reject: { goto: nope, max_iterations: 1 } }
 `,
     );
-    await expect(loader.load(path)).rejects.toThrow(/goto="nope"/);
+    const wf = await loader.load(path);
+    expect(wf.findPhase("plan").on_reject?.goto).toBe("nope");
   });
 
   describe("slicing", () => {
