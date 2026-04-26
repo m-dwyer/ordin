@@ -8,7 +8,7 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Health check — catches the common Stage 1 failure modes before a run:
- *   • Node version
+ *   • Bun version
  *   • `claude` binary present and invokable
  *   • Harness config files readable (plus .claude-plugin/plugin.json valid)
  *
@@ -18,10 +18,10 @@ const execFileAsync = promisify(execFile);
 export function registerDoctor(program: Command): void {
   program
     .command("doctor")
-    .description("Check environment: Node, claude binary, ordin files, plugin manifest")
+    .description("Check environment: Bun, claude binary, ordin files, plugin manifest")
     .action(async () => {
       const checks: Promise<DoctorResult>[] = [
-        checkNode(),
+        checkBun(),
         checkClaudeBinary(),
         checkOrdinFiles(),
         checkPluginManifest(),
@@ -43,12 +43,22 @@ interface DoctorResult {
   detail?: string;
 }
 
-async function checkNode(): Promise<DoctorResult> {
-  const version = process.versions.node;
-  const major = Number.parseInt(version.split(".")[0] ?? "0", 10);
-  return major >= 22
-    ? { label: "Node >=22", ok: true, detail: `v${version}` }
-    : { label: "Node >=22", ok: false, detail: `v${version} (upgrade required)` };
+async function checkBun(): Promise<DoctorResult> {
+  const version = process.versions["bun"];
+  if (!version) {
+    return {
+      label: "Bun >=1.3",
+      ok: false,
+      detail: "not running under Bun (use `bun src/cli/index.ts` or `bin/ordin`)",
+    };
+  }
+  const [majorStr = "0", minorStr = "0"] = version.split(".");
+  const major = Number.parseInt(majorStr, 10);
+  const minor = Number.parseInt(minorStr, 10);
+  const ok = major > 1 || (major === 1 && minor >= 3);
+  return ok
+    ? { label: "Bun >=1.3", ok: true, detail: `v${version}` }
+    : { label: "Bun >=1.3", ok: false, detail: `v${version} (upgrade required)` };
 }
 
 async function checkClaudeBinary(): Promise<DoctorResult> {

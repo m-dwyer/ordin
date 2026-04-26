@@ -1,6 +1,6 @@
 # Evals
 
-Regression gate for prompt / skill / agent / ingestion changes in this workflow pack. Unlike `pnpm test` (unit tests of harness code, mockable), evals run **real phases against a real LLM** — they catch prompt regressions, which unit tests cannot.
+Regression gate for prompt / skill / agent / ingestion changes in this workflow pack. Unlike `bun run test` (unit tests of harness code, mockable), evals run **real phases against a real LLM** — they catch prompt regressions, which unit tests cannot.
 
 Per the plan, this is a pack-local concern: `evals/` lives next to `workflows/`, `agents/`, `skills/` as part of a workflow pack. Today's pack is the ordin repo itself.
 
@@ -13,14 +13,14 @@ ollama pull qwen3:8b            # agent model (runs the phase — needs native t
 ollama pull qwen3:4b            # judge model (LLM-as-judge scoring)
 ```
 
-**Model choice matters.** Smaller/older models often fail: they emit tool-call JSON as plain text content instead of structured `tool_calls`, and the AI SDK's dispatcher can't see them. Qwen 3 does this correctly; Qwen 2.5 Coder does not. If `pnpm eval` fails after one assistant step with no tools executed, suspect the model.
+**Model choice matters.** Smaller/older models often fail: they emit tool-call JSON as plain text content instead of structured `tool_calls`, and the AI SDK's dispatcher can't see them. Qwen 3 does this correctly; Qwen 2.5 Coder does not. If `bun run eval` fails after one assistant step with no tools executed, suspect the model.
 
 **Each session:**
 
 ```bash
 mise run litellm-up              # start LiteLLM proxy (Docker)
-pnpm eval                        # run all fixtures
-pnpm eval:watch                  # re-run on file change (iteration loop)
+bun run eval                        # run all fixtures
+bun run eval:watch               # re-run on file change (iteration loop)
 mise run litellm-down            # stop when done
 ```
 
@@ -31,8 +31,8 @@ Swap backend by editing `litellm/config.yaml` — `model_list` has Ollama as def
 `litellm/config.yaml` declares backend aliases (`qwen3-4b`, `qwen3-8b`, `qwen3-14b`, `qwen3-32b`, `qwen3-coder-30b`). Pick one per run via env var:
 
 ```bash
-ORDIN_EVAL_MODEL=qwen3-14b pnpm eval
-ORDIN_EVAL_MODEL=qwen3-32b pnpm eval
+ORDIN_EVAL_MODEL=qwen3-14b bun run eval
+ORDIN_EVAL_MODEL=qwen3-32b bun run eval
 ```
 
 Unset → default aliases (qwen3:8b for agent, qwen3:4b for judge). Override the judge independently via `ORDIN_EVAL_JUDGE_MODEL`.
@@ -41,7 +41,7 @@ Adding a new model:
 1. `ollama pull <model>`
 2. Add an entry to `model_list` in `litellm/config.yaml`
 3. `mise run litellm-down && mise run litellm-up`
-4. `ORDIN_EVAL_MODEL=<alias> pnpm eval`
+4. `ORDIN_EVAL_MODEL=<alias> bun run eval`
 
 Compare what matters: wall-time, output token count (from stderr log), tool-call count (repetition is a model-weakness signal), rubric scores.
 
@@ -94,13 +94,13 @@ Rubric below threshold: Does the Recommendation section explain WHY…
 
 Start with single runs + tuned thresholds. Add #3/#4 only if flakiness bites.
 
-## Why not just `pnpm test`?
+## Why not just `bun run test`?
 
 - Evals hit the LLM — seconds to minutes per fixture. Unit tests are sub-second.
 - Evals need LiteLLM running. Unit tests don't.
 - Evals are probabilistic. Unit tests are deterministic.
 
-Separate config (`vitest.eval.config.ts`) + separate script (`pnpm eval`) keeps these operationally distinct. Same Vitest runner, different cadence and meaning.
+Separate config (`vitest.eval.config.ts`) + separate script (`bun run eval`) keeps these operationally distinct. Same Vitest runner, different cadence and meaning.
 
 ## Seeding upstream artefacts (isolation-per-phase)
 

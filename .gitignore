@@ -7,14 +7,14 @@ projects.local.yaml
 .env
 .env.local
 
-# Build artefacts (none expected; tsx runs TS directly)
+# Build artefacts (none expected; Bun runs TS directly)
 dist/
 *.tsbuildinfo
 
 # Test coverage output
 coverage/
 
-# Scratch output from dev-loop fixtures (see `pnpm fixture:setup`)
+# Scratch output from dev-loop fixtures (see `bun run fixture:setup`)
 .scratch/
 
 # LiteLLM disk cache — regenerated on first eval run

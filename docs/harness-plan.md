@@ -882,11 +882,11 @@ The `Engine` seam already exists. Two concrete paths once a trigger fires:
 
 ```
 harness/
-├── package.json                    # pnpm, TS, Biome, Vitest
+├── package.json                    # Bun, TS, Biome, Vitest
 ├── biome.json
 ├── tsconfig.json
 ├── vitest.config.ts
-├── dependency-cruiser.config.cjs   # optional; run locally via `pnpm deps:check`, no CI enforcement
+├── dependency-cruiser.config.cjs   # optional; run locally via `bun run deps:check`, no CI enforcement
 │
 ├── CLAUDE.md                       # conventions for agents working ON the harness
 ├── HARNESS.md                      # day-to-day user guide

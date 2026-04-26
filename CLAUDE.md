@@ -4,12 +4,11 @@ Conventions for agents (and humans) working **on** the ordin repo itself. ordin 
 
 ## Stack
 
-- **Runtime:** Node.js >=22 (LTS), ES modules throughout.
+- **Runtime + package manager:** Bun (pinned in `.mise.toml` and `package.json` > `packageManager`). Bun runs TypeScript natively — no build step, no `tsx`.
 - **Language:** TypeScript 6, strict mode, `verbatimModuleSyntax`, `noUncheckedIndexedAccess`.
-- **Runner:** `tsx` — no build step. `pnpm ordin <cmd>` runs the CLI directly from `src/`.
-- **Package manager:** pnpm (pinned in `package.json` > `packageManager`).
-- **Linter / formatter:** Biome v2 — 2-space indent, double quotes, 100 col. Run `pnpm lint`/`pnpm format`.
-- **Tests:** Vitest v4.
+- **Entrypoint:** `bun src/cli/index.ts <cmd>` runs the CLI directly from `src/` (or `bun run ordin <cmd>` via the package script).
+- **Linter / formatter:** Biome v2 — 2-space indent, double quotes, 100 col. Run `bun run lint` / `bun run format`.
+- **Tests:** Vitest v4 (runs under Bun via `bun run test`).
 - **Deps:** commander (CLI), @clack/prompts (CLI gate prompter), yaml (config), gray-matter (frontmatter), zod (schemas), @mastra/core (workflow engine), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals), @opentelemetry/* (tracing — opt-in via `LANGFUSE_*` env vars).
 
 ## Architecture — the four load-bearing separations
@@ -25,7 +24,7 @@ runtimes/      AgentRuntime interface + ClaudeCliRuntime + ai-sdk/
 domain/        pure types + loaders + composer (no orchestrator, no runtime)
 ```
 
-**Dependency rule:** `orchestrator` imports from `domain` and `runtimes`. `domain` and `runtimes` depend on neither each other nor the orchestrator. `cli` only goes through `HarnessRuntime`. Targeted exception: `cli/gate-prompters/` legitimately imports from `gates/` and `domain/workflow.ts` to assemble the CLI's gate resolver. Enforced via `pnpm deps:check` (dependency-cruiser) — run locally before commits; no CI enforcement yet.
+**Dependency rule:** `orchestrator` imports from `domain` and `runtimes`. `domain` and `runtimes` depend on neither each other nor the orchestrator. `cli` only goes through `HarnessRuntime`. Targeted exception: `cli/gate-prompters/` legitimately imports from `gates/` and `domain/workflow.ts` to assemble the CLI's gate resolver. Enforced via `bun run deps:check` (dependency-cruiser) — run locally before commits; no CI enforcement yet.
 
 **Engine seam.** `Engine` (in `src/orchestrator/engine.ts`) is the swap interface. `MastraEngine` is today's only implementation, backed by `@mastra/core/workflows`. A future `LangGraphEngine` or any other implementation lives behind the same interface — domain, runtimes, gates, composer, CLI, and YAML content stay unchanged.
 
@@ -63,13 +62,15 @@ No global install step — `~/.claude/` is never modified. Skills load per-run w
 ## Commands
 
 ```
-pnpm ordin <cmd>     # run the CLI (tsx entrypoint)
-pnpm typecheck       # tsc --noEmit
-pnpm test            # vitest
-pnpm lint            # biome check
-pnpm format          # biome format --write
-pnpm deps:check      # dependency-cruiser (architectural rules)
+bun run ordin <cmd>  # run the CLI (Bun runs TS directly)
+bun run typecheck    # tsc --noEmit
+bun run test         # vitest
+bun run lint         # biome check
+bun run format       # biome format --write
+bun run deps:check   # dependency-cruiser (architectural rules)
 ```
+
+`mise run <task>` (e.g. `mise run check`) wraps these with the right tool versions; prefer it for day-to-day use.
 
 ## Terminology — don't conflate
 

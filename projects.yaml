@@ -3,7 +3,7 @@
 
 projects:
   # Fixture target repo used by harness developers for local dev loops.
-  # Path is relative to the harness repo root; created by `pnpm fixture:setup`.
+  # Path is relative to the harness repo root; created by `bun run fixture:setup`.
   # Safe to keep committed — the `.scratch/` directory it points at is gitignored,
   # and the name `fixture` only resolves to something once setup has been run.
   fixture:

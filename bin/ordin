@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Resolve this script through symlinks so `pnpm link -g`, Homebrew,
+# Resolve this script through symlinks so `bun link`, Homebrew,
 # and any other installer that symlinks bin/ordin onto PATH still
 # locates the real ordin repo (where node_modules and src/ live).
 resolved="$0"
@@ -12,4 +12,4 @@ while [ -L "$resolved" ]; do
 done
 ORDIN_ROOT="$(cd "$(dirname "$resolved")/.." && pwd)"
 
-exec "$ORDIN_ROOT/node_modules/.bin/tsx" "$ORDIN_ROOT/src/cli/index.ts" "$@"
+exec bun "$ORDIN_ROOT/src/cli/index.ts" "$@"

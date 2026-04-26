@@ -18,8 +18,7 @@ Design document: [`docs/harness-plan.md`](./docs/harness-plan.md). This README c
 
 ## Requirements
 
-- **Node.js ≥22** on PATH in every shell you plan to run `ordin` from. If you use mise, pin Node in your *user-level* `~/.config/mise/config.toml` — the repo-level `.mise.toml` only activates inside this repo.
-- **pnpm** (for installing deps).
+- **Bun ≥1.3** on PATH in every shell you plan to run `ordin` from. If you use mise, the repo-level `.mise.toml` pins it for you (`mise install`); for shells outside this repo, install Bun directly or pin it in your *user-level* `~/.config/mise/config.toml`.
 - **Claude Code CLI** on PATH (`claude`) — Stage 1 invokes it as a subprocess.
 
 ## One-time install
@@ -27,8 +26,9 @@ Design document: [`docs/harness-plan.md`](./docs/harness-plan.md). This README c
 ```bash
 git clone <repo-url> ~/src/ordin
 cd ~/src/ordin
-pnpm install
-pnpm link --global .      # puts `ordin` on PATH
+mise install              # picks up .mise.toml — installs pinned Bun
+bun install
+bun link                  # puts `ordin` on PATH
 ```
 
 Register target repos (per-engineer overlay, gitignored):
@@ -47,7 +47,7 @@ Verify from any directory:
 cd /tmp && ordin doctor
 ```
 
-Expect: ✓ Node ≥22, ✓ claude binary, ✓ ordin files, ✓ plugin manifest.
+Expect: ✓ runtime check, ✓ claude binary, ✓ ordin files, ✓ plugin manifest.
 
 **No `~/.claude/` modifications are needed.** Skills load per-invocation via `--plugin-dir`, not via global symlinks.
 
@@ -149,15 +149,15 @@ Claude Desktop / Cursor / Claude Code follow the same shape with their own confi
 
 ## Dev loop (testing ordin itself)
 
-A committed fixture target repo lets you smoke-test phases without aiming at real work and without needing `pnpm link --global`:
+A committed fixture target repo lets you smoke-test phases without aiming at real work and without needing `bun link`:
 
 ```bash
-pnpm fixture:setup         # stages .scratch/target-repo/ and git-inits it
-pnpm ordin plan "Add input validation to the calculator" --project fixture --tier S
-pnpm ordin run  "Implement divide with zero-guard"        --project fixture --tier S
+bun run fixture:setup      # stages .scratch/target-repo/ and git-inits it
+bun run ordin plan "Add input validation to the calculator" --project fixture --tier S
+bun run ordin run  "Implement divide with zero-guard"        --project fixture --tier S
 ```
 
-The `fixture` project is registered in `projects.yaml` and points at `.scratch/target-repo/` (gitignored). Re-run `pnpm fixture:setup` any time to reset the fixture to a clean state.
+The `fixture` project is registered in `projects.yaml` and points at `.scratch/target-repo/` (gitignored). Re-run `bun run fixture:setup` any time to reset the fixture to a clean state.
 
 ## Eval loop (regression-gating prompt changes)
 
@@ -175,15 +175,15 @@ cp .env.local.example .env.local   # holds LITELLM_MASTER_KEY; mise auto-loads
 
 ```bash
 mise run litellm-up           # docker compose up -d litellm (port 4000)
-pnpm eval                     # run the full eval suite (mise run eval works too)
+bun run eval                  # run the full eval suite (mise run eval works too)
 mise run litellm-down         # stop proxy when done
 ```
 
 **Swap backends without editing code.** `litellm/config.yaml` declares backend aliases (`qwen3-8b`, `qwen3-14b`, `qwen3-32b`, `qwen3-coder-30b`). Pick one at run time:
 
 ```bash
-ORDIN_EVAL_MODEL=qwen3-14b pnpm eval
-ORDIN_EVAL_MODEL=qwen3-coder-30b pnpm eval
+ORDIN_EVAL_MODEL=qwen3-14b bun run eval
+ORDIN_EVAL_MODEL=qwen3-coder-30b bun run eval
 ```
 
 For cloud providers (Anthropic, OpenAI, OpenRouter, Bedrock) see commented templates in `litellm/config.yaml`.
