@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { AgentLoader } from "../../src/domain/agent";
-import { SkillLoader } from "../../src/domain/skill";
+import { AgentLoader } from "../../src/infrastructure/agent-loader";
+import { SkillLoader } from "../../src/infrastructure/skill-loader";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "harness-loaders-"));

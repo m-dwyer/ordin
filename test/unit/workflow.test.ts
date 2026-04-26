@@ -2,7 +2,9 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolvePhaseRuntime, WorkflowLoader } from "../../src/domain/workflow";
+import { resolvePhaseRuntime } from "../../src/domain/workflow";
+import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
+import { compileWorkflowPlan } from "../../src/orchestrator/workflow-plan";
 
 async function writeTempYaml(contents: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "harness-wf-"));
@@ -44,11 +46,32 @@ phases:
     const wf = await loader.load(path);
 
     expect(wf.runtime).toBe("ai-sdk");
-    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "fallback")).toBe("ai-sdk");
-    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "fallback")).toBe("claude-cli");
+    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, undefined, "fallback")).toBe("ai-sdk");
+    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, undefined, "fallback")).toBe(
+      "claude-cli",
+    );
   });
 
-  it("rejects duplicate phase ids", async () => {
+  it("uses agent runtime when phase and workflow do not override it", async () => {
+    const path = await writeTempYaml(
+      `name: t
+version: 1
+phases:
+  - { id: plan, agent: p, gate: human }
+  - { id: review, agent: r, runtime: claude-cli, gate: human }
+`,
+    );
+    const wf = await loader.load(path);
+
+    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "agent-runtime", "fallback")).toBe(
+      "agent-runtime",
+    );
+    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "agent-runtime", "fallback")).toBe(
+      "claude-cli",
+    );
+  });
+
+  it("loads duplicate phase ids for the workflow compiler to reject", async () => {
     const path = await writeTempYaml(
       `name: t
 version: 1
@@ -57,10 +80,11 @@ phases:
   - { id: x, agent: a, runtime: claude-cli, gate: human }
 `,
     );
-    await expect(loader.load(path)).rejects.toThrow(/Duplicate phase id "x"/);
+    const wf = await loader.load(path);
+    expect(wf.phases.map((phase) => phase.id)).toEqual(["x", "x"]);
   });
 
-  it("rejects on_reject.goto that doesn't resolve", async () => {
+  it("loads unresolved on_reject targets for the workflow compiler to reject", async () => {
     const path = await writeTempYaml(
       `name: t
 version: 1
@@ -68,7 +92,8 @@ phases:
   - { id: plan, agent: a, runtime: claude-cli, gate: human, on_reject: { goto: nope, max_iterations: 1 } }
 `,
     );
-    await expect(loader.load(path)).rejects.toThrow(/goto="nope"/);
+    const wf = await loader.load(path);
+    expect(wf.findPhase("plan").on_reject?.goto).toBe("nope");
   });
 
   describe("slicing", () => {
@@ -95,6 +120,15 @@ phases:
       const sliced = wf.startingAt("build");
       expect(sliced.phases.map((p) => p.id)).toEqual(["build", "review"]);
       expect(sliced.findPhase("review").on_reject?.goto).toBe("build");
+      expect(compileWorkflowPlan(sliced).kind).toBe("single-retry-loop");
+    });
+
+    it("startingAt strips on_reject when the target was skipped", async () => {
+      const wf = await threePhase();
+      const sliced = wf.startingAt("review");
+      expect(sliced.phases.map((p) => p.id)).toEqual(["review"]);
+      expect(sliced.findPhase("review").on_reject).toBeUndefined();
+      expect(compileWorkflowPlan(sliced).kind).toBe("linear");
     });
 
     it("startingAt throws on an unknown phase", async () => {
@@ -112,12 +146,14 @@ phases:
       const wf = await threePhase();
       const filtered = wf.only(["review"]);
       expect(filtered.findPhase("review").on_reject).toBeUndefined();
+      expect(compileWorkflowPlan(filtered).kind).toBe("linear");
     });
 
     it("only() preserves on_reject when the target is still present", async () => {
       const wf = await threePhase();
       const filtered = wf.only(["build", "review"]);
       expect(filtered.findPhase("review").on_reject?.goto).toBe("build");
+      expect(compileWorkflowPlan(filtered).kind).toBe("single-retry-loop");
     });
 
     it("only() throws if no phases match", async () => {

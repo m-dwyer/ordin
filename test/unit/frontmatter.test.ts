@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { FrontmatterReader } from "../../src/domain/frontmatter";
+import { FrontmatterReader } from "../../src/infrastructure/frontmatter";
 
 describe("FrontmatterReader", () => {
   const reader = new FrontmatterReader();

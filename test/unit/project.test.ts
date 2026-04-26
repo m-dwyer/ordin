@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ProjectRegistry } from "../../src/domain/project";
+import { ProjectRegistryLoader } from "../../src/infrastructure/project-loader";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "harness-proj-"));
@@ -23,7 +23,7 @@ describe("ProjectRegistry", () => {
     path: ~/code/core
 `,
     );
-    const registry = await ProjectRegistry.load(sharedPath);
+    const registry = await new ProjectRegistryLoader().load(sharedPath);
     expect(registry.get("core").path).toBe(join(homedir(), "code/core"));
   });
 
@@ -47,7 +47,7 @@ describe("ProjectRegistry", () => {
     path: /local/path
 `,
     );
-    const registry = await ProjectRegistry.load(sharedPath, localPath);
+    const registry = await new ProjectRegistryLoader().load(sharedPath, localPath);
     expect(registry.get("core").path).toBe("/local/path");
     expect(registry.get("other").path).toBe("/other");
   });
@@ -56,7 +56,10 @@ describe("ProjectRegistry", () => {
     const dir = await tempDir();
     const sharedPath = join(dir, "projects.yaml");
     await writeYaml(sharedPath, "projects: {}\n");
-    const registry = await ProjectRegistry.load(sharedPath, join(dir, "projects.local.yaml"));
+    const registry = await new ProjectRegistryLoader().load(
+      sharedPath,
+      join(dir, "projects.local.yaml"),
+    );
     expect(registry.names()).toEqual([]);
   });
 
@@ -64,7 +67,7 @@ describe("ProjectRegistry", () => {
     const dir = await tempDir();
     const sharedPath = join(dir, "projects.yaml");
     await writeYaml(sharedPath, "projects: {}\n");
-    const registry = await ProjectRegistry.load(sharedPath);
+    const registry = await new ProjectRegistryLoader().load(sharedPath);
     expect(() => registry.get("ghost")).toThrow(/"ghost" not registered/);
   });
 
@@ -79,7 +82,7 @@ describe("ProjectRegistry", () => {
     standards_overlay: standards/data-platform.md
 `,
     );
-    const registry = await ProjectRegistry.load(sharedPath);
+    const registry = await new ProjectRegistryLoader().load(sharedPath);
     expect(registry.get("dp").standardsOverlay).toBe("standards/data-platform.md");
   });
 });

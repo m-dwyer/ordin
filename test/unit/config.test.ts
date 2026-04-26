@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { HarnessConfig } from "../../src/domain/config";
+import { HarnessConfigLoader } from "../../src/infrastructure/config-loader";
 
 async function tempConfig(yaml: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "harness-cfg-"));
@@ -22,7 +22,7 @@ tiers:
 `,
     );
 
-    const config = await HarnessConfig.load(path);
+    const config = await new HarnessConfigLoader().load(path);
 
     expect(config.defaultRuntime).toBe("ai-sdk");
     expect(config.defaultModel).toBe("qwen3-8b");
@@ -44,7 +44,7 @@ runtimes:
     base_url: http://localhost:4000
 `,
     );
-    const config = await HarnessConfig.load(path);
+    const config = await new HarnessConfigLoader().load(path);
 
     expect(config.defaultRuntime).toBe("claude-cli");
     expect(config.runtimeConfig("claude-cli")).toEqual({
@@ -61,7 +61,7 @@ runtimes:
   base_dir: ~/custom-runs
 `,
     );
-    const config = await HarnessConfig.load(path);
+    const config = await new HarnessConfigLoader().load(path);
     expect(config.runStoreDir()).toMatch(/custom-runs$/);
     expect(config.runStoreDir()).not.toContain("~");
   });

@@ -2,7 +2,7 @@
 
 This document describes ordin as it exists today in `src/`. ordin is one implementation of the harness pattern; see [`harness-plan.md`](./harness-plan.md) for the full design rationale, stage progression, and deferred-phase triggers.
 
-## The four load-bearing separations
+## Load-Bearing Separations
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -15,7 +15,10 @@ This document describes ordin as it exists today in `src/`. ordin is one impleme
 │  — uses Domain and Runtimes via their interfaces         │
 ├──────────────────────────────────────────────────────────┤
 │  Domain (workflow, agent, skill, composer, artefact)     │
-│  — pure TypeScript; no orchestrator, no runtime          │
+│  — pure TypeScript; no filesystem/YAML, no runtime       │
+├──────────────────────────────────────────────────────────┤
+│  Infrastructure (loaders, frontmatter, artefact files)   │
+│  — adapts disk/YAML/frontmatter to domain objects        │
 ├──────────────────────────────────────────────────────────┤
 │  Runtimes (ClaudeCliRuntime, AiSdkRuntime; future SDK)   │
 │  — implement AgentRuntime; no orchestrator               │
@@ -25,21 +28,24 @@ This document describes ordin as it exists today in `src/`. ordin is one impleme
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** the orchestrator imports from domain, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
+**Dependency rule:** the orchestrator imports from domain, infrastructure, runtimes, and gates. Domain and runtimes depend on neither each other nor the orchestrator. Domain also cannot import infrastructure; file/YAML/frontmatter concerns adapt inward. Clients only go through `HarnessRuntime`, except `cli/gate-prompters/` which legitimately imports from gates and `domain/workflow` to assemble a `Gate` resolver for `human` kinds. Enforced locally via `pnpm deps:check` (dependency-cruiser). Not CI-enforced until Stage 2.
 
-Why these five boundaries (the original four plus a now-pure gate layer): each is independently swappable because dependencies flow one direction.
+Why these boundaries: each is independently swappable because dependencies flow one direction.
 
 - Replace the engine (LangGraph, Temporal, custom) → new `Engine` impl alongside `MastraEngine`; domain/runtimes/gates untouched.
 - Add a new client (HTTP, MCP, ACP) → new adapter over `HarnessRuntime`; zero changes elsewhere.
 - Add a new runtime (Claude Agent SDK, etc.) → new adapter implementing `AgentRuntime`; zero changes elsewhere.
 - Add a new gate prompter (web, Slack, Github approval) → new `GatePrompter` impl in the client layer; gate business logic stays the same.
+- Change persistence/loading format (database, remote registry, package bundle) → new infrastructure adapters; domain objects stay unchanged.
 - Add observability (Langfuse) → sidecar decorator wrapping the runtime, or wire Mastra's built-in tracing inside `MastraEngine`.
 
 ## Key interfaces
 
 - **`HarnessRuntime`** (`src/runtime/harness.ts`) — the stable client seam. `startRun`, `listRuns`, `getRun`, `workflowDefinition`, `paths`. Every client adapter calls through this.
-- **`Engine`** (`src/orchestrator/engine.ts`) — the orchestration seam. `run(EngineRunInput): Promise<RunMeta>`. Today's only implementation is `MastraEngine` (`src/orchestrator/mastra/`), which compiles a `Workflow` into a `@mastra/core/workflows` workflow: each phase becomes a `createStep`; a single `on_reject` back-edge becomes a `.dountil()` loop step. Adding a `LangGraphEngine` later is a new file behind this same interface — no domain / runtime / gate changes.
-- **`PhaseRunner`** (`src/orchestrator/phase-runner.ts`) — single-phase executor. Composes the prompt, invokes the runtime, returns `{ meta, invokeResult }`. Does *not* call the gate; that's the engine's responsibility.
+- **`WorkflowLoader` / `compileWorkflowPlan`** (`src/infrastructure/workflow-loader.ts`, `src/orchestrator/workflow-plan.ts`) — loaders parse YAML into manifest objects; executable validation lives in `compileWorkflowPlan()`, which rejects duplicate phase ids, invalid `on_reject` targets, and unsupported topology before returning an engine-neutral plan. `collectWorkflowDiagnostics()` exposes the same checks as structured diagnostics for future CLI/API reporting.
+- **`Engine`** (`src/orchestrator/engine.ts`) — the orchestration seam. `compile()` turns a manifest into a stable `WorkflowProgram` containing the engine-neutral `ExecutionPlan`; `run()` and `preview()` execute that program with per-run inputs and services. Today's only implementation is `MastraEngine` (`src/orchestrator/mastra/`), which adapts the program to `@mastra/core/workflows` at run time: each phase becomes a `createStep`; a single `on_reject` back-edge becomes a `.dountil()` loop step. Adding a `LangGraphEngine` later is a new file behind this same interface — no domain / runtime / gate changes.
+- **`executePhase` / phase collaborators** (`src/orchestrator/phase-executor.ts`) — engine-neutral phase transaction. Coordinates artefact verification, invocation planning, runtime invocation, gate coordination, and run metadata recording through small collaborators.
+- **`PhaseRunner`** (`src/orchestrator/phase-runner.ts`) — invokes one already-prepared phase against an `AgentRuntime`, emits runtime lifecycle events, and returns `{ meta, invokeResult }`. It does not compose prompts, verify artefacts, or call gates.
 - **`AgentRuntime`** (`src/runtimes/types.ts`) — how a phase gets executed. Today there are two:
   - **`ClaudeCliRuntime`** (`src/runtimes/claude-cli.ts`) — spawns `claude -p` (the only programmatic path under Max plan). Owns its own config schema (`bin`, `timeout_ms`, per-phase `fallback_model` / `max_turns`) via `fromConfig`. Wires `--setting-sources project`, `--exclude-dynamic-system-prompt-sections`, and `--include-hook-events` always; `--no-session-persistence` and `--include-partial-messages` per `InvokeRequest`. The subprocess contains the tool loop.
   - **`AiSdkRuntime`** (`src/runtimes/ai-sdk/`) — eval-only. Drives Vercel AI SDK (`ai` + `@ai-sdk/openai-compatible`) against any OpenAI-compatible provider URL (default: LiteLLM proxy at `localhost:4000`). Contains the tool loop in-process.
@@ -55,7 +61,7 @@ Two event types, split cleanly along the layer boundary:
 - **`RuntimeEvent`** (`src/runtimes/types.ts`) — events a single `AgentRuntime.invoke()` emits. One invocation = one subprocess = one stream, including any subagents the runtime delegates to internally (Claude's Task tool). Neutral to runIds and phases.
 - **`RunEvent`** (`src/orchestrator/events.ts`) — the unified, temporally-ordered public stream. Merges three sources:
   - Run lifecycle: `run.started`, `run.completed`
-  - Phase lifecycle: `phase.started`, `phase.completed`, `phase.failed`
+  - Phase lifecycle: `phase.started`, `phase.runtime.completed`, `phase.completed`, `phase.failed`
   - Gate lifecycle: `gate.requested`, `gate.decided`
   - Agent observations: `agent.text`, `agent.thinking`, `agent.tool.use`, `agent.tool.result`, `agent.tokens`, `agent.error` — each tagged with `runId` + `phaseId`
 

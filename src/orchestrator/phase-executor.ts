@@ -1,11 +1,13 @@
-import { ArtefactManager } from "../domain/artefact";
-import type { ArtefactPointer, Feedback } from "../domain/composer";
-import { type PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
+import type { Feedback } from "../domain/composer";
+import type { PhasePreparer } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
-import type { AgentRuntime } from "../runtimes/types";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
-import { type PhaseRunner, type PhaseRunResult, summariseInvocation } from "./phase-runner";
+import { GateCoordinator } from "./gate-coordinator";
+import { formatMissing, PhaseArtefactVerifier } from "./phase-artefacts";
+import { PhaseInvocationPlanner, PhaseInvoker } from "./phase-invocation";
+import { PhaseRecorder } from "./phase-recorder";
+import type { PhaseRunner } from "./phase-runner";
 import type { PhaseMeta, RunMeta } from "./run-store";
 
 export type EngineOutcome = "halted" | "failed";
@@ -51,16 +53,38 @@ export interface PhaseExecutionOutcome {
  * reads as a checklist.
  */
 class PhaseTransaction {
-  private readonly artefacts: ArtefactManager;
+  private readonly artefacts: PhaseArtefactVerifier;
+  private readonly invocationPlanner: PhaseInvocationPlanner;
+  private readonly invoker: PhaseInvoker;
+  private readonly gateCoordinator: GateCoordinator;
+  private readonly recorder: PhaseRecorder;
 
   constructor(private readonly ctx: PhaseExecutorContext) {
-    this.artefacts = new ArtefactManager(ctx.input.workspaceRoot);
+    this.artefacts = new PhaseArtefactVerifier(ctx.input.workspaceRoot);
+    this.invocationPlanner = new PhaseInvocationPlanner(ctx.input, ctx.services, ctx.preparer);
+    this.invoker = new PhaseInvoker({
+      runId: ctx.runId,
+      input: ctx.input,
+      services: ctx.services,
+      phaseRunner: ctx.phaseRunner,
+      emit: ctx.emit,
+    });
+    this.gateCoordinator = new GateCoordinator({
+      runId: ctx.runId,
+      input: ctx.input,
+      emit: ctx.emit,
+    });
+    this.recorder = new PhaseRecorder({
+      runId: ctx.runId,
+      meta: ctx.meta,
+      runStore: ctx.services.runStore,
+      emit: ctx.emit,
+    });
   }
 
   async execute(phase: Phase): Promise<PhaseExecutionOutcome> {
     const iteration = this.bumpIteration(phase);
-    const inputs = resolveArtefacts(phase.inputs, this.ctx.input.slug);
-    const outputs = resolveArtefacts(phase.outputs, this.ctx.input.slug);
+    const { inputs, outputs } = this.artefacts.resolve(phase, this.ctx.input.slug);
 
     const missingIn = await this.artefacts.findMissing(inputs);
     if (missingIn.length > 0) {
@@ -71,33 +95,13 @@ class PhaseTransaction {
       );
     }
 
-    const preview = this.preparePhase(phase, inputs, outputs);
-    if (!preview) {
-      return await this.failBeforeRuntime(
-        phase,
-        iteration,
-        `Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`,
-      );
+    const invocation = this.invocationPlanner.plan(phase, inputs, outputs, this.ctx.feedback);
+    if (!invocation.ok) {
+      return await this.failBeforeRuntime(phase, iteration, invocation.error);
     }
 
-    const runtime = this.ctx.services.runtimes.get(preview.runtimeName);
-    if (!runtime) {
-      return await this.failBeforeRuntime(
-        phase,
-        iteration,
-        `Runtime "${preview.runtimeName}" resolved for phase "${phase.id}" not registered`,
-      );
-    }
-
-    const runDir = await this.ctx.services.runStore.ensureRunDir(this.ctx.runId);
-    const { meta: phaseMeta, invokeResult } = await this.invoke(
-      preview,
-      runtime,
-      iteration,
-      runDir,
-    );
-    this.ctx.meta.phases.push(phaseMeta);
-    await this.ctx.services.runStore.writeMeta(this.ctx.meta);
+    const { meta: phaseMeta, invokeResult } = await this.invoker.invoke(invocation.plan, iteration);
+    await this.recorder.recordRunResult(phaseMeta);
 
     if (phaseMeta.status === "failed") {
       this.ctx.outcome = "failed";
@@ -114,106 +118,18 @@ class PhaseTransaction {
       );
     }
 
-    return await this.handleGate(phase, phaseMeta, invokeResult, outputs);
+    const gateDecision = await this.gateCoordinator.decide(phase, phaseMeta, invokeResult, outputs);
+    await this.recorder.write();
+
+    this.ctx.feedback = gateDecision.feedback;
+    this.ctx.outcome = gateDecision.outcome;
+    return { approved: gateDecision.approved };
   }
 
   private bumpIteration(phase: Phase): number {
     const n = (this.ctx.iterations.get(phase.id) ?? 0) + 1;
     this.ctx.iterations.set(phase.id, n);
     return n;
-  }
-
-  private preparePhase(
-    phase: Phase,
-    artefactInputs: readonly ArtefactPointer[],
-    artefactOutputs: readonly ArtefactPointer[],
-  ): PhasePreview | undefined {
-    const agent = this.ctx.services.agents.get(phase.agent);
-    if (!agent) return undefined;
-    return this.ctx.preparer.prepare({
-      phase,
-      agent,
-      workflow: this.ctx.input.workflow,
-      config: this.ctx.services.config,
-      task: this.ctx.input.task,
-      cwd: this.ctx.input.workspaceRoot,
-      tier: this.ctx.input.tier,
-      artefactInputs,
-      artefactOutputs,
-      ...(this.ctx.feedback ? { feedback: this.ctx.feedback } : {}),
-    });
-  }
-
-  private async invoke(
-    preview: PhasePreview,
-    runtime: AgentRuntime,
-    iteration: number,
-    runDir: string,
-  ): Promise<PhaseRunResult> {
-    return this.ctx.phaseRunner.run({
-      preview,
-      runtime,
-      context: { runId: this.ctx.runId, runDir, iteration },
-      emit: this.ctx.emit,
-      ...(this.ctx.input.abortSignal ? { abortSignal: this.ctx.input.abortSignal } : {}),
-    });
-  }
-
-  private async handleGate(
-    phase: Phase,
-    phaseMeta: PhaseMeta,
-    invokeResult: Parameters<typeof summariseInvocation>[0],
-    outputs: readonly ArtefactPointer[],
-  ): Promise<PhaseExecutionOutcome> {
-    this.ctx.emit({ type: "gate.requested", runId: this.ctx.runId, phaseId: phase.id });
-    const decision = await this.ctx.input.onGateRequested({
-      runId: this.ctx.runId,
-      phaseId: phase.id,
-      gateKind: phase.gate,
-      cwd: this.ctx.input.workspaceRoot,
-      artefacts: outputs,
-      summary: summariseInvocation(invokeResult),
-    });
-
-    if (decision.status === "approved") {
-      phaseMeta.status = "completed";
-      phaseMeta.gateDecision = phase.gate === "auto" ? "auto" : "approved";
-      if (decision.note) phaseMeta.gateNote = decision.note;
-      this.ctx.feedback = undefined;
-      this.ctx.emit({
-        type: "gate.decided",
-        runId: this.ctx.runId,
-        phaseId: phase.id,
-        decision: phaseMeta.gateDecision,
-        ...(decision.note ? { note: decision.note } : {}),
-      });
-      await this.ctx.services.runStore.writeMeta(this.ctx.meta);
-      return { approved: true };
-    }
-
-    phaseMeta.status = "rejected";
-    phaseMeta.gateDecision = "rejected";
-    phaseMeta.gateNote = decision.reason;
-    this.ctx.emit({
-      type: "gate.decided",
-      runId: this.ctx.runId,
-      phaseId: phase.id,
-      decision: "rejected",
-      reason: decision.reason,
-    });
-    await this.ctx.services.runStore.writeMeta(this.ctx.meta);
-
-    if (!phase.on_reject) {
-      this.ctx.outcome = "halted";
-      return { approved: false };
-    }
-
-    this.ctx.feedback = {
-      fromPhase: phase.id,
-      decision: "rejected",
-      ...(decision.reason ? { reason: decision.reason } : {}),
-    };
-    return { approved: false };
   }
 
   /**
@@ -227,32 +143,15 @@ class PhaseTransaction {
     iteration: number,
     error: string,
   ): Promise<PhaseExecutionOutcome> {
-    const now = new Date().toISOString();
-    this.ctx.meta.phases.push({
-      phaseId: phase.id,
-      iteration,
-      startedAt: now,
-      completedAt: now,
-      status: "failed",
-      error,
-    });
-    await this.ctx.services.runStore.writeMeta(this.ctx.meta);
-    this.ctx.emit({
-      type: "phase.failed",
-      runId: this.ctx.runId,
-      phaseId: phase.id,
-      iteration,
-      error,
-    });
+    await this.recorder.recordPreRuntimeFailure(phase, iteration, error);
     this.ctx.outcome = "failed";
     return { approved: false };
   }
 
   /**
    * Records a phase failure detected after the runtime returned ok
-   * (declared outputs missing). PhaseMeta is already in the run state
-   * — mutate it in place and emit `phase.failed` to override the
-   * earlier `phase.completed` event from PhaseRunner.
+   * (declared outputs missing). PhaseMeta is already in the run state,
+   * so mutate it in place and emit the final phase failure.
    */
   private async failAfterRuntime(
     phase: Phase,
@@ -260,16 +159,7 @@ class PhaseTransaction {
     iteration: number,
     error: string,
   ): Promise<PhaseExecutionOutcome> {
-    phaseMeta.status = "failed";
-    phaseMeta.error = error;
-    await this.ctx.services.runStore.writeMeta(this.ctx.meta);
-    this.ctx.emit({
-      type: "phase.failed",
-      runId: this.ctx.runId,
-      phaseId: phase.id,
-      iteration,
-      error,
-    });
+    await this.recorder.recordPostRuntimeFailure(phase, phaseMeta, iteration, error);
     this.ctx.outcome = "failed";
     return { approved: false };
   }
@@ -284,8 +174,4 @@ export async function executePhase(
   ctx: PhaseExecutorContext,
 ): Promise<PhaseExecutionOutcome> {
   return new PhaseTransaction(ctx).execute(phase);
-}
-
-function formatMissing(suffix: string, phase: Phase, missing: readonly ArtefactPointer[]): string {
-  return `Phase "${phase.id}" declared ${suffix}: ${missing.map((m) => m.path).join(", ")}`;
 }

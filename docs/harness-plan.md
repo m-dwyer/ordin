@@ -1055,6 +1055,7 @@ type GateDecision =
 type RunEvent =
   | { type: "run.started"; runId: string }
   | { type: "phase.started"; runId: string; phaseId: string }
+  | { type: "phase.runtime.completed"; runId: string; phaseId: string }
   | { type: "artefact.updated"; runId: string; path: string }
   | { type: "tokens.used"; runId: string; phaseId: string; count: number }
   | { type: "gate.requested"; runId: string; phaseId: string }

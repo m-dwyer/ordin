@@ -14,7 +14,7 @@ module.exports = {
       comment:
         "Domain is pure TypeScript and must not know about the orchestrator.",
       from: { path: "^src/domain" },
-      to: { path: "^src/(orchestrator|runtime|cli)/" },
+      to: { path: "^src/(orchestrator|runtime|cli|infrastructure)/" },
     },
     {
       name: "domain-cannot-depend-on-runtimes",
@@ -33,6 +33,14 @@ module.exports = {
       to: { path: "^src/(orchestrator|runtime|cli)/" },
     },
     {
+      name: "infrastructure-cannot-depend-on-application-layers",
+      severity: "error",
+      comment:
+        "Infrastructure adapts disk/YAML/frontmatter into domain objects; it must not depend on orchestrator, runtimes, gates, clients, or the harness runtime.",
+      from: { path: "^src/infrastructure" },
+      to: { path: "^src/(orchestrator|runtime|runtimes|gates|cli)/" },
+    },
+    {
       name: "runtimes-cannot-depend-on-gates",
       severity: "error",
       comment: "Gate logic belongs to the orchestrator, not to runtimes.",
@@ -49,12 +57,12 @@ module.exports = {
       name: "cli-cannot-reach-past-harness-runtime",
       severity: "error",
       comment:
-        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator directly. Exception: src/cli/gate-prompters/ assembles CLI-specific gate resolvers and legitimately imports Gate/HumanGate/AutoGate + the Phase type.",
+        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ assembles CLI-specific gate resolvers and legitimately imports Gate/HumanGate/AutoGate + the Phase type.",
       from: {
         path: "^src/cli",
         pathNot: "^src/cli/gate-prompters/",
       },
-      to: { path: "^src/(domain|runtimes|orchestrator|gates)/" },
+      to: { path: "^src/(domain|runtimes|orchestrator|gates|infrastructure)/" },
     },
     {
       name: "gate-prompters-scoped-to-gate-assembly",

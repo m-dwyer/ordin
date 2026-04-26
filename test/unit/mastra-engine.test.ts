@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Agent } from "../../src/domain/agent";
-import { HarnessConfig } from "../../src/domain/config";
-import { type Workflow, WorkflowLoader } from "../../src/domain/workflow";
+import type { HarnessConfig } from "../../src/domain/config";
+import type { Workflow } from "../../src/domain/workflow";
 import type { GateDecision } from "../../src/gates/types";
+import { HarnessConfigLoader } from "../../src/infrastructure/config-loader";
+import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
@@ -86,7 +88,7 @@ interface Harness {
 async function makeHarness(): Promise<Harness> {
   const workflow = await new WorkflowLoader().load(await writeTempYaml(TEST_WORKFLOW_YAML));
   const configPath = await writeTempYaml(TEST_CONFIG_YAML);
-  const config = await HarnessConfig.load(configPath);
+  const config = await new HarnessConfigLoader().load(configPath);
   const agents = new Map<string, Agent>([
     ["planner", fakeAgent("planner")],
     ["builder", fakeAgent("builder")],
@@ -118,10 +120,12 @@ async function runWithMastra(
     readonly onEvent?: (event: RunEvent) => void;
   } = {},
 ): Promise<RunMeta> {
-  const workflow = new MastraEngine().compile(harness.workflow);
-  return workflow.run(
+  const engine = new MastraEngine();
+  const program = engine.compile(harness.workflow);
+  return engine.run(
+    program,
     {
-      workflow: harness.workflow,
+      workflow: program.manifest,
       task: input.task ?? "t",
       slug: input.slug ?? "t",
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
@@ -165,6 +169,7 @@ describe("MastraEngine", () => {
           t === "run.started" ||
           t === "run.completed" ||
           t === "phase.started" ||
+          t === "phase.runtime.completed" ||
           t === "phase.completed" ||
           t === "gate.requested" ||
           t === "gate.decided",
@@ -172,17 +177,20 @@ describe("MastraEngine", () => {
     expect(lifecycleTypes).toEqual([
       "run.started",
       "phase.started",
-      "phase.completed",
+      "phase.runtime.completed",
       "gate.requested",
       "gate.decided",
+      "phase.completed",
       "phase.started",
-      "phase.completed",
+      "phase.runtime.completed",
       "gate.requested",
       "gate.decided",
+      "phase.completed",
       "phase.started",
-      "phase.completed",
+      "phase.runtime.completed",
       "gate.requested",
       "gate.decided",
+      "phase.completed",
       "run.completed",
     ]);
   });
@@ -293,10 +301,12 @@ phases:
 
   it("preview() returns composed prompts for every phase without invoking the runtime", async () => {
     const harness = await makeHarness();
-    const compiled = new MastraEngine().compile(harness.workflow);
-    const previews = await compiled.preview(
+    const engine = new MastraEngine();
+    const program = engine.compile(harness.workflow);
+    const previews = await engine.preview(
+      program,
       {
-        workflow: harness.workflow,
+        workflow: program.manifest,
         task: "preview only",
         slug: "preview-only",
         workspaceRoot: "/tmp/repo",

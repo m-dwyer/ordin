@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 /**
@@ -129,7 +127,7 @@ export class WorkflowManifest {
       throw new Error(`Phase "${phaseId}" not found in workflow "${this.name}"`);
     }
     if (idx === 0) return this;
-    return this.buildSubWorkflow(this.phases.slice(idx));
+    return this.buildSubWorkflow(stripRejectsOutsideSelection(this.phases.slice(idx)));
   }
 
   /**
@@ -145,11 +143,7 @@ export class WorkflowManifest {
         `No matching phases found for ${JSON.stringify([...phaseIds])} in workflow "${this.name}"`,
       );
     }
-    const allowed = new Set(kept.map((p) => p.id));
-    const trimmed = kept.map((p) =>
-      p.on_reject && !allowed.has(p.on_reject.goto) ? stripOnReject(p) : p,
-    );
-    return this.buildSubWorkflow(trimmed);
+    return this.buildSubWorkflow(stripRejectsOutsideSelection(kept));
   }
 
   private buildSubWorkflow(phases: Phase[]): WorkflowManifest {
@@ -169,9 +163,10 @@ export class WorkflowManifest {
 export function resolvePhaseRuntime(
   phase: Phase,
   workflow: WorkflowManifest,
+  agentRuntime: string | undefined,
   defaultRuntime: string,
 ): string {
-  return phase.runtime ?? workflow.runtime ?? defaultRuntime;
+  return phase.runtime ?? workflow.runtime ?? agentRuntime ?? defaultRuntime;
 }
 
 export interface ResolvedPromptDefaults {
@@ -202,38 +197,7 @@ function stripOnReject(phase: Phase): Phase {
   return rest;
 }
 
-export class WorkflowLoader {
-  async load(path: string): Promise<WorkflowManifest> {
-    const raw = await readFile(path, "utf8");
-    const parsed: unknown = parseYaml(raw);
-    const result = WorkflowManifestSchema.safeParse(parsed);
-    if (!result.success) {
-      throw new Error(
-        `Invalid workflow at ${path}: ${result.error.issues
-          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-          .join("; ")}`,
-      );
-    }
-    const workflow = new WorkflowManifest(result.data);
-    this.validate(workflow, path);
-    return workflow;
-  }
-
-  private validate(workflow: WorkflowManifest, path: string): void {
-    const seen = new Set<string>();
-    for (const phase of workflow.phases) {
-      if (seen.has(phase.id)) {
-        throw new Error(`Duplicate phase id "${phase.id}" in workflow at ${path}`);
-      }
-      seen.add(phase.id);
-    }
-    const ids = new Set(workflow.phases.map((p) => p.id));
-    for (const phase of workflow.phases) {
-      if (phase.on_reject && !ids.has(phase.on_reject.goto)) {
-        throw new Error(
-          `Phase "${phase.id}" has on_reject.goto="${phase.on_reject.goto}" that does not match any phase id in ${path}`,
-        );
-      }
-    }
-  }
+function stripRejectsOutsideSelection(phases: readonly Phase[]): Phase[] {
+  const allowed = new Set(phases.map((p) => p.id));
+  return phases.map((p) => (p.on_reject && !allowed.has(p.on_reject.goto) ? stripOnReject(p) : p));
 }
