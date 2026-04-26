@@ -840,6 +840,32 @@ The `Engine` seam already exists. Two concrete paths once a trigger fires:
 
 **Relationship to Phase 12.** Phase 12 (`harness standards sync`) was scoped as a narrow "pull standards into skills" tool. Phase 14 supersedes it: standards-as-skills becomes one type of ingestion; Phase 14 formalises ingestion broadly. If Phase 14 lands, Phase 12 collapses into it.
 
+### Phase 15 — Async notifications
+
+**Trigger.** Long runs become common enough that polling `getEvents` or watching SSE in a terminal is friction; a teammate wants to be pinged on completion or pending gate.
+
+**Deliverables:**
+- Per-server / per-run webhook URLs that POST `RunEvent` JSON on `run.completed` and `gate.requested`
+- `--notify` flag on `ordin run` for a desktop notifier
+- HMAC signing for webhook payloads
+
+**Exit criteria:**
+- Slack/webhook receiver can verify-and-render a `run.completed` callback
+- Webhook delivery is best-effort — failure never affects the run
+
+### Phase 16 — Multi-user awareness
+
+**Trigger.** Two or more developers share an `ordin serve` instance and run/gate ownership becomes ambiguous.
+
+**Deliverables:**
+- Token-to-identity map (extends single `ORDIN_API_TOKEN` to `ORDIN_API_TOKENS`); each request carries the identity through to `RunMeta`
+- `RunMeta.startedBy` and per-gate `decidedBy`
+- Default listing scoped to the requester; `?all=true` for the unscoped view
+
+**Exit criteria:**
+- Two tokens drive runs against the same server; each user sees only their runs by default
+- Gate audit log records who decided each gate
+
 ### Phase 13+ — Deferred indefinitely (trigger-driven)
 
 - **Temporal** — durable cross-day execution
