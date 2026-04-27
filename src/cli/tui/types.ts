@@ -70,11 +70,17 @@ export interface PhaseSection {
   gate?: GateState;
 }
 
+export interface PausedState {
+  status: "failed" | "halted" | "completed" | "aborted" | "running" | "pending" | "rejected";
+}
+
 export interface ControllerState {
   header: Accessor<RunHeader | null>;
   phases: () => readonly PhaseRow[];
   sections: () => readonly PhaseSection[];
   gate: Accessor<GateState | null>;
   hint: Accessor<string>;
+  paused: Accessor<PausedState | null>;
   decideGate: (decision: GateDecision) => void;
+  dismiss: () => void;
 }

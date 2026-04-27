@@ -51,8 +51,11 @@ export class OpenTuiRunController {
     { name: string; preview?: string; startedAt: number; phaseId: string }
   >();
 
+  private readonly pausedSignal = createSignal<{ status: RunStatus } | null>(null);
+
   private renderer?: CliRenderer;
   private pendingGate: ((d: GateDecision) => void) | null = null;
+  private pendingDismiss: (() => void) | null = null;
   private finished = false;
   private nextRowId = 1;
   private nextSectionKey = 1;
@@ -69,13 +72,16 @@ export class OpenTuiRunController {
     const [gate] = this.gateSignal;
     const [hint] = this.hintSignal;
     const [header] = this.headerSignal;
+    const [paused] = this.pausedSignal;
     return {
       header,
       phases: () => phases.list,
       sections: () => sections.list,
       gate,
       hint,
+      paused,
       decideGate: (d) => this.decideGate(d),
+      dismiss: () => this.dismiss(),
     };
   }
 
@@ -88,7 +94,7 @@ export class OpenTuiRunController {
     this.renderer = await createCliRenderer({
       targetFps: 30,
       exitOnCtrlC: true,
-      useMouse: false,
+      useMouse: true,
       screenMode: "alternate-screen",
       externalOutputMode: "passthrough",
       consoleMode: "disabled",
@@ -294,20 +300,46 @@ export class OpenTuiRunController {
     };
     const [, setHint] = this.hintSignal;
     setHint("");
+    // Failed/halted runs deserve a moment with the failure visible —
+    // tearing down the alt-screen would throw the user back to a bare
+    // shell with only the post-dispose summary left. Park the UI in
+    // a paused state and wait for the user to dismiss.
+    if (summary.status === "failed" || summary.status === "halted") {
+      this.pausedSignal[1]({ status: summary.status });
+    }
   }
 
   /**
    * Tear down the alternate-screen renderer cleanly. Nothing from the
    * live app is meant to remain in scrollback; final durable output is
-   * printed after teardown.
+   * printed after teardown. If the run is paused (failed/halted),
+   * blocks until the user dismisses so they can scroll the failure
+   * context before being thrown back to the shell.
    */
   async dispose(): Promise<void> {
+    if (this.pausedSignal[0]() && this.renderer && !this.renderer.isDestroyed) {
+      await new Promise<void>((resolve) => {
+        this.pendingDismiss = resolve;
+      });
+    }
     if (this.renderer && !this.renderer.isDestroyed) {
       this.hintSignal[1]("");
       this.gateSignal[1](null);
       this.renderer.destroy();
     }
     this.renderer = undefined;
+  }
+
+  /**
+   * Called by the keyboard handler in `<RunApp>` when the user
+   * dismisses a paused (failed/halted) run.
+   */
+  private dismiss(): void {
+    if (!this.pausedSignal[0]()) return;
+    this.pausedSignal[1](null);
+    const resolve = this.pendingDismiss;
+    this.pendingDismiss = null;
+    resolve?.();
   }
 
   /**

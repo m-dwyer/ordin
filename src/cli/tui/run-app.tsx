@@ -18,19 +18,20 @@
  * Mixed inline colour is achieved by composing multiple `<text>`
  * elements in a flex row instead.
  */
-import { SyntaxStyle, TextAttributes } from "@opentui/core";
+import { type ScrollBoxRenderable, SyntaxStyle, TextAttributes } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import "opentui-spinner/solid";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import type { GateContext } from "../../gates/types";
 import { RunBanner } from "./banner";
-import { formatDuration, formatElapsed, shortenPath, toolRowStyle } from "./format";
+import { formatElapsed, shortenPath, toolRowStyle } from "./format";
 import { PALETTE } from "./theme";
 import type {
   ControllerState,
   EditDiff,
   FeedRow,
   GateState,
+  PausedState,
   PhaseRow,
   PhaseSection,
   PhaseStatus,
@@ -76,10 +77,49 @@ export function RunApp(props: RunAppProps) {
   const tick = setInterval(() => setNow(Date.now()), 1000);
   onCleanup(() => clearInterval(tick));
 
+  let scrollboxEl: ScrollBoxRenderable | undefined;
+
   useKeyboard((key) => {
-    if (!state.gate()) return;
-    if (key.name === "a") state.decideGate({ status: "approved" });
-    else if (key.name === "r") state.decideGate({ status: "rejected", reason: "rejected at gate" });
+    // Gate prompt — single-key approve/reject takes priority.
+    if (state.gate()) {
+      if (key.name === "a") state.decideGate({ status: "approved" });
+      else if (key.name === "r")
+        state.decideGate({ status: "rejected", reason: "rejected at gate" });
+      return;
+    }
+    // Paused (failed/halted) — q/esc/enter dismisses the alt-screen.
+    if (state.paused() && (key.name === "q" || key.name === "escape" || key.name === "return")) {
+      state.dismiss();
+      return;
+    }
+    // Scroll keys — work any time. j/k for vim users, arrows + page
+    // keys for everyone else, g/G for jump-to-top/bottom.
+    if (!scrollboxEl) return;
+    const viewportH = scrollboxEl.viewport.height || 10;
+    switch (key.name) {
+      case "down":
+      case "j":
+        scrollboxEl.scrollBy({ x: 0, y: 1 });
+        break;
+      case "up":
+      case "k":
+        scrollboxEl.scrollBy({ x: 0, y: -1 });
+        break;
+      case "pagedown":
+      case "space":
+        scrollboxEl.scrollBy({ x: 0, y: viewportH - 2 });
+        break;
+      case "pageup":
+      case "b":
+        scrollboxEl.scrollBy({ x: 0, y: -(viewportH - 2) });
+        break;
+      case "G":
+        scrollboxEl.scrollTo({ x: 0, y: scrollboxEl.scrollHeight });
+        break;
+      case "g":
+        scrollboxEl.scrollTo({ x: 0, y: 0 });
+        break;
+    }
   });
 
   return (
@@ -94,11 +134,19 @@ export function RunApp(props: RunAppProps) {
       flexDirection="column"
       gap={0}
     >
-      <ScrollbackView header={state.header()} sections={sections()} cols={cols()} />
+      <ScrollbackView
+        header={state.header()}
+        sections={sections()}
+        cols={cols()}
+        scrollboxRef={(el) => {
+          scrollboxEl = el;
+        }}
+      />
       <Footer
         phases={phases()}
         active={activePhase()}
         gate={state.gate()}
+        paused={state.paused()}
         hint={state.hint()}
         cols={cols()}
         now={now()}
@@ -113,10 +161,19 @@ function ScrollbackView(props: {
   header: RunHeader | null;
   sections: readonly PhaseSection[];
   cols: number;
+  scrollboxRef: (el: ScrollBoxRenderable) => void;
 }) {
   const repoPath = () => props.header?.repoPath;
   return (
-    <scrollbox width="100%" flexGrow={1} stickyScroll stickyStart="bottom">
+    <scrollbox
+      ref={props.scrollboxRef}
+      width="100%"
+      flexGrow={1}
+      stickyScroll
+      stickyStart="bottom"
+      verticalScrollbarOptions={{ visible: false }}
+      horizontalScrollbarOptions={{ visible: false }}
+    >
       <box width="100%" flexDirection="column" gap={1}>
         <Show when={props.header} keyed>
           {(header: RunHeader) => <RunBanner header={header} />}
@@ -144,11 +201,15 @@ function PhaseCard(props: { section: PhaseSection; cols: number; repoPath?: stri
       flexDirection="column"
       backgroundColor={PALETTE.panel}
       border={["left"]}
-      borderColor={PALETTE.borderStrong}
+      borderColor={
+        props.section.status === "running" || props.section.status === "gate"
+          ? statusColor(props.section.status)
+          : PALETTE.borderStrong
+      }
       paddingLeft={1}
       paddingRight={1}
       paddingTop={0}
-      paddingBottom={0}
+      paddingBottom={1}
     >
       <PhaseHeader section={props.section} cols={props.cols} color={color()} />
       {/* Wrap the row stream in a concrete box so its position is
@@ -396,8 +457,7 @@ function ErrorRow(props: { row: FeedRow }) {
 function SummaryLine(props: { section: PhaseSection }) {
   const text = () => {
     const parts: string[] = [];
-    if (props.section.durationMs !== undefined)
-      parts.push(formatDuration(props.section.durationMs));
+    if (props.section.durationMs !== undefined) parts.push(formatElapsed(props.section.durationMs));
     if (props.section.tokensIn !== undefined || props.section.tokensOut !== undefined) {
       parts.push(
         `${(props.section.tokensIn ?? 0).toLocaleString()} in / ${(props.section.tokensOut ?? 0).toLocaleString()} out tok`,
@@ -490,6 +550,7 @@ function Footer(props: {
   phases: readonly PhaseRow[];
   active: PhaseRow | null;
   gate: GateState | null;
+  paused: PausedState | null;
   hint: string;
   cols: number;
   now: number;
@@ -523,6 +584,7 @@ function Footer(props: {
       <FooterBottomRow
         phases={props.phases}
         gate={!!props.gate}
+        paused={props.paused}
         hint={props.hint}
         showRight={showRight()}
       />
@@ -558,6 +620,7 @@ function FooterTopRow(props: {
 function FooterBottomRow(props: {
   phases: readonly PhaseRow[];
   gate: boolean;
+  paused: PausedState | null;
   hint: string;
   showRight: boolean;
 }) {
@@ -565,24 +628,49 @@ function FooterBottomRow(props: {
     <box flexDirection="row" width="100%" justifyContent="space-between" gap={2} height={1}>
       <PhaseRail phases={props.phases} />
       <Show when={props.showRight}>
-        <KeyHint gate={props.gate} hint={props.hint} />
+        <KeyHint gate={props.gate} paused={props.paused} hint={props.hint} />
       </Show>
     </box>
   );
 }
 
-function KeyHint(props: { gate: boolean; hint: string }) {
+function KeyHint(props: { gate: boolean; paused: PausedState | null; hint: string }) {
   return (
     <Show
       when={props.gate}
       fallback={
-        <text
-          flexShrink={0}
-          fg={PALETTE.hint}
-          wrapMode="none"
-          truncate
-          content={props.hint || "Ctrl+C to abort"}
-        />
+        <Show
+          when={props.paused}
+          keyed
+          fallback={
+            <text
+              flexShrink={0}
+              fg={PALETTE.hint}
+              wrapMode="none"
+              truncate
+              content={props.hint || "↑↓ scroll · Ctrl+C abort"}
+            />
+          }
+        >
+          {(p: PausedState) => (
+            <box flexDirection="row" flexShrink={0} gap={1}>
+              <text
+                flexShrink={0}
+                fg={p.status === "halted" ? PALETTE.gate : PALETTE.failed}
+                attributes={TextAttributes.BOLD}
+                wrapMode="none"
+                content={p.status === "halted" ? "✗ run halted" : "✗ run failed"}
+              />
+              <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+              <text
+                flexShrink={0}
+                fg={PALETTE.hint}
+                wrapMode="none"
+                content="↑↓ scroll · q to exit"
+              />
+            </box>
+          )}
+        </Show>
       }
     >
       <box flexDirection="row" flexShrink={0} gap={1}>
@@ -685,7 +773,7 @@ function phaseTotals(phases: readonly PhaseRow[]) {
 
 function formatTotals(totals: { durationMs: number; tokensIn: number; tokensOut: number }): string {
   const parts: string[] = [];
-  if (totals.durationMs > 0) parts.push(formatDuration(totals.durationMs));
+  if (totals.durationMs > 0) parts.push(formatElapsed(totals.durationMs));
   if (totals.tokensIn > 0) parts.push(`${totals.tokensIn.toLocaleString()} in`);
   if (totals.tokensOut > 0) parts.push(`${totals.tokensOut.toLocaleString()} out`);
   return parts.join(" · ");
