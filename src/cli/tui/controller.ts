@@ -19,7 +19,7 @@
  * into scrollback. On exit, `printFinalSummary()` emits a compact
  * plain-stdout summary back on the main screen.
  */
-import { type CliRenderer, createCliRenderer } from "@opentui/core";
+import { applyGain, type CliRenderer, createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
@@ -127,6 +127,8 @@ export class OpenTuiRunController {
       clearOnShutdown: true,
       backgroundColor: PALETTE.bg,
     });
+
+    installPostProcess(this.renderer);
 
     // render() returns Promise<void>; the Solid tree's lifetime is tied
     // to the renderer — `renderer.destroy()` fires CliRenderEvents.DESTROY
@@ -610,4 +612,34 @@ function statusToColor(status: PhaseStatus): string {
     case "failed":
       return PALETTE.failed;
   }
+}
+
+/**
+ * Post-processing pipeline for the run UI.
+ *
+ * Currently a single one-shot 250ms gain ramp from black on first
+ * paint — gives the alt-screen a smooth reveal instead of pop-in.
+ * Self-disables once the ramp completes so there's zero per-frame
+ * cost after.
+ *
+ * BloomEffect was tried and pulled: in a text-dense layout it lifts
+ * dark bg cells (which sit next to many bright text cells) more than
+ * it haloes the brights themselves (already near the 1.0 cap), so
+ * the panel bg washed grey while the chip didn't get any noticeable
+ * extra glow. A focused glow would need a targeted cellMask approach
+ * (active-phase region only) instead of a global pass.
+ */
+function installPostProcess(renderer: CliRenderer): void {
+  const fadeStart = Date.now();
+  const fadeMs = 250;
+  let faded = false;
+  renderer.addPostProcessFn((buf) => {
+    if (faded) return;
+    const elapsed = Date.now() - fadeStart;
+    if (elapsed >= fadeMs) {
+      faded = true;
+      return;
+    }
+    applyGain(buf, elapsed / fadeMs);
+  });
 }

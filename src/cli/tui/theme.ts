@@ -3,33 +3,47 @@
  * referenced by the controller (scrollback writes), the run-app footer
  * components, and any future tooling-side rendering.
  *
- * Built around Catppuccin Mocha — soft pastel palette designed for
- * dark backgrounds, low-saturation accents, no deep contrasts.
+ * Tuned to match the ordin logo: a near-black canvas with neon-pastel
+ * accents (conductor purple, build amber, evaluate mint, output pink,
+ * input cobalt). Catppuccin DNA, pushed one notch toward saturation
+ * so the brand identity carries through into the run experience.
+ *
+ * The `*Glow` tier is intentionally small — used only for the few
+ * elements that should pop (active phase strip, gate CTA chip, gate
+ * card border). The body palette stays calm so the punchy variants
+ * stay meaningful.
  */
 export const PALETTE = {
-  // status — soft pastels, distinguishable but never punchy
-  pending: "#6c7086", // overlay0 — muted slate
-  running: "#cba6f7", // mauve — soft purple
-  done: "#a6e3a1", // green — sage mint
-  gate: "#f9e2af", // yellow — butter peach
-  failed: "#f38ba8", // red — coral rose
+  // status — neon-pastels, distinct against near-black
+  pending: "#6c7086", // muted slate
+  running: "#b58cff", // conductor purple
+  done: "#7ee0a8", // mint neon
+  gate: "#f5b942", // amber
+  failed: "#ff7aa8", // hot pink
 
   // typography
-  text: "#cdd6f4", // text — warm off-white
-  hint: "#a6adc8", // subtext0 — quiet metadata
-  muted: "#7f849c", // overlay1 — labels, dim glyphs
+  text: "#cdd6f4", // warm off-white
+  hint: "#a6adc8", // quiet metadata
+  muted: "#9aa0b8", // labels, dim glyphs — bumped from #7f849c so read-row glyphs stay legible against the deeper bg
 
   // structure
-  bg: "#1e1e2e", // base — alt-screen canvas
-  panelSoft: "#242436", // a touch above bg
-  panel: "#313244", // surface0 — phase panel (raises off bg)
-  panelRaised: "#45475a", // surface1 — interactive elements
-  border: "#45475a", // surface1 — quiet dividers
-  borderStrong: "#585b70", // surface2 — phase bar
+  bg: "#11111c", // canvas — near-black, lets neons glow
+  panelSoft: "#171727", // a touch above bg
+  panel: "#1c1c2c", // phase panel
+  panelRaised: "#262638", // active phase, raised but not yelling
+  border: "#2c2c44", // quiet dividers
+  borderStrong: "#45475a", // emphasis (active phase outer strip)
 
   // accents
-  accent: "#89b4fa", // blue — soft sky
-  accent2: "#f5c2e7", // pink — dusty rose
+  accent: "#5fb1ff", // cobalt — input ghost, file-write glyph
+  accent2: "#ffa8d4", // soft pink — bash glyph
   toolName: "#94e2d5", // teal — Skill glyph
   toolPreview: "#b4befe", // lavender — soft preview text
+
+  // glow tier — reserved for active phase strip, gate CTA, gate card border
+  runningGlow: "#cba6ff",
+  doneGlow: "#9aeec0",
+  gateGlow: "#ffcc66",
+  failedGlow: "#ff9bc0",
+  accentGlow: "#86c5ff",
 } as const;

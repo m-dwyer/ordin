@@ -201,4 +201,104 @@ describe("nonTtyRunSession", () => {
       }),
     ).rejects.toThrow(/cannot prompt for gate at phase "plan" without a TTY.*ordin remote decide/i);
   });
+
+  /**
+   * End-to-end regression guard for the non-TTY transcript. Exercises a
+   * representative two-phase run (plan succeeds, build fails) so the
+   * inline snapshot captures phase headers, tool ticks, agent prose,
+   * a tool failure, completion summary, and final phase failure all in
+   * one go. Per-event tests above cover individual contracts; this one
+   * locks down line ordering + cumulative formatting so a refactor that
+   * silently drops or reorders a line type fails loudly.
+   *
+   * Update with `vitest -u` when the change is intentional — diff in
+   * the PR makes the user-facing transcript change explicit.
+   */
+  it("renders a representative two-phase run as a stable transcript", () => {
+    const session = nonTtyRunSession();
+    const events: RunEvent[] = [
+      { type: "run.started", runId: RUN_ID }, // ignored
+      {
+        type: "phase.started",
+        runId: RUN_ID,
+        phaseId: "plan",
+        iteration: 1,
+        model: "claude-sonnet-4-6",
+        runtime: "claude-cli",
+      },
+      {
+        type: "agent.tool.use",
+        runId: RUN_ID,
+        phaseId: "plan",
+        id: "t1",
+        name: "Read",
+        input: { file_path: "src/calculator.ts" },
+      },
+      {
+        type: "agent.tool.result",
+        runId: RUN_ID,
+        phaseId: "plan",
+        id: "t1",
+        ok: true,
+      },
+      {
+        type: "agent.text",
+        runId: RUN_ID,
+        phaseId: "plan",
+        text: "Drafting the RFC for divide-by-zero handling.",
+      },
+      {
+        type: "phase.runtime.completed",
+        runId: RUN_ID,
+        phaseId: "plan",
+        iteration: 1,
+        durationMs: 32_400,
+        tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
+      },
+      {
+        type: "phase.started",
+        runId: RUN_ID,
+        phaseId: "build",
+        iteration: 1,
+        model: "claude-sonnet-4-6",
+        runtime: "claude-cli",
+      },
+      {
+        type: "agent.tool.use",
+        runId: RUN_ID,
+        phaseId: "build",
+        id: "t2",
+        name: "Bash",
+        input: { command: "bun run typecheck" },
+      },
+      {
+        type: "agent.tool.result",
+        runId: RUN_ID,
+        phaseId: "build",
+        id: "t2",
+        ok: false,
+        preview: "tsc: 1 error in src/foo.ts",
+      },
+      {
+        type: "phase.failed",
+        runId: RUN_ID,
+        phaseId: "build",
+        iteration: 1,
+        error: "type check failed\n(stack…)",
+      },
+    ];
+    for (const ev of events) session.onEvent(ev);
+
+    expect(writes.join("")).toMatchInlineSnapshot(`
+      "▶ plan — claude-sonnet-4-6
+        ▸ Read · src/calculator.ts
+        Drafting the RFC for divide-by-zero handling.
+      ✓ plan — 32.4s · out 1,840 tok
+      ▶ build — claude-sonnet-4-6
+        ▸ Bash · bun run typecheck
+        ✗ Bash · bun run typecheck failed — tsc: 1 error in src/foo.ts
+      ✗ build failed — type check failed
+      "
+    `);
+  });
 });

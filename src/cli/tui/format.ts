@@ -7,7 +7,7 @@ const ESC = "\x1b";
 const RESET_RAW = `${ESC}[0m`;
 const COLOR_TAG_DEFAULT = 257;
 
-export const BRAND_GRADIENT = ["#89b4fa", "#cba6f7", "#f5c2e7"] as const;
+export const BRAND_GRADIENT = ["#5fb1ff", "#b58cff", "#ff7aa8"] as const;
 
 export function ansiEnabled(): boolean {
   if (process.env["NO_COLOR"]) return false;
@@ -229,6 +229,40 @@ export function buildEditDiff(name: string, input: unknown, maxSide = 3): EditDi
   };
 }
 
+// ── Row helpers (pure transforms used by run-app) ───────────────────
+
+/**
+ * Build the OSC 8 link target for a tool row's detail, when applicable.
+ * - File tools (Read/Write/Edit/MultiEdit/NotebookEdit): wrap absolute
+ *   path in `file://` so cmd-click opens in the user's default handler.
+ * - WebFetch: detail is already a URL.
+ * - Everything else (Glob patterns, Bash commands, Skill names): no link.
+ */
+export function linkUrl(tool: string | undefined, detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  if (isFileTool(tool)) return fileUri(detail);
+  if (tool === "WebFetch") return detail;
+  return undefined;
+}
+
+/**
+ * For tools whose `detail` is a file path (Read/Write/Edit/Glob/etc.),
+ * render the path repo-relative so the same `.scratch/target-repo/`
+ * prefix doesn't burn a line per row.
+ */
+export function prettifyDetail(
+  tool: string | undefined,
+  detail: string | undefined,
+  repoPath?: string,
+): string {
+  if (!detail) return "";
+  if (!tool) return detail;
+  if (isFileTool(tool)) {
+    return ellipsizePath(shortenPath(detail, repoPath));
+  }
+  return detail;
+}
+
 // ── Collapsibles ────────────────────────────────────────────────────
 
 export const NOTE_COLLAPSE_THRESHOLD = 6;
@@ -243,6 +277,46 @@ export function isExplorationTool(name: string | undefined): boolean {
 export type Collapsible =
   | { kind: "note"; id: number; lineCount: number }
   | { kind: "tool-group"; id: number; rows: readonly FeedRow[] };
+
+/**
+ * One unit of phase-card output: either a single row (tool, edit,
+ * note, error) or a grouped tool-run (3+ adjacent Read/Glob/Grep)
+ * collapsed under a single disclosure header. Run-app turns this
+ * into <Row/> or <ToolGroupRow/> children.
+ */
+export type RenderItem =
+  | { kind: "row"; row: FeedRow }
+  | { kind: "group"; id: number; rows: readonly FeedRow[] };
+
+/**
+ * Convert the flat row stream into a render plan: standalone rows
+ * and tool-groups (Read/Glob/Grep ≥3 adjacent). The first row id of
+ * each group becomes the anchor; subsequent rows in the group are
+ * skipped from standalone emission. Order-preserving and pure.
+ */
+export function buildRenderPlan(rows: readonly FeedRow[]): RenderItem[] {
+  const items: RenderItem[] = [];
+  const collapsibles = findCollapsibles(rows);
+  const groupByFirstId = new Map<number, readonly FeedRow[]>();
+  const skipIds = new Set<number>();
+  for (const c of collapsibles) {
+    if (c.kind === "tool-group") {
+      groupByFirstId.set(c.id, c.rows);
+      for (const r of c.rows) skipIds.add(r.id);
+      // first id is the anchor — it represents the whole group
+      skipIds.delete(c.id);
+    }
+  }
+  for (const row of rows) {
+    if (groupByFirstId.has(row.id)) {
+      items.push({ kind: "group", id: row.id, rows: groupByFirstId.get(row.id) ?? [] });
+      continue;
+    }
+    if (skipIds.has(row.id)) continue;
+    items.push({ kind: "row", row });
+  }
+  return items;
+}
 
 /**
  * Walk a phase's row stream and identify each collapsible spot — long

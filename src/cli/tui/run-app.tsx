@@ -25,16 +25,18 @@ import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import type { GateContext } from "../../gates/types";
 import { RunBanner } from "./banner";
 import {
+  buildRenderPlan,
   ellipsizePath,
   fileUri,
-  findCollapsibles,
   formatElapsed,
-  isFileTool,
+  linkUrl,
   mix,
   NOTE_COLLAPSE_THRESHOLD,
+  prettifyDetail,
   shortenPath,
   toolRowStyle,
 } from "./format";
+import { staticPhaseGlyph, statusColor, statusGlow } from "./phase-visual";
 import { PALETTE } from "./theme";
 import type {
   ControllerState,
@@ -44,7 +46,6 @@ import type {
   PausedState,
   PhaseRow,
   PhaseSection,
-  PhaseStatus,
   RunHeader,
 } from "./types";
 
@@ -94,6 +95,15 @@ export function RunApp(props: RunAppProps) {
    * that phase's most recent section comes into view. Most recent
    * because re-runs after rejected gates produce multiple sections
    * per phase id; the user almost always cares about the latest.
+   *
+   * `scrollChildIntoView` internally calls `scrollBy`, which mutates
+   * the scrollbar's position directly and bypasses ScrollBox's
+   * `scrollTop` setter — the only path that flips the
+   * `_hasManualScroll` flag. Without that flag, the next layout pass
+   * sees us as still "stuck to bottom" and snaps us right back down.
+   * We re-assign `scrollTop` to itself (through the setter) to flip
+   * the flag and defeat the snap-back. Sticky resumes naturally once
+   * the user scrolls back to the bottom.
    */
   const jumpToPhase = (phaseId: string) => {
     if (!scrollboxEl) return;
@@ -102,6 +112,8 @@ export function RunApp(props: RunAppProps) {
       const s = list[i];
       if (s && s.phaseId === phaseId) {
         scrollboxEl.scrollChildIntoView(phaseCardId(s.key));
+        const top = scrollboxEl.scrollTop;
+        scrollboxEl.scrollTop = top;
         return;
       }
     }
@@ -262,10 +274,17 @@ function PhaseCard(props: {
   // "Past" phases drop bg to a half-mix toward canvas — still visible
   // as a card, just less raised. Chrome colours mix 65% toward bg so
   // the active phase pops without finished work disappearing.
-  const cardBg = () => (isActive() ? PALETTE.panelRaised : mix(PALETTE.panel, PALETTE.bg, 0.5));
+  //
+  // Active phase glow: instead of a 2-cell strip (which read as two
+  // muddled stripes, not glow), we wash the active card's bg toward
+  // its status colour at ~6% and use a HEAVY single bar in the GLOW
+  // tier. Tinted bg sells "lit from within"; heavy bar gives the rim.
+  const activeBg = () => mix(PALETTE.panelRaised, statusGlow(props.section.status), 0.06);
+  const cardBg = () => (isActive() ? activeBg() : mix(PALETTE.panel, PALETTE.bg, 0.5));
   const dim = (hex: string, amount = 0.65): string =>
     isActive() ? hex : mix(hex, PALETTE.bg, amount);
-  const barColor = () => (isActive() ? statusColor(props.section.status) : PALETTE.border);
+  const barColor = () => (isActive() ? statusGlow(props.section.status) : PALETTE.border);
+  const barStyle = (): "heavy" | "single" => (isActive() ? "heavy" : "single");
   const headerColor = () => dim(statusColor(props.section.status));
 
   // Convert the flat row stream into a render plan: standalone rows
@@ -278,6 +297,7 @@ function PhaseCard(props: {
       section={props.section}
       color={headerColor()}
       dim={!isActive()}
+      active={isActive()}
       collapsed={props.collapsed}
       onToggle={props.onToggleCollapsed}
     />
@@ -295,9 +315,10 @@ function PhaseCard(props: {
           <box
             width="100%"
             flexDirection="column"
-            backgroundColor={mix(PALETTE.panel, PALETTE.bg, 0.5)}
+            backgroundColor={isActive() ? activeBg() : mix(PALETTE.panel, PALETTE.bg, 0.5)}
             border={["left"]}
             borderColor={barColor()}
+            borderStyle={barStyle()}
             paddingLeft={1}
             paddingRight={1}
             paddingTop={0}
@@ -317,6 +338,7 @@ function PhaseCard(props: {
           backgroundColor={cardBg()}
           border={["left"]}
           borderColor={barColor()}
+          borderStyle={barStyle()}
           paddingLeft={1}
           paddingRight={1}
           paddingTop={0}
@@ -363,38 +385,6 @@ function phaseCardId(sectionKey: string): string {
   return `phase-card-${sectionKey}`;
 }
 
-// ── Render plan (rows + tool-groups) ────────────────────────────────
-
-type RenderItem =
-  | { kind: "row"; row: FeedRow }
-  | { kind: "group"; id: number; rows: readonly FeedRow[] };
-
-function buildRenderPlan(rows: readonly FeedRow[]): RenderItem[] {
-  const items: RenderItem[] = [];
-  const collapsibles = findCollapsibles(rows);
-  // Build a map of "first row id of a tool group" → group rows so we
-  // can emit one item per group and skip the rest.
-  const groupByFirstId = new Map<number, readonly FeedRow[]>();
-  const skipIds = new Set<number>();
-  for (const c of collapsibles) {
-    if (c.kind === "tool-group") {
-      groupByFirstId.set(c.id, c.rows);
-      for (const r of c.rows) skipIds.add(r.id);
-      // first id is the anchor — it represents the whole group
-      skipIds.delete(c.id);
-    }
-  }
-  for (const row of rows) {
-    if (groupByFirstId.has(row.id)) {
-      items.push({ kind: "group", id: row.id, rows: groupByFirstId.get(row.id) ?? [] });
-      continue;
-    }
-    if (skipIds.has(row.id)) continue;
-    items.push({ kind: "row", row });
-  }
-  return items;
-}
-
 /**
  * Section label that sits ABOVE the phase panel. Layout: status glyph
  * (or animated spinner for running) + bold phase id on the left;
@@ -405,14 +395,12 @@ function PhaseHeader(props: {
   section: PhaseSection;
   color: string;
   dim: boolean;
+  active: boolean;
   collapsed: boolean;
   onToggle: () => void;
 }) {
-  const left = () => {
-    const id = props.section.phaseId;
-    const iter = props.section.iteration > 1 ? ` · iter ${props.section.iteration}` : "";
-    return `${id}${iter}`;
-  };
+  const iterSuffix = () =>
+    props.section.iteration > 1 ? ` · iter ${props.section.iteration}` : "";
   const modelColor = () => (props.dim ? mix(PALETTE.hint, PALETTE.bg, 0.65) : PALETTE.hint);
   const chevron = () => (props.collapsed ? "▶" : "▼");
   return (
@@ -442,14 +430,28 @@ function PhaseHeader(props: {
             <spinner name="dots" color={props.color} />
           </box>
         </Show>
-        <text
-          flexShrink={1}
-          fg={props.color}
-          attributes={TextAttributes.BOLD}
-          wrapMode="none"
-          truncate
-          content={left()}
-        />
+        <Show
+          when={props.active}
+          fallback={
+            <text
+              flexShrink={1}
+              fg={props.color}
+              attributes={TextAttributes.BOLD}
+              wrapMode="none"
+              truncate
+              content={`${props.section.phaseId}${iterSuffix()}`}
+            />
+          }
+        >
+          <Chip
+            label={` ${props.section.phaseId} `}
+            bg={statusColor(props.section.status)}
+            fg={PALETTE.bg}
+          />
+          <Show when={iterSuffix()}>
+            <text flexShrink={1} fg={props.color} wrapMode="none" truncate content={iterSuffix()} />
+          </Show>
+        </Show>
       </box>
       <box flexDirection="row" gap={1} flexShrink={0}>
         <Show when={props.section.model} keyed>
@@ -465,7 +467,8 @@ function PhaseHeader(props: {
 
 // ── Rows ────────────────────────────────────────────────────────────
 
-const GLYPH_COL = 2;
+const GLYPH_COL = 1;
+const EXTRA_COL = 7;
 
 function Row(props: { row: FeedRow; repoPath?: string; expanded: boolean; onToggle: () => void }) {
   const kind = () => props.row.kind;
@@ -546,10 +549,11 @@ function ToolRow(props: { row: FeedRow; repoPath?: string }) {
       </box>
       <Show when={props.row.extra}>
         <text
+          width={EXTRA_COL}
           flexShrink={0}
           fg={failed() ? PALETTE.failed : PALETTE.muted}
           wrapMode="none"
-          content={props.row.extra ?? ""}
+          content={(props.row.extra ?? "").padStart(EXTRA_COL)}
         />
       </Show>
     </box>
@@ -643,11 +647,17 @@ function DisclosureRow(props: { expanded: boolean; label: string; onToggle: () =
       <text
         width={GLYPH_COL}
         flexShrink={0}
-        fg={PALETTE.accent}
+        fg={PALETTE.toolPreview}
         wrapMode="none"
         content={glyph()}
       />
-      <text flexGrow={1} flexShrink={1} fg={PALETTE.accent} wrapMode="word" content={props.label} />
+      <text
+        flexGrow={1}
+        flexShrink={1}
+        fg={PALETTE.toolPreview}
+        wrapMode="word"
+        content={props.label}
+      />
     </box>
   );
 }
@@ -753,7 +763,7 @@ function PhaseFooter(props: { section: PhaseSection; dim: boolean }) {
     return props.dim ? mix(base, PALETTE.bg, 0.65) : base;
   };
   return (
-    <box flexDirection="row" width="100%" marginTop={1}>
+    <box flexDirection="row" width="100%" gap={1} marginTop={1}>
       <text width={GLYPH_COL} flexShrink={0} fg={color()} wrapMode="none" content={glyph()} />
       <text flexGrow={1} flexShrink={1} fg={color()} wrapMode="word" content={text()} />
     </box>
@@ -776,27 +786,25 @@ function GateCard(props: { ctx: GateContext; repoPath?: string }) {
       flexDirection="column"
       border
       borderStyle="rounded"
-      borderColor={PALETTE.gate}
+      borderColor={PALETTE.gateGlow}
       title=" approval required "
       titleAlignment="left"
       paddingLeft={1}
       paddingRight={1}
-      paddingTop={0}
+      paddingTop={1}
       paddingBottom={0}
       marginTop={1}
     >
-      <Show when={props.ctx.summary}>
-        {/* DIAGNOSTIC: temporarily plain <text> instead of <markdown>;
-            <markdown>'s text-buffer pipeline may be leaking OSC 8 state
-            and breaking hyperlinks elsewhere on screen when the gate
-            renders. See if links return with this swap. */}
-        <text fg={PALETTE.text} wrapMode="word" content={props.ctx.summary ?? ""} />
+      <Show when={props.ctx.summary} keyed>
+        {(summary: string) => (
+          <markdown content={summary} syntaxStyle={markdownSyntax()} fg={PALETTE.text} />
+        )}
       </Show>
       <Show when={props.ctx.artefacts.length > 0}>
         <box width="100%" flexDirection="column" marginTop={1}>
           <For each={props.ctx.artefacts}>
             {(a) => (
-              <box flexDirection="row" width="100%">
+              <box flexDirection="row" width="100%" gap={1}>
                 <text
                   width={GLYPH_COL}
                   flexShrink={0}
@@ -962,10 +970,8 @@ function KeyHint(props: { gate: boolean; paused: PausedState | null; hint: strin
       }
     >
       <box flexDirection="row" flexShrink={0} gap={1}>
-        <Chip label=" a " bg={PALETTE.gate} fg={PALETTE.bg} />
-        <text flexShrink={0} fg={PALETTE.text} wrapMode="none" content="approve" />
-        <Chip label=" r " bg={PALETTE.failed} fg={PALETTE.bg} />
-        <text flexShrink={0} fg={PALETTE.text} wrapMode="none" content="reject" />
+        <Chip label=" a · approve " bg={PALETTE.gateGlow} fg={PALETTE.bg} />
+        <Chip label=" r · reject " bg={PALETTE.failedGlow} fg={PALETTE.bg} />
       </box>
     </Show>
   );
@@ -1034,38 +1040,6 @@ function PhaseConnector(props: { prior?: PhaseRow }) {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/**
- * Build the OSC 8 link target for a tool row's detail, when applicable.
- * - File tools (Read/Write/Edit/MultiEdit/NotebookEdit): wrap absolute
- *   path in `file://` so cmd-click opens in the user's default handler.
- * - WebFetch: detail is already a URL.
- * - Everything else (Glob patterns, Bash commands, Skill names): no link.
- */
-function linkUrl(tool: string | undefined, detail: string | undefined): string | undefined {
-  if (!detail) return undefined;
-  if (isFileTool(tool)) return fileUri(detail);
-  if (tool === "WebFetch") return detail;
-  return undefined;
-}
-
-/**
- * For tools whose `detail` is a file path (Read/Write/Edit/Glob/etc.),
- * render the path repo-relative so the same `.scratch/target-repo/`
- * prefix doesn't burn a line per row.
- */
-function prettifyDetail(
-  tool: string | undefined,
-  detail: string | undefined,
-  repoPath?: string,
-): string {
-  if (!detail) return "";
-  if (!tool) return detail;
-  if (isFileTool(tool)) {
-    return ellipsizePath(shortenPath(detail, repoPath));
-  }
-  return detail;
-}
-
 function phaseTotals(phases: readonly PhaseRow[]) {
   let durationMs = 0;
   let tokensIn = 0;
@@ -1084,39 +1058,4 @@ function formatTotals(totals: { durationMs: number; tokensIn: number; tokensOut:
   if (totals.tokensIn > 0) parts.push(`${totals.tokensIn.toLocaleString()} in`);
   if (totals.tokensOut > 0) parts.push(`${totals.tokensOut.toLocaleString()} out`);
   return parts.join(" · ");
-}
-
-/**
- * Glyph used in the phase rail and the card title. Card titles can't
- * host an animated spinner element (they're a string prop on `<box>`),
- * so running uses a static glyph; the border colour conveys "live".
- */
-function staticPhaseGlyph(s: PhaseStatus): string {
-  switch (s) {
-    case "pending":
-      return "◌";
-    case "running":
-      return "▸";
-    case "gate":
-      return "◆";
-    case "done":
-      return "✓";
-    case "failed":
-      return "✗";
-  }
-}
-
-function statusColor(s: PhaseStatus): string {
-  switch (s) {
-    case "pending":
-      return PALETTE.pending;
-    case "running":
-      return PALETTE.running;
-    case "gate":
-      return PALETTE.gate;
-    case "done":
-      return PALETTE.done;
-    case "failed":
-      return PALETTE.failed;
-  }
 }
