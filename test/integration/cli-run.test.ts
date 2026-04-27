@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { buildRunInput, registerRun } from "../../src/cli/run";
-import type { PhasePreview, StartRunInput } from "../../src/runtime/harness";
+import type { HarnessRuntime, PhasePreview, StartRunInput } from "../../src/runtime/harness";
 
 describe("buildRunInput", () => {
   it("builds a full workflow run input", () => {
@@ -72,30 +72,32 @@ describe("registerRun", () => {
     let startRunInput: StartRunInput | undefined;
 
     registerRun(program, {
-      createRuntime: (opts) => {
+      createSession: async (opts) => {
         workflow = opts.workflow;
         return {
-          startRun: async (input) => {
-            startRunInput = input;
-            return {
-              runId: "run-1",
-              workflow: "custom",
-              tier: input.tier ?? "M",
-              task: input.task,
-              slug: input.slug,
-              repo: input.repoPath ?? "",
-              startedAt: "2026-01-01T00:00:00.000Z",
-              completedAt: "2026-01-01T00:00:00.000Z",
-              status: "completed",
-              phases: [],
-            };
-          },
-          previewRun: async () => [],
+          runtime: {
+            startRun: async (input: StartRunInput) => {
+              startRunInput = input;
+              return {
+                runId: "run-1",
+                workflow: "custom",
+                tier: input.tier ?? "M",
+                task: input.task,
+                slug: input.slug,
+                repo: input.repoPath ?? "",
+                startedAt: "2026-01-01T00:00:00.000Z",
+                completedAt: "2026-01-01T00:00:00.000Z",
+                status: "completed",
+                phases: [],
+              };
+            },
+            previewRun: async () => [],
+          } as unknown as HarnessRuntime,
+          onEvent: () => {},
+          finish: () => {},
+          dispose: () => {},
         };
       },
-      onEventSink: () => ({ onEvent: () => {}, finish: () => {} }),
-      intro: () => {},
-      outro: () => {},
     });
 
     await program.parseAsync(
@@ -133,7 +135,6 @@ describe("registerRun", () => {
     const program = new Command();
     program.exitOverride();
 
-    let startRunCalls = 0;
     let previewInput: StartRunInput | undefined;
     let renderedPreviews: readonly PhasePreview[] | undefined;
     let renderedTask: string | undefined;
@@ -154,12 +155,8 @@ describe("registerRun", () => {
     };
 
     registerRun(program, {
-      createRuntime: () => ({
-        startRun: async () => {
-          startRunCalls++;
-          throw new Error("startRun should not run during --dry-run");
-        },
-        previewRun: async (input) => {
+      createDryRunRuntime: () => ({
+        previewRun: async (input: StartRunInput) => {
           previewInput = input;
           return [fakePreview];
         },
@@ -175,7 +172,6 @@ describe("registerRun", () => {
       { from: "node" },
     );
 
-    expect(startRunCalls).toBe(0);
     expect(previewInput?.task).toBe("Try dry");
     expect(renderedTask).toBe("Try dry");
     expect(renderedPreviews?.[0]).toBe(fakePreview);

@@ -9,13 +9,14 @@ Conventions for agents (and humans) working **on** the ordin repo itself. ordin 
 - **Entrypoint:** `bun src/cli/index.ts <cmd>` runs the CLI directly from `src/` (or `bun run ordin <cmd>` via the package script).
 - **Linter / formatter:** Biome v2 — 2-space indent, double quotes, 100 col. Run `bun run lint` / `bun run format`.
 - **Tests:** Vitest v4 (runs under Bun via `bun run test`).
-- **Deps:** commander (CLI), @clack/prompts (CLI gate prompter), yaml (config), gray-matter (frontmatter), zod (schemas), @mastra/core (workflow engine), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals), @opentelemetry/* (tracing — opt-in via `LANGFUSE_*` env vars).
+- **Deps:** commander (CLI), @opentui/core + @opentui/solid + solid-js (run-time TUI footer + gate prompter), yaml (config), gray-matter (frontmatter), zod (schemas), @mastra/core (workflow engine), ai + @ai-sdk/openai-compatible (AiSdkRuntime — eval only), openai (transitive), autoevals (LLM-as-judge scoring for evals), @opentelemetry/* (tracing — opt-in via `LANGFUSE_*` env vars).
 
 ## Architecture — the four load-bearing separations
 
 ```
 cli/           client interface — only uses HarnessRuntime
-                gate-prompters/  CLI-side prompters (clack); CLI assembles its own gate resolver
+                tui/             OpenTUI + Solid run UI (controller + footer app + non-TTY sink)
+                gate-prompters/  CLI-side prompters (OpenTUI); CLI assembles its own gate resolver
 runtime/       HarnessRuntime implementation
 orchestrator/  Engine interface + PhaseRunner + RunStore
                 mastra/   MastraEngine — compiles Workflow → Mastra workflow

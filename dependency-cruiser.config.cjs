@@ -57,20 +57,20 @@ module.exports = {
       name: "cli-cannot-reach-past-harness-runtime",
       severity: "error",
       comment:
-        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ assembles CLI-specific gate resolvers and legitimately imports Gate/HumanGate/AutoGate + the Phase type.",
+        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ and src/cli/tui/ are CLI-side adapters that legitimately import gates/* (Gate/HumanGate/AutoGate + the Phase type) and the runtime's own RunEvent/RunMeta type re-exports.",
       from: {
         path: "^src/cli",
-        pathNot: "^src/cli/gate-prompters/",
+        pathNot: "^src/cli/(gate-prompters|tui)/",
       },
       to: { path: "^src/(domain|runtimes|orchestrator|gates|infrastructure)/" },
     },
     {
-      name: "gate-prompters-scoped-to-gate-assembly",
+      name: "cli-adapters-scoped",
       severity: "error",
       comment:
-        "Gate-prompter adapters may import the gate layer and Phase type (to implement Phase['gate'] switch), but nothing else outside src/gates and src/domain/workflow.",
-      from: { path: "^src/cli/gate-prompters/" },
-      to: { path: "^src/(runtime|runtimes|orchestrator)/" },
+        "CLI-side adapters (gate-prompters, tui) may import the gate layer + Phase type, but never the concrete runtimes or the orchestrator's internals. Event/Run types are accessed through runtime/harness re-exports.",
+      from: { path: "^src/cli/(gate-prompters|tui)/" },
+      to: { path: "^src/(runtimes|orchestrator)/" },
     },
     {
       name: "no-orphans",

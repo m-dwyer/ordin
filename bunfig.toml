@@ -1,0 +1,5 @@
+# Preload @opentui/solid's Babel transform so Solid JSX in *.tsx files
+# (the run-time TUI) compiles to fine-grained reactive calls. Without
+# this, Bun would treat JSX as plain createElement and Solid's
+# reconciler would never receive the right shape.
+preload = ["@opentui/solid/preload"]

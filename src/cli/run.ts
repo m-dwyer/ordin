@@ -1,18 +1,31 @@
-import { intro, log, note, outro } from "@clack/prompts";
 import type { Command } from "commander";
-import type { HarnessRuntime, PhasePreview, RunEvent } from "../runtime/harness";
-import { clackEventSink, ordin, parseTier, slugify } from "./common";
+import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
+import { ordin, ordinRunSession, parseTier, slugify } from "./common";
+import {
+  printBlank,
+  printHint,
+  printIndented,
+  printKeyValue,
+  printSectionDivider,
+  printSubheader,
+} from "./tui/print";
 
 export interface RunCommandDeps {
-  readonly createRuntime?: (opts: {
+  /**
+   * Override the session factory used for live runs. Default branches
+   * on TTY: OpenTUI footer controller for terminals, plain stdout sink
+   * elsewhere. Tests or alternate frontends inject their own.
+   */
+  readonly createSession?: typeof ordinRunSession;
+  /**
+   * Override the runtime used for `--dry-run`. Dry-run never starts a
+   * phase, so it bypasses the live-run session and just calls
+   * `previewRun`; this seam exists so tests can supply a fake without
+   * spinning up the full HarnessRuntime.
+   */
+  readonly createDryRunRuntime?: (opts: {
     workflow?: string;
-  }) => Pick<HarnessRuntime, "startRun" | "previewRun">;
-  readonly onEventSink?: () => {
-    readonly onEvent: (event: RunEvent) => void;
-    readonly finish: () => void;
-  };
-  readonly intro?: (message: string) => void;
-  readonly outro?: (message: string) => void;
+  }) => Pick<HarnessRuntime, "previewRun">;
   /** Override the dry-run renderer. Test seam. */
   readonly renderPreviews?: (previews: readonly PhasePreview[], task: string) => void;
 }
@@ -47,30 +60,27 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
     .option("--dry-run", "Print each phase's composed prompt without invoking any runtime")
     .action(async (taskParts: string[], opts: RunCommandOpts) => {
       const input = buildRunInput(taskParts, opts);
-      const createRuntime = deps.createRuntime ?? ordin;
-      const runtime = createRuntime({ workflow: opts.workflow });
 
       if (opts.dryRun) {
+        const runtime = (deps.createDryRunRuntime ?? ordin)({ workflow: opts.workflow });
         const previews = await runtime.previewRun(input);
-        const render = deps.renderPreviews ?? renderPreviewsWithClack;
+        const render = deps.renderPreviews ?? renderPreviewsPlain;
         render(previews, input.task);
         return;
       }
 
-      const sayIntro = deps.intro ?? intro;
-      const sayOutro = deps.outro ?? outro;
-      const eventSink = deps.onEventSink ?? clackEventSink;
-
-      sayIntro(`ordin run · ${input.task}`);
-      const { onEvent, finish } = eventSink();
+      const session = await (deps.createSession ?? ordinRunSession)({
+        workflow: opts.workflow,
+        header: { task: input.task, slug: input.slug, tier: input.tier },
+      });
       try {
-        const result = await runtime.startRun({
+        const result = await session.runtime.startRun({
           ...input,
-          onEvent,
+          onEvent: session.onEvent,
         });
-        sayOutro(`${result.runId} — ${result.status}`);
+        session.finish({ runId: result.runId, status: result.status });
       } finally {
-        finish();
+        session.dispose();
       }
     });
 }
@@ -107,44 +117,36 @@ export function buildRunInput(
 }
 
 /**
- * Renders dry-run previews using clack. One `note()` per phase — the
- * box itself is the visual container for that phase, with metadata,
- * system prompt, and user prompt as labelled sub-sections inside it.
- * Phase is the unit; sections belong to it. Pipes cleanly too (no
- * cursor-redraw escape codes).
+ * Plain-stdout dry-run renderer. Uses the run UI's `PALETTE` so the
+ * visual identity carries across — gradient-tinted section dividers
+ * matching the `ordin` banner, plus subheaders / key:value rows /
+ * indented bodies for each phase's metadata + prompts.
  */
-function renderPreviewsWithClack(previews: readonly PhasePreview[], task: string): void {
-  intro(`ordin dry-run · ${task}`);
-  log.message(
-    `${previews.length} phase${previews.length === 1 ? "" : "s"} composed — no runtime invoked`,
+function renderPreviewsPlain(previews: readonly PhasePreview[], task: string): void {
+  printBlank();
+  printHint(
+    `ordin dry-run · ${task} · ${previews.length} phase${previews.length === 1 ? "" : "s"} composed — no runtime invoked`,
   );
+  printBlank();
 
   for (const preview of previews) {
     const { phase, runtimeName, prompt } = preview;
     const tools = prompt.tools.length > 0 ? prompt.tools.join(", ") : "(none)";
-    const body = [
-      `agent:   ${phase.agent}`,
-      `runtime: ${runtimeName}`,
-      `model:   ${prompt.model}`,
-      `tools:   ${tools}`,
-      `cwd:     ${prompt.cwd}`,
-      "",
-      "▸ system prompt",
-      indentBlock(prompt.systemPrompt),
-      "",
-      "▸ user prompt",
-      indentBlock(prompt.userPrompt),
-    ].join("\n");
-    note(body, `Phase — ${phase.id}`);
+    printSectionDivider(`Phase ─ ${phase.id}`);
+    printBlank();
+    printKeyValue("agent:", phase.agent);
+    printKeyValue("runtime:", runtimeName);
+    printKeyValue("model:", prompt.model);
+    printKeyValue("tools:", tools);
+    printKeyValue("cwd:", prompt.cwd);
+    printBlank();
+    printSubheader("system prompt");
+    printIndented(prompt.systemPrompt);
+    printBlank();
+    printSubheader("user prompt");
+    printIndented(prompt.userPrompt);
+    printBlank();
   }
 
-  outro(`${previews.length} phase${previews.length === 1 ? "" : "s"} previewed`);
-}
-
-/** Two-space indent so sub-section bodies sit visually under their `▸` heading. */
-function indentBlock(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => `  ${line}`)
-    .join("\n");
+  printHint(`${previews.length} phase${previews.length === 1 ? "" : "s"} previewed`);
 }

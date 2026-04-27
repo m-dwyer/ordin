@@ -1,6 +1,6 @@
 # Agentic Harness — Plan
 
-> **Implementation status (2026-04-25):** Phase 1 complete; Phase 4 (local eval suite) complete. Orchestrator refactored: an `Engine` seam now sits between `HarnessRuntime` and the workflow runtime, with `MastraEngine` (backed by `@mastra/core/workflows`) as today's only implementation. Phase 11's "LangGraph swap" is now a small new-file change behind that seam. Gate layer is pure business logic; the CLI's clack prompter lives in `src/cli/gate-prompters/`. Runtime-specific config (claude-cli bin, fallback model, max turns) is owned by each runtime's own schema, not the domain. Per-phase artefact `inputs` / `outputs` are declared in `workflows/<name>.yaml` with `{slug}` placeholders. For the current codebase, see [`../README.md`](../README.md), [`./ARCHITECTURE.md`](./ARCHITECTURE.md), and [`../CLAUDE.md`](../CLAUDE.md).
+> **Implementation status (2026-04-27):** Phase 1 complete; Phase 4 (local eval suite) complete. Orchestrator refactored: an `Engine` seam now sits between `HarnessRuntime` and the workflow runtime, with `MastraEngine` (backed by `@mastra/core/workflows`) as today's only implementation. Phase 11's "LangGraph swap" is now a small new-file change behind that seam. Gate layer is pure business logic; the CLI's OpenTUI + Solid prompter lives in `src/cli/gate-prompters/` and `src/cli/tui/`, with a non-TTY plain-stdout fallback for piped runs. Runtime-specific config (claude-cli bin, fallback model, max turns) is owned by each runtime's own schema, not the domain. Per-phase artefact `inputs` / `outputs` are declared in `workflows/<name>.yaml` with `{slug}` placeholders. For the current codebase, see [`../README.md`](../README.md), [`./ARCHITECTURE.md`](./ARCHITECTURE.md), and [`../CLAUDE.md`](../CLAUDE.md).
 
 A personal-first, team-extensible harness for AI-assisted software delivery with Plan → Build → Review phases, context isolation, approval gates, and instrumentation.
 
@@ -101,7 +101,7 @@ The harness does not run agent loops. It composes prompts and delegates executio
 4. Invokes the runtime adapter (`ClaudeCliRuntime` in Stage 1; `SdkRuntime` later) with the composed prompt.
 5. Runtime executes (subprocess runs `claude -p`; future SDK call goes through the same interface).
 6. Harness reads the produced artefact from the expected path.
-7. Runs the gate (human approval via clack, auto-approval, file marker, etc.).
+7. Runs the gate (human approval via the OpenTUI footer prompt, auto-approval, file marker, etc.).
 8. Transitions to next phase (fresh context, repeat).
 
 This separation is critical:
@@ -251,7 +251,7 @@ All client adapters translate their transport to this interface:
 
 | Adapter | Stage 1 | Purpose |
 |---|---|---|
-| **CLI** | ✓ | Primary user interface; clack for interactive prompts; `$EDITOR` for artefact review at gates. |
+| **CLI** | ✓ | Primary user interface; OpenTUI + Solid footer for live runs (gate prompts in-panel via keypress); `$EDITOR` for artefact review at gates. |
 | **HTTP server** | active | Hono + `@hono/zod-openapi`; SSE for events. |
 | **MCP server** | active (after HTTP) | In-process adapter over `HarnessRuntime`. Reaches Claude Code, Cursor, Claude Desktop, Continue, Cline. |
 | **ACP server** | deferred | Native fit for phases/gates; trigger: Zed or Neovim user daily-driving. |

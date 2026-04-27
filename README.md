@@ -206,6 +206,6 @@ Production `ordin run` never touches LiteLLM or Docker. These are eval-only.
 
 **Phase 4 (local eval suite) complete.** `AiSdkRuntime` (Vercel AI SDK) + Dockerised LiteLLM proxy + Vitest-shaped `.eval.ts` fixtures with autoevals LLM-as-judge rubrics. First fixture (plan: add input validation) passes 5/5 locally via qwen3:8b.
 
-**Orchestrator refactor (post-Phase 4) complete.** `Engine` interface + `MastraEngine` (backed by `@mastra/core/workflows`) replace the custom sequential state machine. Gates are pure business logic; the CLI's clack prompter lives in `src/cli/gate-prompters/`. Runtime-specific config out of the domain. Per-phase artefact `inputs` / `outputs` declared in `workflows/<name>.yaml` with `{slug}` placeholders. See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+**Orchestrator refactor (post-Phase 4) complete.** `Engine` interface + `MastraEngine` (backed by `@mastra/core/workflows`) replace the custom sequential state machine. Gates are pure business logic; the CLI's OpenTUI prompter lives in `src/cli/gate-prompters/` (Solid component in `src/cli/tui/`). Runtime-specific config out of the domain. Per-phase artefact `inputs` / `outputs` declared in `workflows/<name>.yaml` with `{slug}` placeholders. See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
 Langfuse observability, multi-project mode, `LangGraphEngine`, mid-process resume, ACP server, and per-phase ingestion are conditional phases gated on their plan-declared triggers.
