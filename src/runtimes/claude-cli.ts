@@ -51,8 +51,12 @@ const PhaseOverrideSchema = z.object({
 });
 
 export const ClaudeCliConfigSchema = z.object({
-  /** Path to the `claude` binary. If relative, PATH is searched. */
-  bin: z.string().default("claude"),
+  /**
+   * Path to the `claude` binary. If unset, the runtime falls back to
+   * `CLAUDE_BIN` env then bare `"claude"` (PATH lookup). If relative,
+   * PATH is searched.
+   */
+  bin: z.string().min(1).optional(),
   /** Optional hard ceiling on wall-clock duration. Undefined = no timeout. */
   timeout_ms: z.number().int().positive().optional(),
   /** Per-phase Claude-specific knobs (fallback model, turn ceiling, …). */
@@ -72,6 +76,24 @@ const defaultSpawner: Spawner = (bin, args, opts) =>
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+
+/**
+ * Resolve the `claude` binary, in priority order:
+ *   1. Explicit `override` (constructor opt or YAML `runtimes.claude-cli.bin`)
+ *   2. `CLAUDE_BIN` env var — the escape hatch for environments where
+ *      `spawn`'s PATH disagrees with the user's shell PATH (mise/asdf
+ *      shims, multiple installs of `claude`, etc.)
+ *   3. Bare `"claude"` — let the OS resolve it from PATH
+ *
+ * Exported so the CLI's `doctor` command resolves identically to the
+ * runtime — diagnosing one tells you the other.
+ */
+export function resolveClaudeBin(override?: string): string {
+  if (override) return override;
+  const fromEnv = process.env["CLAUDE_BIN"];
+  if (fromEnv) return fromEnv;
+  return "claude";
+}
 
 export interface ClaudeCliRuntimeOptions {
   readonly bin?: string;
@@ -110,7 +132,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
   private readonly spawner: Spawner;
 
   constructor(opts: ClaudeCliRuntimeOptions = {}) {
-    this.bin = opts.bin ?? "claude";
+    this.bin = resolveClaudeBin(opts.bin);
     this.timeoutMs = opts.timeoutMs;
     this.phaseOverrides = opts.phaseOverrides ?? {};
     this.pluginDirs = opts.pluginDirs ?? [];
@@ -129,7 +151,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
   ): ClaudeCliRuntime {
     const parsed = ClaudeCliConfigSchema.parse(raw ?? {});
     return new ClaudeCliRuntime({
-      bin: parsed.bin,
+      ...(parsed.bin !== undefined ? { bin: parsed.bin } : {}),
       ...(parsed.timeout_ms !== undefined ? { timeoutMs: parsed.timeout_ms } : {}),
       phaseOverrides: parsed.phases,
       ...extras,

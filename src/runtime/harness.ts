@@ -33,6 +33,9 @@ import type { AgentRuntime } from "../runtimes/types";
 export type { PhasePreview } from "../domain/phase-preview";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
+// Re-exported so the CLI's `doctor` resolves the same `claude` the
+// runtime would launch without violating the cli → runtimes rule.
+export { resolveClaudeBin } from "../runtimes/claude-cli";
 
 /**
  * Stable library surface. The CLI is the Stage 1 client; Phase 2 adds

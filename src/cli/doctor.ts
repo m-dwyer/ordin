@@ -2,19 +2,20 @@ import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Command } from "commander";
+import { resolveClaudeBin } from "../runtime/harness";
 import { ordin } from "./common";
 import { printStatusLine } from "./tui/print";
 
 /**
- * Run `claude` with stdin explicitly closed. The promisified
- * `execFile` keeps stdin as an open pipe — when two `claude`
- * subprocesses share the same parent, the second one can wedge
- * waiting on something stdin-shaped. Closing stdin via
- * `stdio: ['ignore', ...]` mirrors a shell-launched invocation.
+ * Run the resolved `claude` binary with stdin explicitly closed. Goes
+ * through `resolveClaudeBin` so doctor probes the same binary the
+ * runtime would actually launch — `CLAUDE_BIN` env or PATH lookup.
+ * Stdin is `'ignore'` because parallel claude children sharing a
+ * parent's open pipe can wedge instead of exiting cleanly.
  */
 function runClaude(args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("claude", [...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(resolveClaudeBin(), [...args], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", (chunk: Buffer) => {
@@ -86,14 +87,26 @@ async function checkBun(): Promise<DoctorResult> {
 }
 
 async function checkClaudeBinary(): Promise<DoctorResult> {
+  const requested = resolveClaudeBin();
+  // Bun.which uses bun's PATH — the same lookup `spawn(bin)` does.
+  // Surfacing the resolved absolute path makes mise/asdf shim mismatches
+  // (bun finds /usr/local/bin/claude while shell finds ~/.mise/.../claude)
+  // visible in one line instead of needing a separate diagnostic session.
+  const resolvedPath = requested.startsWith("/") ? requested : (Bun.which(requested) ?? requested);
   try {
     const { stdout } = await runClaude(["--version"]);
-    return { label: "claude binary", ok: true, detail: stdout.trim().split("\n")[0] };
+    const version = stdout.trim().split("\n")[0] ?? "";
+    const source = process.env["CLAUDE_BIN"] ? " (via CLAUDE_BIN)" : "";
+    return {
+      label: "claude binary",
+      ok: true,
+      detail: `${version} · ${resolvedPath}${source}`,
+    };
   } catch (err) {
     return {
       label: "claude binary",
       ok: false,
-      detail: `not found on PATH (${(err as Error).message})`,
+      detail: `cannot run ${resolvedPath} (${(err as Error).message})`,
     };
   }
 }
