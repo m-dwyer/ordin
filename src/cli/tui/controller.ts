@@ -18,6 +18,8 @@ import {
   CliRenderEvents,
   type CliRenderer,
   createCliRenderer,
+  fg as opentuiFg,
+  StyledText,
   TextRenderable,
 } from "@opentui/core";
 import { render } from "@opentui/solid";
@@ -42,6 +44,12 @@ export class OpenTuiRunController {
 
   private renderer?: CliRenderer;
   private pendingGate: ((d: GateDecision) => void) | null = null;
+  private finished = false;
+  private finalSummary?: {
+    runId: string;
+    status: RunStatus;
+    phases: PhaseRow[];
+  };
 
   state(): ControllerState {
     const [phases] = this.phasesStore;
@@ -65,9 +73,13 @@ export class OpenTuiRunController {
       exitOnCtrlC: true,
       useMouse: false,
       screenMode: "split-footer",
-      // Slim footer: 1 summary line + 1 active-phase line + spacer + 1
-      // hint, with headroom for the 3-line gate panel when active.
-      footerHeight: 6,
+      // Baseline footer height (no gate active): outer border + summary +
+      // hint with a tiny spacer, ~4 rows. The footer expands to
+      // FOOTER_HEIGHT_GATE when a gate is requested and shrinks back
+      // when it resolves — see requestGate / decideGate. Treating the
+      // reservation as responsive (rather than always-max) keeps the
+      // footer slim during the long stretches between gates.
+      footerHeight: FOOTER_HEIGHT_BASE,
       externalOutputMode: "capture-stdout",
       consoleMode: "disabled",
       // Keep our scrollback writes (banner + transcript) intact when the
@@ -215,6 +227,12 @@ export class OpenTuiRunController {
     const [, setHint] = this.hintSignal;
     this.setPhase(ctx.phaseId, { status: "gate", activity: undefined });
     setGate({ ctx });
+    // Grow the footer to make room for the 3-line gate panel —
+    // mirrors a responsive web layout where a sticky toolbar
+    // expands to fit its content.
+    if (this.renderer && !this.renderer.isDestroyed) {
+      this.renderer.footerHeight = FOOTER_HEIGHT_GATE;
+    }
     // Clear the hint while the gate is active — the gate panel
     // already shows the [a]/[r] keys, and rendering them again at
     // the bottom of the footer would print the same text twice.
@@ -224,21 +242,110 @@ export class OpenTuiRunController {
     });
   }
 
+  /**
+   * Stash final summary state for later printing. We can't write the
+   * final block via `writeToScrollback` here because OpenTUI's destroy
+   * path force-flushes pending scrollback content into the terminal
+   * AFTER the live render loop has already committed it — so anything
+   * written between "last render" and "destroy" gets duplicated.
+   *
+   * Instead `finish()` just records the data; `dispose()` tears down
+   * the renderer; then the CLI calls `printFinalSummary()` which
+   * emits the block to plain stdout (now in passthrough mode) exactly
+   * once. Order in run.ts: finish → dispose → printFinalSummary.
+   */
   finish(summary: { runId: string; status: RunStatus }): void {
+    if (this.finished) return;
+    this.finished = true;
+    this.finalSummary = {
+      runId: summary.runId,
+      status: summary.status,
+      phases: this.phasesStore[0].list.map((p) => ({ ...p })),
+    };
     const [, setHint] = this.hintSignal;
     setHint("");
-    this.scrollback("", PALETTE.text);
-    this.scrollback(
-      `  ${summary.runId} — ${summary.status}`,
-      summary.status === "completed" ? PALETTE.done : PALETTE.failed,
-    );
   }
 
-  dispose(): void {
+  /**
+   * Tear down the renderer cleanly.
+   *
+   * OpenTUI's destroy flow flushes any pending split-footer commits
+   * and bakes the footer's last visible frame into terminal
+   * scrollback (so it persists past renderer exit). If we destroy
+   * mid-state — phases still listed, hint still shown — that
+   * leftover frame and any in-flight late writes both end up in the
+   * scrollback. To avoid both: blank the reactive state so the
+   * footer renders empty, give the render loop a frame to commit
+   * that empty state, *then* destroy.
+   */
+  async dispose(): Promise<void> {
     if (this.renderer && !this.renderer.isDestroyed) {
+      this.setPhases("list", () => []);
+      this.hintSignal[1]("");
+      this.gateSignal[1](null);
+      // ~2 frames at 30fps gives the renderer time to commit the
+      // blank footer state before we tear down.
+      await new Promise((resolve) => setTimeout(resolve, 80));
       this.renderer.destroy();
     }
     this.renderer = undefined;
+  }
+
+  /**
+   * Emit the final run summary to plain stdout. Called *after*
+   * dispose() so the renderer is gone and we're back to passthrough
+   * mode — no double-flush risk. Returns silently if finish() was
+   * never called or recorded no phases.
+   */
+  printFinalSummary(): void {
+    const final = this.finalSummary;
+    if (!final) return;
+    const cols = process.stdout.columns ?? 80;
+    const statusColor =
+      final.status === "completed"
+        ? PALETTE.done
+        : final.status === "halted"
+          ? PALETTE.gate
+          : PALETTE.failed;
+
+    process.stdout.write("\n");
+    const lead = "── ";
+    const titleText = ` run ${final.status} `;
+    const trail = "─".repeat(Math.max(3, cols - lead.length - titleText.length));
+    process.stdout.write(
+      `${plainStyled(lead, PALETTE.border)}${plainStyled(titleText, statusColor)}${plainStyled(trail, PALETTE.border)}\n`,
+    );
+
+    const idWidth = Math.max(...final.phases.map((p) => p.id.length), 4);
+    for (const phase of final.phases) {
+      const glyph = statusToGlyph(phase.status);
+      const color = statusToColor(phase.status);
+      const parts: string[] = [];
+      if (phase.durationMs !== undefined) parts.push(formatDuration(phase.durationMs));
+      if (phase.tokensIn !== undefined || phase.tokensOut !== undefined) {
+        parts.push(
+          `in ${(phase.tokensIn ?? 0).toLocaleString()} / out ${(phase.tokensOut ?? 0).toLocaleString()} tok`,
+        );
+      }
+      const tail = parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
+      process.stdout.write(
+        `  ${plainStyled(`${glyph} ${phase.id.padEnd(idWidth)}${tail}`, color)}\n`,
+      );
+    }
+
+    process.stdout.write("\n");
+    const totalDuration = final.phases.reduce((a, p) => a + (p.durationMs ?? 0), 0);
+    const totalIn = final.phases.reduce((a, p) => a + (p.tokensIn ?? 0), 0);
+    const totalOut = final.phases.reduce((a, p) => a + (p.tokensOut ?? 0), 0);
+    const totalParts: string[] = [];
+    if (totalDuration > 0) totalParts.push(formatDuration(totalDuration));
+    if (totalIn > 0 || totalOut > 0) {
+      totalParts.push(`${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out tok`);
+    }
+    const totalsLine =
+      totalParts.length > 0 ? `  ${totalParts.join(" · ")}` : "  (no work recorded)";
+    process.stdout.write(`${plainStyled(totalsLine, PALETTE.hint)}\n`);
+    process.stdout.write(`${plainStyled(`  ${final.runId}`, PALETTE.hint)}\n`);
   }
 
   private decideGate(decision: GateDecision): void {
@@ -248,6 +355,11 @@ export class OpenTuiRunController {
     if (!g) return;
     setGate(null);
     setHint("");
+    // Gate panel is gone — shrink the footer back to baseline so the
+    // long stretches of phase work get their scrollback real estate.
+    if (this.renderer && !this.renderer.isDestroyed) {
+      this.renderer.footerHeight = FOOTER_HEIGHT_BASE;
+    }
     this.setPhase(g.ctx.phaseId, {
       status: decision.status === "approved" ? "done" : "failed",
       activity: undefined,
@@ -283,55 +395,40 @@ export class OpenTuiRunController {
   /**
    * Emit a `── plan · qwen3.6:latest ─────…` divider in scrollback so
    * all the tool calls and prose that follow until the next phase
-   * start are visually grouped under this phase. Builds a flex row
-   * of three TextRenderables (lead rule, title, trail rule) so the
-   * title can carry a different colour from the rule.
+   * start are visually grouped under this phase.
+   *
+   * Implementation: a single TextRenderable with a StyledText body
+   * (chunks for lead-rule / title / trail-rule, each with their own
+   * fg). Going through one renderable avoids the flex-row width
+   * arithmetic that wrapped the trail to a second line — Yoga only
+   * has one child to lay out, so there's nothing to misallocate.
    */
   private writePhaseDivider(phaseId: string, model: string, iteration: number): void {
     if (!this.renderer || this.renderer.isDestroyed) return;
     // A blank line above keeps the divider from sitting right under
     // the previous phase's ✓ summary line — visual breathing room.
     writeScrollbackLine(this.renderer, "", PALETTE.text);
-    const titleText = ` ${phaseId}${iteration > 1 ? ` ×${iteration}` : ""} · ${model} `;
     this.renderer.writeToScrollback((ctx) => {
       const cols = ctx.width;
       const lead = "── ";
+      const titleText = ` ${phaseId}${iteration > 1 ? ` ×${iteration}` : ""} · ${model} `;
       const trail = "─".repeat(Math.max(3, cols - lead.length - titleText.length));
-      const row = new BoxRenderable(ctx.renderContext, {
+      const styled = new StyledText([
+        opentuiFg(PALETTE.border)(lead),
+        opentuiFg(PALETTE.text)(titleText),
+        opentuiFg(PALETTE.border)(trail),
+      ]);
+      const node = new TextRenderable(ctx.renderContext, {
         id: `phase-divider-${phaseId}-${iteration}`,
-        flexDirection: "row",
+        content: styled,
         width: cols,
         height: 1,
-        backgroundColor: "transparent",
+        // Default TextBuffer wrap is on — without "none" the trailing
+        // run of `─` characters gets wrapped to a second line even
+        // though height:1 should clip. Force single-line.
+        wrapMode: "none",
       });
-      row.add(
-        new TextRenderable(ctx.renderContext, {
-          id: `phase-divider-lead-${phaseId}-${iteration}`,
-          content: lead,
-          width: lead.length,
-          height: 1,
-          fg: PALETTE.border,
-        }),
-      );
-      row.add(
-        new TextRenderable(ctx.renderContext, {
-          id: `phase-divider-title-${phaseId}-${iteration}`,
-          content: titleText,
-          width: titleText.length,
-          height: 1,
-          fg: PALETTE.text,
-        }),
-      );
-      row.add(
-        new TextRenderable(ctx.renderContext, {
-          id: `phase-divider-trail-${phaseId}-${iteration}`,
-          content: trail,
-          width: trail.length,
-          height: 1,
-          fg: PALETTE.border,
-        }),
-      );
-      return { root: row, width: cols, height: 1, startOnNewLine: true, trailingNewline: true };
+      return { root: node, width: cols, height: 1, startOnNewLine: true, trailingNewline: true };
     });
   }
 }
@@ -339,6 +436,16 @@ export class OpenTuiRunController {
 // ── Module helpers ────────────────────────────────────────────────────
 
 const SLOW_TOOL_MS = 1_000;
+
+/**
+ * Split-footer height in rows. Baseline = outer border + paddingTop +
+ * summary + flex spacer + hint. Gate-active = baseline rows + 3-line
+ * gate panel (header / artefacts / approve-reject keys). We expand /
+ * shrink at gate boundaries so the footer is slim outside of gates
+ * and large enough not to clip the gate panel rows when one fires.
+ */
+const FOOTER_HEIGHT_BASE = 4;
+const FOOTER_HEIGHT_GATE = 7;
 
 const GRADIENT = ["#7AB8FF", "#A28BFF", "#D77CC8"] as const;
 
@@ -485,4 +592,42 @@ function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60_000).toFixed(1)}m`;
+}
+
+function statusToGlyph(status: PhaseRow["status"]): string {
+  switch (status) {
+    case "pending":
+      return "◌";
+    case "running":
+      return "·";
+    case "gate":
+      return "◆";
+    case "done":
+      return "✓";
+    case "failed":
+      return "✗";
+  }
+}
+
+function plainStyled(text: string, hex: string): string {
+  if (process.env["NO_COLOR"] || process.stdout.isTTY !== true) return text;
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
+  return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
+}
+
+function statusToColor(status: PhaseRow["status"]): string {
+  switch (status) {
+    case "pending":
+      return PALETTE.pending;
+    case "running":
+      return PALETTE.running;
+    case "gate":
+      return PALETTE.gate;
+    case "done":
+      return PALETTE.done;
+    case "failed":
+      return PALETTE.failed;
+  }
 }

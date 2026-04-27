@@ -31,7 +31,7 @@ export interface OrdinRunSession {
   readonly runtime: HarnessRuntime;
   readonly onEvent: (event: RunEvent) => void;
   readonly finish: (summary: { runId: string; status: RunMeta["status"] }) => void;
-  readonly dispose: () => void;
+  readonly dispose: () => Promise<void> | void;
 }
 
 /**
@@ -77,7 +77,13 @@ export async function ordinRunSession(opts: {
       runtime,
       onEvent: (ev) => controller.pushEvent(ev),
       finish: (summary) => controller.finish(summary),
-      dispose: () => controller.dispose(),
+      dispose: async () => {
+        await controller.dispose();
+        // Final summary lands AFTER renderer teardown, on plain
+        // stdout — sidesteps OpenTUI's destroy-time scrollback
+        // re-flush that was causing the block to print twice.
+        controller.printFinalSummary();
+      },
     };
   }
 

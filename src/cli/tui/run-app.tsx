@@ -3,15 +3,15 @@
  *
  * Stateless against the run — all reactivity is sourced from the
  * controller passed as a prop (see controller.ts). The footer is
- * intentionally slim: a one-line summary chain of phases (with
- * rolled-up totals) plus a single "active phase" indicator showing
- * the running phase's current activity. Tool calls and agent prose
- * stream into scrollback above, grouped under per-phase divider
- * headers emitted by the controller — so the visual hierarchy lives
- * where it belongs (the transcript), not in a fat bottom panel.
+ * intentionally slim: a single one-line phase chain with rolled-up
+ * totals, an animated `<spinner>` in place of the running phase's
+ * glyph, and the Ctrl+C hint at the bottom. Tool calls and agent
+ * prose stream into scrollback above, grouped under per-phase
+ * divider headers emitted by the controller — so all per-phase
+ * detail lives in the transcript, not in the footer.
  *
- * When a gate is active, the gate panel takes the place of the
- * active-phase line + hint; keypresses route back via state.decideGate.
+ * When a gate is active the gate panel takes the hint slot;
+ * keypresses route back via state.decideGate.
  */
 import { useKeyboard } from "@opentui/solid";
 import "opentui-spinner/solid";
@@ -33,8 +33,6 @@ export function RunApp(props: RunAppProps) {
     else if (key.name === "r") state.decideGate({ status: "rejected", reason: "rejected at gate" });
   });
 
-  const activePhase = () => state.phases().find((p) => p.status === "running");
-
   return (
     <box
       width="100%"
@@ -55,11 +53,13 @@ export function RunApp(props: RunAppProps) {
         <SummaryLine phases={state.phases()} />
       </Show>
 
-      <Show when={activePhase() && !state.gate()} keyed>
-        {(phase: PhaseRow) => <ActivePhaseLine phase={phase} />}
+      {/* Only push the hint to the bottom when there's no gate.
+          When the gate panel is active it needs every available row;
+          a flexGrow spacer was stealing one row and the gate header
+          line was getting clipped into the artefacts line. */}
+      <Show when={!state.gate()}>
+        <box flexGrow={1} />
       </Show>
-
-      <box flexGrow={1} />
 
       <Show
         when={state.gate()}
@@ -72,6 +72,14 @@ export function RunApp(props: RunAppProps) {
   );
 }
 
+/**
+ * One-line phase chain in the footer. Built as a flex row of mixed
+ * children (text spans + an animated <spinner> for the running phase)
+ * because the `<spinner>` is its own renderable — it can't sit inside
+ * a `<text>` as a span. Using a row Box lets the spinner animate in
+ * place between the previous phase's glyph and the running phase's
+ * name, with phases joined by ▸ connectors.
+ */
 function SummaryLine(props: { phases: readonly PhaseRow[] }) {
   const totals = () => {
     let durationMs = 0;
@@ -86,60 +94,35 @@ function SummaryLine(props: { phases: readonly PhaseRow[] }) {
   };
 
   return (
-    <text>
+    <box flexDirection="row">
       <For each={props.phases}>
         {(phase, i) => (
-          <>
+          <box flexDirection="row">
             <Show when={i() > 0}>
-              <span style={{ fg: PALETTE.border }}> · </span>
+              <text fg={PALETTE.border}> ▸ </text>
             </Show>
-            <span style={{ fg: glyphColor(phase.status) }}>
-              {statusGlyph(phase.status)} {phase.id}
-            </span>
-          </>
+            <Show
+              when={phase.status === "running"}
+              fallback={<text fg={glyphColor(phase.status)}>{statusGlyph(phase.status)}</text>}
+            >
+              <spinner name="dots" color={PALETTE.running} />
+            </Show>
+            <text fg={glyphColor(phase.status)}> {phase.id}</text>
+          </box>
         )}
       </For>
       <Show when={totals().durationMs > 0 || totals().tokensOut > 0}>
-        <span style={{ fg: PALETTE.border }}> · </span>
+        <text fg={PALETTE.border}> · </text>
         <Show when={totals().durationMs > 0}>
-          <span style={{ fg: PALETTE.hint }}>{formatDuration(totals().durationMs)}</span>
+          <text fg={PALETTE.hint}>{formatDuration(totals().durationMs)}</text>
         </Show>
         <Show when={totals().tokensOut > 0}>
-          <span style={{ fg: PALETTE.border }}> · </span>
-          <span style={{ fg: PALETTE.hint }}>
+          <text fg={PALETTE.border}> · </text>
+          <text fg={PALETTE.hint}>
             {totals().tokensIn.toLocaleString()} in / {totals().tokensOut.toLocaleString()} out
-          </span>
+          </text>
         </Show>
       </Show>
-    </text>
-  );
-}
-
-/**
- * Slim "what's happening right now" line for the running phase. Lives
- * just below the SummaryLine so the user has both bird's-eye context
- * (chain + totals) and ground-truth context (active phase, model,
- * current tool). Replaces the old per-phase rows entirely; per-phase
- * detail now lives in scrollback under the phase divider header.
- */
-function ActivePhaseLine(props: { phase: PhaseRow }) {
-  return (
-    <box flexDirection="row">
-      <spinner name="dots" color={PALETTE.running} />
-      <text>
-        <span style={{ fg: PALETTE.text }}> {props.phase.id}</span>
-        <Show when={props.phase.iteration > 1}>
-          <span style={{ fg: PALETTE.hint }}> ×{props.phase.iteration}</span>
-        </Show>
-        <Show when={props.phase.model}>
-          <span style={{ fg: PALETTE.border }}> · </span>
-          <span style={{ fg: PALETTE.hint }}>{props.phase.model}</span>
-        </Show>
-        <Show when={props.phase.activity}>
-          <span style={{ fg: PALETTE.border }}> · </span>
-          <span style={{ fg: PALETTE.toolPreview }}>{props.phase.activity}</span>
-        </Show>
-      </text>
     </box>
   );
 }

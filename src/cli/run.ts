@@ -75,7 +75,7 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
         });
         session.finish({ runId: result.runId, status: result.status });
       } finally {
-        session.dispose();
+        await session.dispose();
       }
     });
 }
