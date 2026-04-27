@@ -1,14 +1,7 @@
 import type { Command } from "commander";
 import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
 import { ordin, ordinRunSession, parseTier, slugify } from "./common";
-import {
-  printBlank,
-  printHint,
-  printIndented,
-  printKeyValue,
-  printSectionDivider,
-  printSubheader,
-} from "./tui/print";
+import { renderDryRun } from "./tui/dry-run";
 
 export interface RunCommandDeps {
   /**
@@ -27,7 +20,10 @@ export interface RunCommandDeps {
     workflow?: string;
   }) => Pick<HarnessRuntime, "previewRun">;
   /** Override the dry-run renderer. Test seam. */
-  readonly renderPreviews?: (previews: readonly PhasePreview[], task: string) => void;
+  readonly renderPreviews?: (
+    previews: readonly PhasePreview[],
+    task: string,
+  ) => void | Promise<void>;
 }
 
 interface RunCommandOpts {
@@ -64,8 +60,7 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
       if (opts.dryRun) {
         const runtime = (deps.createDryRunRuntime ?? ordin)({ workflow: opts.workflow });
         const previews = await runtime.previewRun(input);
-        const render = deps.renderPreviews ?? renderPreviewsPlain;
-        render(previews, input.task);
+        await (deps.renderPreviews ?? renderDryRun)(previews, input.task);
         return;
       }
 
@@ -114,39 +109,4 @@ export function buildRunInput(
     ...(opts.only ? { onlyPhases: [opts.only] } : {}),
     ...(opts.from ? { startAt: opts.from } : {}),
   };
-}
-
-/**
- * Plain-stdout dry-run renderer. Uses the run UI's `PALETTE` so the
- * visual identity carries across — gradient-tinted section dividers
- * matching the `ordin` banner, plus subheaders / key:value rows /
- * indented bodies for each phase's metadata + prompts.
- */
-function renderPreviewsPlain(previews: readonly PhasePreview[], task: string): void {
-  printBlank();
-  printHint(
-    `ordin dry-run · ${task} · ${previews.length} phase${previews.length === 1 ? "" : "s"} composed — no runtime invoked`,
-  );
-  printBlank();
-
-  for (const preview of previews) {
-    const { phase, runtimeName, prompt } = preview;
-    const tools = prompt.tools.length > 0 ? prompt.tools.join(", ") : "(none)";
-    printSectionDivider(`Phase ─ ${phase.id}`);
-    printBlank();
-    printKeyValue("agent:", phase.agent);
-    printKeyValue("runtime:", runtimeName);
-    printKeyValue("model:", prompt.model);
-    printKeyValue("tools:", tools);
-    printKeyValue("cwd:", prompt.cwd);
-    printBlank();
-    printSubheader("system prompt");
-    printIndented(prompt.systemPrompt);
-    printBlank();
-    printSubheader("user prompt");
-    printIndented(prompt.userPrompt);
-    printBlank();
-  }
-
-  printHint(`${previews.length} phase${previews.length === 1 ? "" : "s"} previewed`);
 }
