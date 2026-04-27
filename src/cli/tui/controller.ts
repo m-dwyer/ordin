@@ -65,7 +65,9 @@ export class OpenTuiRunController {
       exitOnCtrlC: true,
       useMouse: false,
       screenMode: "split-footer",
-      footerHeight: 12,
+      // Slim footer: 1 summary line + 1 active-phase line + spacer + 1
+      // hint, with headroom for the 3-line gate panel when active.
+      footerHeight: 6,
       externalOutputMode: "capture-stdout",
       consoleMode: "disabled",
       // Keep our scrollback writes (banner + transcript) intact when the
@@ -115,6 +117,10 @@ export class OpenTuiRunController {
             else list.push(next);
           }),
         );
+        // Emit a section header in scrollback so all the tool calls
+        // and prose for this phase are visually grouped underneath.
+        // Iteration > 1 is added to disambiguate retries.
+        this.writePhaseDivider(ev.phaseId, ev.model, ev.iteration);
         return;
 
       case "phase.runtime.completed":
@@ -126,7 +132,7 @@ export class OpenTuiRunController {
           tokensOut: ev.tokens.output,
         });
         this.scrollback(
-          `  ✓ ${ev.phaseId} — ${formatDuration(ev.durationMs)} · out ${ev.tokens.output.toLocaleString()} tok`,
+          `  ✓ ${ev.phaseId} — ${formatDuration(ev.durationMs)} · in ${ev.tokens.input.toLocaleString()} / out ${ev.tokens.output.toLocaleString()} tok`,
           PALETTE.done,
         );
         return;
@@ -272,6 +278,61 @@ export class OpenTuiRunController {
   private scrollback(text: string, fg: string): void {
     if (!this.renderer || this.renderer.isDestroyed) return;
     writeScrollbackLine(this.renderer, text, fg);
+  }
+
+  /**
+   * Emit a `── plan · qwen3.6:latest ─────…` divider in scrollback so
+   * all the tool calls and prose that follow until the next phase
+   * start are visually grouped under this phase. Builds a flex row
+   * of three TextRenderables (lead rule, title, trail rule) so the
+   * title can carry a different colour from the rule.
+   */
+  private writePhaseDivider(phaseId: string, model: string, iteration: number): void {
+    if (!this.renderer || this.renderer.isDestroyed) return;
+    // A blank line above keeps the divider from sitting right under
+    // the previous phase's ✓ summary line — visual breathing room.
+    writeScrollbackLine(this.renderer, "", PALETTE.text);
+    const titleText = ` ${phaseId}${iteration > 1 ? ` ×${iteration}` : ""} · ${model} `;
+    this.renderer.writeToScrollback((ctx) => {
+      const cols = ctx.width;
+      const lead = "── ";
+      const trail = "─".repeat(Math.max(3, cols - lead.length - titleText.length));
+      const row = new BoxRenderable(ctx.renderContext, {
+        id: `phase-divider-${phaseId}-${iteration}`,
+        flexDirection: "row",
+        width: cols,
+        height: 1,
+        backgroundColor: "transparent",
+      });
+      row.add(
+        new TextRenderable(ctx.renderContext, {
+          id: `phase-divider-lead-${phaseId}-${iteration}`,
+          content: lead,
+          width: lead.length,
+          height: 1,
+          fg: PALETTE.border,
+        }),
+      );
+      row.add(
+        new TextRenderable(ctx.renderContext, {
+          id: `phase-divider-title-${phaseId}-${iteration}`,
+          content: titleText,
+          width: titleText.length,
+          height: 1,
+          fg: PALETTE.text,
+        }),
+      );
+      row.add(
+        new TextRenderable(ctx.renderContext, {
+          id: `phase-divider-trail-${phaseId}-${iteration}`,
+          content: trail,
+          width: trail.length,
+          height: 1,
+          fg: PALETTE.border,
+        }),
+      );
+      return { root: row, width: cols, height: 1, startOnNewLine: true, trailingNewline: true };
+    });
   }
 }
 

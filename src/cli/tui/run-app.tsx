@@ -2,10 +2,16 @@
  * Solid component for the `ordin run` footer panel.
  *
  * Stateless against the run — all reactivity is sourced from the
- * controller passed as a prop (see controller.ts). The component
- * renders the live phase list and, when a gate is active, replaces
- * the hint line with an interactive gate panel. Keypresses route back
- * to the controller via `state.decideGate`.
+ * controller passed as a prop (see controller.ts). The footer is
+ * intentionally slim: a one-line summary chain of phases (with
+ * rolled-up totals) plus a single "active phase" indicator showing
+ * the running phase's current activity. Tool calls and agent prose
+ * stream into scrollback above, grouped under per-phase divider
+ * headers emitted by the controller — so the visual hierarchy lives
+ * where it belongs (the transcript), not in a fat bottom panel.
+ *
+ * When a gate is active, the gate panel takes the place of the
+ * active-phase line + hint; keypresses route back via state.decideGate.
  */
 import { useKeyboard } from "@opentui/solid";
 import "opentui-spinner/solid";
@@ -27,6 +33,8 @@ export function RunApp(props: RunAppProps) {
     else if (key.name === "r") state.decideGate({ status: "rejected", reason: "rejected at gate" });
   });
 
+  const activePhase = () => state.phases().find((p) => p.status === "running");
+
   return (
     <box
       width="100%"
@@ -45,9 +53,11 @@ export function RunApp(props: RunAppProps) {
         fallback={<text fg={PALETTE.hint}>preparing run…</text>}
       >
         <SummaryLine phases={state.phases()} />
-        <text fg={PALETTE.border}> </text>
       </Show>
-      <For each={state.phases()}>{(phase) => <PhaseRowView phase={phase} />}</For>
+
+      <Show when={activePhase() && !state.gate()} keyed>
+        {(phase: PhaseRow) => <ActivePhaseLine phase={phase} />}
+      </Show>
 
       <box flexGrow={1} />
 
@@ -81,9 +91,11 @@ function SummaryLine(props: { phases: readonly PhaseRow[] }) {
         {(phase, i) => (
           <>
             <Show when={i() > 0}>
-              <span style={{ fg: PALETTE.border }}> ▸ </span>
+              <span style={{ fg: PALETTE.border }}> · </span>
             </Show>
-            <span style={{ fg: glyphColor(phase.status) }}>{phase.id}</span>
+            <span style={{ fg: glyphColor(phase.status) }}>
+              {statusGlyph(phase.status)} {phase.id}
+            </span>
           </>
         )}
       </For>
@@ -103,62 +115,31 @@ function SummaryLine(props: { phases: readonly PhaseRow[] }) {
   );
 }
 
-const PHASE_ID_WIDTH = 8;
-const ACTIVITY_INDENT = " ".repeat(PHASE_ID_WIDTH + 3);
-
-function PhaseRowView(props: { phase: PhaseRow }) {
-  const showActivityBelow = () => props.phase.status === "running" && Boolean(props.phase.activity);
-
+/**
+ * Slim "what's happening right now" line for the running phase. Lives
+ * just below the SummaryLine so the user has both bird's-eye context
+ * (chain + totals) and ground-truth context (active phase, model,
+ * current tool). Replaces the old per-phase rows entirely; per-phase
+ * detail now lives in scrollback under the phase divider header.
+ */
+function ActivePhaseLine(props: { phase: PhaseRow }) {
   return (
-    <box flexDirection="column">
-      <box flexDirection="row">
-        <Show
-          when={props.phase.status === "running"}
-          fallback={
-            <text>
-              <span style={{ fg: glyphColor(props.phase.status) }}>
-                {statusGlyph(props.phase.status)}
-              </span>
-            </text>
-          }
-        >
-          <spinner name="dots" color={PALETTE.running} />
+    <box flexDirection="row">
+      <spinner name="dots" color={PALETTE.running} />
+      <text>
+        <span style={{ fg: PALETTE.text }}> {props.phase.id}</span>
+        <Show when={props.phase.iteration > 1}>
+          <span style={{ fg: PALETTE.hint }}> ×{props.phase.iteration}</span>
         </Show>
-        <text>
-          <span style={{ fg: PALETTE.text }}> {props.phase.id.padEnd(PHASE_ID_WIDTH)}</span>
-          <Show when={props.phase.iteration > 1}>
-            <span style={{ fg: PALETTE.hint }}> ×{props.phase.iteration}</span>
-          </Show>
-          <Show when={props.phase.status === "running" && props.phase.model}>
-            <span style={{ fg: PALETTE.hint }}> {props.phase.model}</span>
-          </Show>
-          <Show
-            when={
-              props.phase.status !== "running" &&
-              props.phase.status !== "pending" &&
-              props.phase.activity
-            }
-          >
-            <span style={{ fg: PALETTE.hint }}> · </span>
-            <span style={{ fg: PALETTE.toolPreview }}>{props.phase.activity}</span>
-          </Show>
-          <Show when={props.phase.status === "done" && props.phase.durationMs !== undefined}>
-            <span style={{ fg: PALETTE.hint }}>
-              {" "}
-              {formatDuration(props.phase.durationMs ?? 0)}
-              {props.phase.tokensOut !== undefined
-                ? ` · ${props.phase.tokensOut.toLocaleString()} tok`
-                : ""}
-            </span>
-          </Show>
-        </text>
-      </box>
-      <Show when={showActivityBelow()}>
-        <text>
-          <span style={{ fg: PALETTE.hint }}>{ACTIVITY_INDENT}▸ </span>
+        <Show when={props.phase.model}>
+          <span style={{ fg: PALETTE.border }}> · </span>
+          <span style={{ fg: PALETTE.hint }}>{props.phase.model}</span>
+        </Show>
+        <Show when={props.phase.activity}>
+          <span style={{ fg: PALETTE.border }}> · </span>
           <span style={{ fg: PALETTE.toolPreview }}>{props.phase.activity}</span>
-        </text>
-      </Show>
+        </Show>
+      </text>
     </box>
   );
 }
