@@ -189,7 +189,10 @@ export class OpenTuiRunController {
     const [, setHint] = this.hintSignal;
     this.setPhase(ctx.phaseId, { status: "gate", activity: undefined });
     setGate({ ctx });
-    setHint("[a] approve  [r] reject");
+    // Clear the hint while the gate is active — the gate panel
+    // already shows the [a]/[r] keys, and rendering them again at
+    // the bottom of the footer would print the same text twice.
+    setHint("");
     return new Promise<GateDecision>((resolve) => {
       this.pendingGate = resolve;
     });
