@@ -109,6 +109,17 @@ function colorize(
   return `${ESC}[38;2;${r};${g};${b}m${text}`;
 }
 
+// Cap the natural widths of the two flexible columns so the
+// proportional fitter doesn't get dominated by a single 80-char
+// slug. Yoga still does final width fitting; these caps just bound
+// the *natural* width it weighs against. Cells trimmed here get a
+// `…` so the truncation reads intentional rather than as a typo.
+// (TextTable wrapMode "none" hard-cuts without any ellipsis option;
+// the agent who reviewed the OpenTUI source confirmed there's no
+// built-in ellipsis flag.)
+const RUN_ID_MAX = 42;
+const TASK_MAX = 60;
+
 function buildContent(rows: readonly RunMeta[]): TextChunk[][][] {
   const now = Date.now();
   const headerRow: TextChunk[][] = HEADERS.map((label) => [opentuiFg(PALETTE.hint)(label)]);
@@ -117,14 +128,19 @@ function buildContent(rows: readonly RunMeta[]): TextChunk[][][] {
       ? timeBetween(meta.startedAt, meta.completedAt)
       : timeBetween(meta.startedAt, new Date(now).toISOString());
     return [
-      [opentuiFg(PALETTE.text)(meta.runId)],
+      [opentuiFg(PALETTE.text)(ellipsize(meta.runId, RUN_ID_MAX))],
       [opentuiFg(colorForRunStatus(meta.status))(meta.status)],
       [opentuiFg(PALETTE.hint)(meta.tier)],
       [opentuiFg(PALETTE.hint)(elapsed)],
-      [opentuiFg(PALETTE.toolPreview)(meta.task)],
+      [opentuiFg(PALETTE.toolPreview)(ellipsize(meta.task, TASK_MAX))],
     ];
   });
   return [headerRow, ...bodyRows];
+}
+
+function ellipsize(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
 }
 
 function timeBetween(startIso: string, endIso: string): string {
