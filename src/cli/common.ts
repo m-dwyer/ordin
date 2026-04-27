@@ -60,12 +60,21 @@ export async function ordinRunSession(opts: {
     const { OpenTuiRunController } = await import("./tui/controller");
     const { openTuiGateResolver } = await import("./gate-prompters/opentui");
     const controller = new OpenTuiRunController();
-    await controller.mount(opts.header);
+    const runtime = new HarnessRuntime({
+      ...(opts.workflow ? { workflow: opts.workflow } : {}),
+      gateForKind: openTuiGateResolver(controller),
+    });
+    // Pre-populate the footer's phase list so all phases show up as
+    // `pending` from the first frame, instead of appearing one-by-one
+    // as `phase.started` events arrive. workflowDefinition() just
+    // loads the YAML — cheap, no composition.
+    const manifest = await runtime.workflowDefinition();
+    await controller.mount(
+      opts.header,
+      manifest.phases.map((p) => p.id),
+    );
     return {
-      runtime: new HarnessRuntime({
-        ...(opts.workflow ? { workflow: opts.workflow } : {}),
-        gateForKind: openTuiGateResolver(controller),
-      }),
+      runtime,
       onEvent: (ev) => controller.pushEvent(ev),
       finish: (summary) => controller.finish(summary),
       dispose: () => controller.dispose(),

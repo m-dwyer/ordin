@@ -49,7 +49,10 @@ function frameToAnsi(frame: CapturedFrame): string {
   return lines.join("\n");
 }
 
-function colorize(fg: { r: number; g: number; b: number; buffer: Float32Array }, text: string): string {
+function colorize(
+  fg: { r: number; g: number; b: number; buffer: Float32Array },
+  text: string,
+): string {
   // RGBA components are 0..1 floats; the colour tag lives at buffer[4].
   // tag === COLOR_TAG_DEFAULT means "use terminal default" — emit no
   // fg escape so the cell falls through to the user's terminal colors.

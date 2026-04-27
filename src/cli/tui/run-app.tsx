@@ -8,6 +8,7 @@
  * to the controller via `state.decideGate`.
  */
 import { useKeyboard } from "@opentui/solid";
+import "opentui-spinner/solid";
 import { For, Show } from "solid-js";
 import type { GateContext } from "../../gates/types";
 import { PALETTE } from "./theme";
@@ -34,7 +35,7 @@ export function RunApp(props: RunAppProps) {
       paddingBottom={0}
       paddingLeft={2}
       paddingRight={2}
-      backgroundColor={PALETTE.panel}
+      backgroundColor="transparent"
       border={["top"]}
       borderColor={PALETTE.border}
       flexDirection="column"
@@ -56,29 +57,42 @@ export function RunApp(props: RunAppProps) {
 
 function PhaseRowView(props: { phase: PhaseRow }) {
   return (
-    <text>
-      <span style={{ fg: glyphColor(props.phase.status) }}>{statusGlyph(props.phase.status)}</span>
-      <span style={{ fg: PALETTE.text }}> {props.phase.id.padEnd(8)}</span>
-      <Show when={props.phase.iteration > 1}>
-        <span style={{ fg: PALETTE.hint }}> ×{props.phase.iteration}</span>
+    <box flexDirection="row">
+      <Show
+        when={props.phase.status === "running"}
+        fallback={
+          <text>
+            <span style={{ fg: glyphColor(props.phase.status) }}>
+              {statusGlyph(props.phase.status)}
+            </span>
+          </text>
+        }
+      >
+        <spinner name="dots" color={PALETTE.running} />
       </Show>
-      <Show when={props.phase.status === "running" && props.phase.model}>
-        <span style={{ fg: PALETTE.hint }}> {props.phase.model}</span>
-      </Show>
-      <Show when={props.phase.activity}>
-        <span style={{ fg: PALETTE.hint }}> · </span>
-        <span style={{ fg: PALETTE.toolPreview }}>{props.phase.activity}</span>
-      </Show>
-      <Show when={props.phase.status === "done" && props.phase.durationMs !== undefined}>
-        <span style={{ fg: PALETTE.hint }}>
-          {" "}
-          {formatDuration(props.phase.durationMs ?? 0)}
-          {props.phase.tokensOut !== undefined
-            ? ` · ${props.phase.tokensOut.toLocaleString()} tok`
-            : ""}
-        </span>
-      </Show>
-    </text>
+      <text>
+        <span style={{ fg: PALETTE.text }}> {props.phase.id.padEnd(8)}</span>
+        <Show when={props.phase.iteration > 1}>
+          <span style={{ fg: PALETTE.hint }}> ×{props.phase.iteration}</span>
+        </Show>
+        <Show when={props.phase.status === "running" && props.phase.model}>
+          <span style={{ fg: PALETTE.hint }}> {props.phase.model}</span>
+        </Show>
+        <Show when={props.phase.activity}>
+          <span style={{ fg: PALETTE.hint }}> · </span>
+          <span style={{ fg: PALETTE.toolPreview }}>{props.phase.activity}</span>
+        </Show>
+        <Show when={props.phase.status === "done" && props.phase.durationMs !== undefined}>
+          <span style={{ fg: PALETTE.hint }}>
+            {" "}
+            {formatDuration(props.phase.durationMs ?? 0)}
+            {props.phase.tokensOut !== undefined
+              ? ` · ${props.phase.tokensOut.toLocaleString()} tok`
+              : ""}
+          </span>
+        </Show>
+      </text>
+    </box>
   );
 }
 
@@ -87,6 +101,7 @@ function GatePanel(props: { ctx: GateContext }) {
     <box
       paddingTop={0}
       paddingBottom={0}
+      backgroundColor="transparent"
       border={["top"]}
       borderColor={PALETTE.border}
       flexDirection="column"

@@ -54,7 +54,11 @@ export class OpenTuiRunController {
     };
   }
 
-  async mount(header: RunHeader): Promise<void> {
+  async mount(header: RunHeader, phaseIds: readonly string[] = []): Promise<void> {
+    if (phaseIds.length > 0) {
+      this.setPhases("list", () => phaseIds.map((id) => ({ id, status: "pending", iteration: 1 })));
+    }
+
     this.renderer = await createCliRenderer({
       targetFps: 30,
       exitOnCtrlC: true,
@@ -81,7 +85,9 @@ export class OpenTuiRunController {
 
     // render() returns Promise<void>; the Solid tree's lifetime is tied
     // to the renderer — `renderer.destroy()` fires CliRenderEvents.DESTROY
-    // which triggers each component's onCleanup.
+    // which triggers each component's onCleanup. The running-phase
+    // spinner is animated by the `<spinner>` component itself
+    // (opentui-spinner), no manual tick required.
     await render(() => RunApp({ state: this.state() }), this.renderer);
   }
 
@@ -155,7 +161,10 @@ export class OpenTuiRunController {
           const reason = ev.preview ? ` — ${firstLine(ev.preview)}` : "";
           this.scrollback(`  ✗ ${label} failed${reason}`, PALETTE.failed);
         }
-        this.setPhase(ev.phaseId, { activity: "thinking…" });
+        // Don't reset activity here — for fast tools (Read/Grep) the
+        // result lands within a frame of the use, and flashing back to
+        // "thinking…" makes tool names unreadable. The next
+        // agent.thinking event resets it explicitly.
         return;
 
       case "agent.error":
