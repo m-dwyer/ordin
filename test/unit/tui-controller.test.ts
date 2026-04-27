@@ -76,15 +76,16 @@ describe("OpenTuiRunController", () => {
     it("phase.started adds a running phase to the list", () => {
       const controller = new OpenTuiRunController();
       controller.pushEvent(phaseStarted("plan"));
-      expect(controller.state().phases()).toEqual([
-        {
-          id: "plan",
-          status: "running",
-          model: "claude-sonnet-4-6",
-          iteration: 1,
-          activity: "starting",
-        },
-      ]);
+      const phases = controller.state().phases();
+      expect(phases).toHaveLength(1);
+      expect(phases[0]).toMatchObject({
+        id: "plan",
+        status: "running",
+        model: "claude-sonnet-4-6",
+        iteration: 1,
+        activity: "starting",
+      });
+      expect(typeof phases[0]?.startedAt).toBe("number");
     });
 
     it("phase.runtime.completed records totals while the phase awaits post-runtime checks", () => {

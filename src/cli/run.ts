@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { Command } from "commander";
 import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
 import { ordin, ordinRunSession, parseTier, slugify } from "./common";
@@ -66,7 +67,17 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
 
       const session = await (deps.createSession ?? ordinRunSession)({
         workflow: opts.workflow,
-        header: { task: input.task, slug: input.slug, tier: input.tier },
+        header: {
+          task: input.task,
+          slug: input.slug,
+          tier: input.tier,
+          ...(opts.workflow ? { workflow: opts.workflow } : {}),
+          ...(input.repoPath
+            ? { repoPath: input.repoPath, project: basename(input.repoPath) }
+            : input.projectName
+              ? { project: input.projectName }
+              : {}),
+        },
       });
       try {
         const result = await session.runtime.startRun({

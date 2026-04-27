@@ -12,14 +12,21 @@ export interface RunHeader {
   task: string;
   slug: string;
   tier: string;
+  workflow?: string;
+  project?: string;
+  repoPath?: string;
+  runId?: string;
 }
+
+export type PhaseStatus = "pending" | "running" | "gate" | "done" | "failed";
 
 export interface PhaseRow {
   id: string;
-  status: "pending" | "running" | "gate" | "done" | "failed";
+  status: PhaseStatus;
   model?: string;
   iteration: number;
   activity?: string;
+  startedAt?: number;
   durationMs?: number;
   tokensIn?: number;
   tokensOut?: number;
@@ -30,17 +37,43 @@ export interface GateState {
   ctx: GateContext;
 }
 
-export interface FeedItem {
-  id: number;
-  glyph: string;
-  label: string;
-  detail?: string;
-  color: string;
+export type FeedRowKind = "tool" | "result" | "note" | "error" | "edit";
+
+export interface EditDiff {
+  filePath: string;
+  diff: string;
+  filetype?: string;
+  truncated: boolean;
+}
+
+export interface FeedRow {
+  readonly id: number;
+  readonly kind: FeedRowKind;
+  readonly tool?: string;
+  readonly detail?: string;
+  readonly extra?: string;
+  readonly edit?: EditDiff;
+}
+
+export interface PhaseSection {
+  readonly key: string;
+  readonly phaseId: string;
+  status: PhaseStatus;
+  model?: string;
+  iteration: number;
+  rows: FeedRow[];
+  startedAt?: number;
+  durationMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  error?: string;
+  gate?: GateState;
 }
 
 export interface ControllerState {
+  header: Accessor<RunHeader | null>;
   phases: () => readonly PhaseRow[];
-  feed: () => readonly FeedItem[];
+  sections: () => readonly PhaseSection[];
   gate: Accessor<GateState | null>;
   hint: Accessor<string>;
   decideGate: (decision: GateDecision) => void;

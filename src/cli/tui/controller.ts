@@ -1,6 +1,6 @@
 /**
  * OpenTUI run controller — the long-lived TUI mount that backs
- * `ordin run`'s footer experience.
+ * `ordin run`'s scrollback experience.
  *
  * The controller owns the renderer and the reactive state stores; the
  * `<RunApp>` Solid component (in run-app.tsx) reads from `state()` and
@@ -8,10 +8,16 @@
  * the orchestrator's event sink (`pushEvent`) and the gate prompter's
  * backing store (`requestGate` returns a Promise the App resolves).
  *
+ * Scrollback is structured as a list of phase sections — one per
+ * `phase.started` event — so re-runs after a rejected gate produce a
+ * new card alongside the original (audit trail). `phasesStore` is a
+ * flat per-phase-id view used by the footer rail and the final
+ * summary; `sectionsStore` is the per-execution log with rows.
+ *
  * `ordin run` uses the alternate screen so resize / terminal zoom
- * events redraw one coherent frame instead of baking partial footer
- * frames into scrollback. On exit, `printFinalSummary()` emits a
- * compact plain-stdout summary back on the main screen.
+ * events redraw one coherent frame instead of baking partial frames
+ * into scrollback. On exit, `printFinalSummary()` emits a compact
+ * plain-stdout summary back on the main screen.
  */
 import { type CliRenderer, createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
@@ -19,27 +25,38 @@ import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { GateContext, GateDecision } from "../../gates/types";
 import type { RunEvent, RunMeta } from "../../runtime/harness";
-import { ansiStyled, firstLine, formatDuration, summariseToolInput } from "./format";
+import { ansiStyled, buildEditDiff, firstLine, formatDuration, summariseToolInput } from "./format";
 import { RunApp } from "./run-app";
 import { PALETTE } from "./theme";
-import type { ControllerState, FeedItem, GateState, PhaseRow, RunHeader } from "./types";
+import type {
+  ControllerState,
+  FeedRow,
+  GateState,
+  PhaseRow,
+  PhaseSection,
+  PhaseStatus,
+  RunHeader,
+} from "./types";
 
 type RunStatus = RunMeta["status"];
 
 export class OpenTuiRunController {
+  private readonly headerSignal = createSignal<RunHeader | null>(null);
   private readonly phasesStore = createStore<{ list: PhaseRow[] }>({ list: [] });
-  private readonly feedStore = createStore<{ items: FeedItem[] }>({ items: [] });
+  private readonly sectionsStore = createStore<{ list: PhaseSection[] }>({ list: [] });
   private readonly gateSignal = createSignal<GateState | null>(null);
   private readonly hintSignal = createSignal("");
   private readonly toolMeta = new Map<
     string,
-    { name: string; preview?: string; startedAt: number }
+    { name: string; preview?: string; startedAt: number; phaseId: string }
   >();
 
   private renderer?: CliRenderer;
   private pendingGate: ((d: GateDecision) => void) | null = null;
   private finished = false;
-  private nextFeedId = 1;
+  private nextRowId = 1;
+  private nextSectionKey = 1;
+  private currentPhaseId: string | null = null;
   private finalSummary?: {
     runId: string;
     status: RunStatus;
@@ -48,12 +65,14 @@ export class OpenTuiRunController {
 
   state(): ControllerState {
     const [phases] = this.phasesStore;
-    const [feed] = this.feedStore;
+    const [sections] = this.sectionsStore;
     const [gate] = this.gateSignal;
     const [hint] = this.hintSignal;
+    const [header] = this.headerSignal;
     return {
+      header,
       phases: () => phases.list,
-      feed: () => feed.items,
+      sections: () => sections.list,
       gate,
       hint,
       decideGate: (d) => this.decideGate(d),
@@ -61,6 +80,7 @@ export class OpenTuiRunController {
   }
 
   async mount(header: RunHeader, phaseIds: readonly string[] = []): Promise<void> {
+    this.headerSignal[1](header);
     if (phaseIds.length > 0) {
       this.setPhases("list", () => phaseIds.map((id) => ({ id, status: "pending", iteration: 1 })));
     }
@@ -73,26 +93,26 @@ export class OpenTuiRunController {
       externalOutputMode: "passthrough",
       consoleMode: "disabled",
       clearOnShutdown: true,
+      backgroundColor: PALETTE.bg,
     });
-
-    this.writeBannerHeader(header);
 
     // render() returns Promise<void>; the Solid tree's lifetime is tied
     // to the renderer — `renderer.destroy()` fires CliRenderEvents.DESTROY
-    // which triggers each component's onCleanup. The running-phase
-    // spinner is animated by the `<spinner>` component itself
-    // (opentui-spinner), no manual tick required.
+    // which triggers each component's onCleanup.
     await render(() => RunApp({ state: this.state() }), this.renderer);
   }
 
   pushEvent(ev: RunEvent): void {
     switch (ev.type) {
       case "run.started":
+        this.headerSignal[1]((h) => (h ? { ...h, runId: ev.runId } : h));
+        return;
       case "run.completed":
       case "agent.tokens":
         return;
 
-      case "phase.started":
+      case "phase.started": {
+        const startedAt = Date.now();
         this.setPhases(
           "list",
           produce((list) => {
@@ -103,18 +123,25 @@ export class OpenTuiRunController {
               model: ev.model,
               iteration: ev.iteration,
               activity: "starting",
+              startedAt,
             };
             if (existing) Object.assign(existing, next);
             else list.push(next);
           }),
         );
-        this.writePhaseDivider(ev.phaseId, ev.model, ev.iteration);
+        this.openSection(ev.phaseId, ev.model, ev.iteration, startedAt);
         return;
+      }
 
       case "phase.runtime.completed":
         this.setPhase(ev.phaseId, {
           status: "running",
           activity: "validating outputs",
+          durationMs: ev.durationMs,
+          tokensIn: ev.tokens.input,
+          tokensOut: ev.tokens.output,
+        });
+        this.patchActiveSection(ev.phaseId, {
           durationMs: ev.durationMs,
           tokensIn: ev.tokens.input,
           tokensOut: ev.tokens.output,
@@ -130,12 +157,13 @@ export class OpenTuiRunController {
           tokensOut: ev.tokens.output,
           error: undefined,
         });
-        this.appendFeed({
-          glyph: "✓",
-          label: ev.phaseId,
-          detail: `${formatDuration(ev.durationMs)} · in ${ev.tokens.input.toLocaleString()} / out ${ev.tokens.output.toLocaleString()} tok`,
-          color: PALETTE.done,
+        this.patchActiveSection(ev.phaseId, {
+          status: "done",
+          durationMs: ev.durationMs,
+          tokensIn: ev.tokens.input,
+          tokensOut: ev.tokens.output,
         });
+        if (this.currentPhaseId === ev.phaseId) this.currentPhaseId = null;
         return;
 
       case "phase.failed":
@@ -144,12 +172,11 @@ export class OpenTuiRunController {
           activity: undefined,
           error: firstLine(ev.error),
         });
-        this.appendFeed({
-          glyph: "✗",
-          label: ev.phaseId,
-          detail: firstLine(ev.error),
-          color: PALETTE.failed,
+        this.patchActiveSection(ev.phaseId, {
+          status: "failed",
+          error: firstLine(ev.error),
         });
+        if (this.currentPhaseId === ev.phaseId) this.currentPhaseId = null;
         return;
 
       case "agent.thinking":
@@ -157,7 +184,7 @@ export class OpenTuiRunController {
         return;
 
       case "agent.text": {
-        this.appendAgentText(ev.text);
+        this.appendNotes(ev.phaseId, ev.text);
         return;
       }
 
@@ -167,54 +194,63 @@ export class OpenTuiRunController {
           name: ev.name,
           ...(preview ? { preview } : {}),
           startedAt: Date.now(),
+          phaseId: ev.phaseId,
         });
         const label = `${ev.name}${preview ? ` · ${preview}` : ""}`;
         this.setPhase(ev.phaseId, { activity: label });
-        this.appendFeed({
-          glyph: "▸",
-          label: ev.name,
-          ...(preview ? { detail: preview } : {}),
-          color: PALETTE.toolName,
-        });
+        const edit =
+          ev.name === "Edit" || ev.name === "MultiEdit" || ev.name === "NotebookEdit"
+            ? buildEditDiff(ev.name, ev.input)
+            : undefined;
+        if (edit) {
+          this.appendRow(ev.phaseId, {
+            kind: "edit",
+            tool: ev.name,
+            detail: edit.filePath,
+            edit,
+          });
+        } else {
+          this.appendRow(ev.phaseId, {
+            kind: "tool",
+            tool: ev.name,
+            ...(preview ? { detail: preview } : {}),
+          });
+        }
         return;
       }
 
       case "agent.tool.result": {
         const meta = this.toolMeta.get(ev.id);
+        if (!meta) return;
         if (!ev.ok) {
           const reason = ev.preview ? ` — ${firstLine(ev.preview)}` : "";
-          this.appendFeed({
-            glyph: "✗",
-            label: meta?.name ?? ev.id,
-            detail: `${meta?.preview ?? ""}${meta?.preview ? " · " : ""}failed${reason}`,
-            color: PALETTE.failed,
+          this.appendRow(meta.phaseId, {
+            kind: "error",
+            tool: meta.name,
+            detail: `${meta.preview ? `${meta.preview} · ` : ""}failed${reason}`,
           });
-        } else if (meta && Date.now() - meta.startedAt > SLOW_TOOL_MS) {
+        } else if (Date.now() - meta.startedAt > SLOW_TOOL_MS) {
           // Quick tools (Read/Grep) finish within a frame and would
           // double up on the ▸ line; only confirm tools whose latency
           // crosses the visibility threshold so the user knows they
           // returned.
-          this.appendFeed({
-            glyph: "✓",
-            label: meta.name,
-            detail: `${meta.preview ? `${meta.preview} · ` : ""}${formatDuration(Date.now() - meta.startedAt)}`,
-            color: PALETTE.done,
+          this.appendRow(meta.phaseId, {
+            kind: "result",
+            tool: meta.name,
+            ...(meta.preview ? { detail: meta.preview } : {}),
+            extra: formatDuration(Date.now() - meta.startedAt),
           });
         }
-        // Don't reset activity here — for fast tools (Read/Grep) the
-        // result lands within a frame of the use, and flashing back to
-        // "thinking…" makes tool names unreadable. The next
-        // agent.thinking event resets it explicitly.
         return;
       }
 
       case "agent.error":
-        this.appendFeed({
-          glyph: "✗",
-          label: "error",
-          detail: ev.message.trim(),
-          color: PALETTE.failed,
-        });
+        if (this.currentPhaseId) {
+          this.appendRow(this.currentPhaseId, {
+            kind: "error",
+            detail: ev.message.trim(),
+          });
+        }
         return;
 
       case "gate.requested":
@@ -234,10 +270,9 @@ export class OpenTuiRunController {
     const [, setGate] = this.gateSignal;
     const [, setHint] = this.hintSignal;
     this.setPhase(ctx.phaseId, { status: "gate", activity: undefined });
-    setGate({ ctx });
-    // Clear the hint while the gate is active — the gate panel
-    // already shows the [a]/[r] keys, and rendering them again at
-    // the bottom of the footer would print the same text twice.
+    const gate: GateState = { ctx };
+    setGate(gate);
+    this.patchActiveSection(ctx.phaseId, { status: "gate", gate });
     setHint("");
     return new Promise<GateDecision>((resolve) => {
       this.pendingGate = resolve;
@@ -342,16 +377,16 @@ export class OpenTuiRunController {
     if (!g) return;
     setGate(null);
     setHint("");
+    const newStatus: PhaseStatus = decision.status === "approved" ? "done" : "failed";
     this.setPhase(g.ctx.phaseId, {
-      status: decision.status === "approved" ? "done" : "failed",
+      status: newStatus,
       activity: undefined,
       ...(decision.status === "rejected" ? { error: decision.reason } : {}),
     });
-    this.appendFeed({
-      glyph: decision.status === "approved" ? "✓" : "✗",
-      label: "gate",
-      detail: `${g.ctx.phaseId} ${decision.status}`,
-      color: decision.status === "approved" ? PALETTE.done : PALETTE.failed,
+    this.patchActiveSection(g.ctx.phaseId, {
+      status: newStatus,
+      gate: undefined,
+      ...(decision.status === "rejected" ? { error: decision.reason } : {}),
     });
     const resolve = this.pendingGate;
     this.pendingGate = null;
@@ -372,65 +407,76 @@ export class OpenTuiRunController {
     return this.phasesStore[1];
   }
 
-  private appendFeed(item: Omit<FeedItem, "id">): void {
-    const feedItem = { id: this.nextFeedId++, ...item };
-    this.feedStore[1](
-      "items",
-      produce((items) => {
-        items.push(feedItem);
-        if (items.length > MAX_FEED_ITEMS) {
-          items.splice(0, items.length - MAX_FEED_ITEMS);
-        }
+  private get setSections() {
+    return this.sectionsStore[1];
+  }
+
+  private openSection(phaseId: string, model: string, iteration: number, startedAt: number): void {
+    this.currentPhaseId = phaseId;
+    const key = `${phaseId}#${this.nextSectionKey++}`;
+    this.setSections(
+      "list",
+      produce((list) => {
+        list.push({
+          key,
+          phaseId,
+          status: "running",
+          model,
+          iteration,
+          rows: [],
+          startedAt,
+        });
       }),
     );
-    this.writeFeedItem(feedItem);
   }
 
   /**
-   * Emit a compact phase marker in the persistent log.
+   * Patch the most recent section for `phaseId`. Older sections from
+   * earlier iterations stay frozen — they are an audit trail.
    */
-  private writePhaseDivider(phaseId: string, model: string, iteration: number): void {
-    this.appendFeed({
-      glyph: "─",
-      label: phaseId,
-      detail: `${model}${iteration > 1 ? ` · iteration ${iteration}` : ""}`,
-      color: PALETTE.text,
-    });
+  private patchActiveSection(phaseId: string, patch: Partial<PhaseSection>): void {
+    this.setSections(
+      "list",
+      produce((list) => {
+        for (let i = list.length - 1; i >= 0; i--) {
+          const section = list[i];
+          if (section && section.phaseId === phaseId) {
+            Object.assign(section, patch);
+            return;
+          }
+        }
+      }),
+    );
   }
 
-  private writeBannerHeader(header: RunHeader): void {
-    this.appendFeed({
-      glyph: "",
-      label: "ordin",
-      detail: `${header.task} · tier ${header.tier}`,
-      color: PALETTE.accent,
-    });
+  private appendRow(phaseId: string, row: Omit<FeedRow, "id">): void {
+    const id = this.nextRowId++;
+    this.setSections(
+      "list",
+      produce((list) => {
+        for (let i = list.length - 1; i >= 0; i--) {
+          const section = list[i];
+          if (section && section.phaseId === phaseId) {
+            section.rows.push({ id, ...row });
+            return;
+          }
+        }
+      }),
+    );
   }
 
-  private appendAgentText(text: string): void {
-    const lines = text
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .filter((line) => line.trim().length > 0);
-    for (const line of lines) {
-      this.appendFeed({
-        glyph: "│",
-        label: "note",
-        detail: line,
-        color: PALETTE.text,
-      });
-    }
+  private appendNotes(phaseId: string, text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.appendRow(phaseId, { kind: "note", detail: trimmed });
   }
-
-  private writeFeedItem(_item: FeedItem): void {}
 }
 
 // ── Module helpers ────────────────────────────────────────────────────
 
 const SLOW_TOOL_MS = 1_000;
-const MAX_FEED_ITEMS = 120;
 
-function statusToGlyph(status: PhaseRow["status"]): string {
+function statusToGlyph(status: PhaseStatus): string {
   switch (status) {
     case "pending":
       return "◌";
@@ -445,7 +491,7 @@ function statusToGlyph(status: PhaseRow["status"]): string {
   }
 }
 
-function statusToColor(status: PhaseRow["status"]): string {
+function statusToColor(status: PhaseStatus): string {
   switch (status) {
     case "pending":
       return PALETTE.pending;

@@ -1,10 +1,12 @@
 import type { CapturedFrame } from "@opentui/core";
+import { PALETTE } from "./theme";
+import type { EditDiff } from "./types";
 
 const ESC = "\x1b";
 const RESET_RAW = `${ESC}[0m`;
 const COLOR_TAG_DEFAULT = 257;
 
-export const BRAND_GRADIENT = ["#7AB8FF", "#A28BFF", "#D77CC8"] as const;
+export const BRAND_GRADIENT = ["#89b4fa", "#cba6f7", "#f5c2e7"] as const;
 
 export function ansiEnabled(): boolean {
   if (process.env["NO_COLOR"]) return false;
@@ -51,9 +53,186 @@ export function formatDuration(ms: number): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
+/**
+ * Live-ticking elapsed clock. Used in the footer next to the active
+ * phase id ("ordin · run · plan · 0:42"). Distinct from
+ * `formatDuration` which renders post-completion stats with one
+ * decimal — clock format reads more naturally while time is moving.
+ */
+export function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return `${min}:${sec.toString().padStart(2, "0")}`;
+  const hr = Math.floor(min / 60);
+  return `${hr}:${(min % 60).toString().padStart(2, "0")}`;
+}
+
+/**
+ * Show file paths in their most useful form. Inside the active repo
+ * we strip the prefix so users see `src/calculator.ts`, not
+ * `/Users/em/src/harness/.scratch/target-repo/src/calculator.ts`.
+ * Outside the repo (or when we don't know the repo), return the path
+ * as-is — it'll wrap naturally inside the row's flex column.
+ */
+export function shortenPath(absolute: string, repoPath?: string): string {
+  if (!repoPath) return absolute;
+  if (!absolute.startsWith(repoPath)) return absolute;
+  const rel = absolute.slice(repoPath.length).replace(/^\/+/, "");
+  return rel.length > 0 ? rel : absolute;
+}
+
+const FILETYPE_BY_EXT: Record<string, string> = {
+  ts: "typescript",
+  tsx: "typescript",
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  md: "markdown",
+  json: "json",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  py: "python",
+  rs: "rust",
+  go: "go",
+  sh: "bash",
+  css: "css",
+  html: "html",
+};
+
+/**
+ * Build a tiny unified-diff string for OpenTUI's `<diff>` from an
+ * Edit / MultiEdit tool input. Each hunk is capped at `maxSide` rows
+ * removed + `maxSide` rows added; if any hunk overflows, the result's
+ * `truncated` flag is set so the renderer can show an overflow hint.
+ *
+ * Hunk headers stay placeholder (`@@ -1 +1 @@`) — `<diff>` parses
+ * line prefixes (`-`/`+`/space) but doesn't validate the header.
+ */
+export function buildEditDiff(name: string, input: unknown, maxSide = 3): EditDiff | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const rec = input as Record<string, unknown>;
+  const filePath = typeof rec["file_path"] === "string" ? rec["file_path"] : undefined;
+  if (!filePath) return undefined;
+
+  type Hunk = { old_string: string; new_string: string };
+  const hunks: Hunk[] = [];
+
+  if (name === "Edit" || name === "NotebookEdit") {
+    const oldStr = typeof rec["old_string"] === "string" ? rec["old_string"] : "";
+    const newStr = typeof rec["new_string"] === "string" ? rec["new_string"] : "";
+    if (!oldStr && !newStr) return undefined;
+    hunks.push({ old_string: oldStr, new_string: newStr });
+  } else if (name === "MultiEdit") {
+    const edits = Array.isArray(rec["edits"]) ? (rec["edits"] as unknown[]) : [];
+    for (const edit of edits) {
+      if (!edit || typeof edit !== "object") continue;
+      const e = edit as Record<string, unknown>;
+      const oldStr = typeof e["old_string"] === "string" ? e["old_string"] : "";
+      const newStr = typeof e["new_string"] === "string" ? e["new_string"] : "";
+      if (oldStr || newStr) hunks.push({ old_string: oldStr, new_string: newStr });
+    }
+    if (hunks.length === 0) return undefined;
+  } else {
+    return undefined;
+  }
+
+  const base = filePath.split("/").pop() ?? filePath;
+  const out: string[] = [`--- a/${base}`, `+++ b/${base}`];
+  let truncated = false;
+  for (const hunk of hunks) {
+    const removed = hunk.old_string.split("\n");
+    const added = hunk.new_string.split("\n");
+    const removedShown = removed.slice(0, maxSide);
+    const addedShown = added.slice(0, maxSide);
+    if (removed.length > maxSide || added.length > maxSide) truncated = true;
+    out.push("@@ -1 +1 @@");
+    for (const line of removedShown) out.push(`-${line}`);
+    for (const line of addedShown) out.push(`+${line}`);
+  }
+
+  const ext = base.includes(".") ? (base.split(".").pop() ?? "").toLowerCase() : "";
+  const filetype = FILETYPE_BY_EXT[ext];
+
+  return {
+    filePath,
+    diff: out.join("\n"),
+    ...(filetype ? { filetype } : {}),
+    truncated,
+  };
+}
+
 export function firstLine(s: string, max = 120): string {
   const line = s.split("\n", 1)[0] ?? "";
   return line.length > max ? `${line.slice(0, max - 3)}...` : line;
+}
+
+/**
+ * Per-tool category styling. Drives the glyph + colour + weight used
+ * by the run-app `ToolRow` component so reads, mutations, and shells
+ * are visually distinct in the scrollback.
+ */
+export interface ToolRowStyle {
+  glyph: string;
+  glyphColor: string;
+  nameWeight: "bold" | "dim" | "plain";
+  detailColor: string;
+}
+
+const TOOL_STYLES: Record<string, ToolRowStyle> = {
+  Read: {
+    glyph: "▸",
+    glyphColor: PALETTE.muted,
+    nameWeight: "dim",
+    detailColor: PALETTE.toolPreview,
+  },
+  Glob: {
+    glyph: "▸",
+    glyphColor: PALETTE.muted,
+    nameWeight: "dim",
+    detailColor: PALETTE.toolPreview,
+  },
+  Grep: {
+    glyph: "▸",
+    glyphColor: PALETTE.muted,
+    nameWeight: "dim",
+    detailColor: PALETTE.toolPreview,
+  },
+  Write: { glyph: "●", glyphColor: PALETTE.accent, nameWeight: "bold", detailColor: PALETTE.text },
+  Edit: { glyph: "●", glyphColor: PALETTE.accent, nameWeight: "bold", detailColor: PALETTE.text },
+  NotebookEdit: {
+    glyph: "●",
+    glyphColor: PALETTE.accent,
+    nameWeight: "bold",
+    detailColor: PALETTE.text,
+  },
+  Bash: { glyph: "$", glyphColor: PALETTE.accent2, nameWeight: "bold", detailColor: PALETTE.text },
+  Skill: {
+    glyph: "✦",
+    glyphColor: PALETTE.toolName,
+    nameWeight: "bold",
+    detailColor: PALETTE.accent,
+  },
+  WebFetch: {
+    glyph: "↗",
+    glyphColor: PALETTE.accent,
+    nameWeight: "bold",
+    detailColor: PALETTE.toolPreview,
+  },
+};
+
+const FALLBACK_STYLE: ToolRowStyle = {
+  glyph: "▸",
+  glyphColor: PALETTE.toolName,
+  nameWeight: "plain",
+  detailColor: PALETTE.toolPreview,
+};
+
+export function toolRowStyle(name: string): ToolRowStyle {
+  return TOOL_STYLES[name] ?? FALLBACK_STYLE;
 }
 
 export function summariseToolInput(name: string, input: unknown): string | undefined {
@@ -77,7 +256,7 @@ export function summariseToolInput(name: string, input: unknown): string | undef
     case "Glob":
       return str("pattern");
     case "Skill":
-      return str("skill");
+      return str("name") ?? str("skill");
     case "WebFetch":
       return str("url");
     default: {
