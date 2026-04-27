@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { Command } from "commander";
 import { resolveClaudeBin } from "../runtime/harness";
 import { ordin } from "./common";
-import { printStatusLine } from "./tui/print";
+import { printBlank, printCommandHeader, styled, writeLine } from "./tui/print";
+import { PALETTE } from "./tui/theme";
 
 /**
  * Run the resolved `claude` binary with stdin explicitly closed. Goes
@@ -46,19 +47,37 @@ export function registerDoctor(program: Command): void {
     .command("doctor")
     .description("Check environment: Bun, claude binary, ordin files, plugin manifest")
     .action(async () => {
-      const checks: Promise<DoctorResult>[] = [
-        checkBun(),
-        checkClaudeBinary(),
-        checkOrdinFiles(),
-        checkPluginManifest(),
+      const startedAt = Date.now();
+      printCommandHeader("doctor");
+      printBlank();
+
+      // Group checks by domain so the output reads as a structured
+      // health report instead of a flat list. Order within each group
+      // is the order checks fire — first failure is most diagnostic.
+      const groups: readonly { title: string; checks: () => Promise<DoctorResult>[] }[] = [
+        {
+          title: "Runtime",
+          checks: () => [checkBun(), checkClaudeBinary()],
+        },
+        {
+          title: "Files",
+          checks: () => [checkOrdinFiles(), checkPluginManifest()],
+        },
       ];
-      const results = await Promise.all(checks);
-      let failures = 0;
-      for (const { label, ok, detail } of results) {
-        printStatusLine(ok, label, detail);
-        if (!ok) failures += 1;
+
+      const allResults: DoctorResult[] = [];
+      for (const group of groups) {
+        const results = await Promise.all(group.checks());
+        printGroup(group.title, results);
+        printBlank();
+        allResults.push(...results);
       }
-      if (failures > 0) process.exitCode = 1;
+
+      const passed = allResults.filter((r) => r.ok).length;
+      const failed = allResults.length - passed;
+      const elapsed = Date.now() - startedAt;
+      printSummary(passed, allResults.length, elapsed);
+      if (failed > 0) process.exitCode = 1;
     });
 }
 
@@ -66,6 +85,33 @@ interface DoctorResult {
   label: string;
   ok: boolean;
   detail?: string;
+}
+
+function printGroup(title: string, results: readonly DoctorResult[]): void {
+  writeLine(`  ${styled(title, PALETTE.text)}`);
+  const labelWidth = Math.max(...results.map((r) => r.label.length)) + 2;
+  for (const r of results) {
+    const glyph = styled(r.ok ? "✓" : "✗", r.ok ? PALETTE.done : PALETTE.failed);
+    const label = styled(r.label.padEnd(labelWidth), PALETTE.text);
+    const detail = r.detail ? styled(r.detail, PALETTE.hint) : "";
+    writeLine(`    ${glyph}  ${label}${detail}`);
+  }
+}
+
+function printSummary(passed: number, total: number, elapsedMs: number): void {
+  const cols = process.stdout.columns ?? 80;
+  writeLine(styled("─".repeat(cols), PALETTE.border));
+  const allPassed = passed === total;
+  const verdict = allPassed
+    ? styled(`${passed} of ${total} checks passed`, PALETTE.done)
+    : styled(`${total - passed} of ${total} checks failed`, PALETTE.failed);
+  const elapsed = styled(formatMs(elapsedMs), PALETTE.hint);
+  writeLine(`${verdict} ${styled("·", PALETTE.border)} ${elapsed}`);
+}
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 async function checkBun(): Promise<DoctorResult> {

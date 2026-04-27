@@ -4,6 +4,7 @@ import { ordin } from "./common";
 import {
   colorForRunStatus,
   printBlank,
+  printCommandHeader,
   printKeyValue,
   printSectionDivider,
   styled,
@@ -18,8 +19,10 @@ export function registerRetro(program: Command): void {
     .action(async (runId: string) => {
       const runtime = ordin();
       const meta = await runtime.getRun(runId);
-      printSectionDivider(`run ─ ${meta.runId}`);
+
+      printCommandHeader("retro", meta.runId);
       printBlank();
+
       printKeyValue("workflow:", meta.workflow);
       printKeyValue("tier:", meta.tier);
       writeLine(
