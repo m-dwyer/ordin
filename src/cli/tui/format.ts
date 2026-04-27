@@ -1,7 +1,7 @@
 import type { CapturedFrame } from "@opentui/core";
 import { formatPatch, type StructuredPatchHunk, structuredPatch } from "diff";
 import { PALETTE } from "./theme";
-import type { EditDiff } from "./types";
+import type { EditDiff, FeedRow } from "./types";
 
 const ESC = "\x1b";
 const RESET_RAW = `${ESC}[0m`;
@@ -71,6 +71,32 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
+ * Build a `file://` URI for an absolute path. Modern terminals (iTerm2,
+ * Terminal.app, VS Code, Wezterm, Kitty) emit OSC 8 hyperlinks for any
+ * `<a link={{url}}>` we render — cmd-click opens in the user's default
+ * handler. We URL-encode each path segment so spaces / non-ascii don't
+ * break the escape.
+ */
+export function fileUri(absolutePath: string): string {
+  const encoded = absolutePath
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+  return `file://${encoded}`;
+}
+
+/** Whether a tool's `detail` field is a real file path we can link. */
+export function isFileTool(name: string | undefined): boolean {
+  return (
+    name === "Read" ||
+    name === "Write" ||
+    name === "Edit" ||
+    name === "MultiEdit" ||
+    name === "NotebookEdit"
+  );
+}
+
+/**
  * Show file paths in their most useful form. Inside the active repo
  * we strip the prefix so users see `src/calculator.ts`, not
  * `/Users/em/src/harness/.scratch/target-repo/src/calculator.ts`.
@@ -82,6 +108,26 @@ export function shortenPath(absolute: string, repoPath?: string): string {
   if (!absolute.startsWith(repoPath)) return absolute;
   const rel = absolute.slice(repoPath.length).replace(/^\/+/, "");
   return rel.length > 0 ? rel : absolute;
+}
+
+/**
+ * Single-line ellipsis for paths that won't fit in their row. Always
+ * preserves the basename (the most diagnostic part — "what file?")
+ * by chopping from the LEFT with a `…/` lead. Falls back to chopping
+ * the basename's start when even the basename is too long.
+ *
+ * Used together with `wrapMode="none" truncate` on the row, so OpenTUI
+ * still clips at the cell edge if our maxLen guess overflowed.
+ */
+export function ellipsizePath(path: string, maxLen = 80): string {
+  if (path.length <= maxLen) return path;
+  const idx = path.lastIndexOf("/");
+  const basename = idx === -1 ? path : path.slice(idx + 1);
+  const tail = `…/${basename}`;
+  if (tail.length <= maxLen) return tail;
+  // Basename itself overflows — keep the last (maxLen - 1) chars with
+  // a leading … so users still see the file extension.
+  return `…${path.slice(-(maxLen - 1))}`;
 }
 
 const FILETYPE_BY_EXT: Record<string, string> = {
@@ -181,6 +227,61 @@ export function buildEditDiff(name: string, input: unknown, maxSide = 3): EditDi
     ...(filetype ? { filetype } : {}),
     truncated,
   };
+}
+
+// ── Collapsibles ────────────────────────────────────────────────────
+
+export const NOTE_COLLAPSE_THRESHOLD = 6;
+export const TOOL_GROUP_THRESHOLD = 3;
+
+/** Whether a tool name counts as low-signal exploration that we'd
+ * group under "explored N files" when 3+ adjacent calls fire. */
+export function isExplorationTool(name: string | undefined): boolean {
+  return name === "Read" || name === "Glob" || name === "Grep";
+}
+
+export type Collapsible =
+  | { kind: "note"; id: number; lineCount: number }
+  | { kind: "tool-group"; id: number; rows: readonly FeedRow[] };
+
+/**
+ * Walk a phase's row stream and identify each collapsible spot — long
+ * notes and adjacency-runs of read-class tool calls. Used by both the
+ * render memo (to decide what to draw) and the controller (to drive
+ * cycle-next-collapsed). Pure, deterministic, order-preserving.
+ */
+export function findCollapsibles(rows: readonly FeedRow[]): Collapsible[] {
+  const out: Collapsible[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i];
+    if (!row) {
+      i++;
+      continue;
+    }
+    if (row.kind === "note") {
+      const lines = (row.detail ?? "").split("\n").length;
+      if (lines > NOTE_COLLAPSE_THRESHOLD) out.push({ kind: "note", id: row.id, lineCount: lines });
+      i++;
+      continue;
+    }
+    if (row.kind === "tool" && isExplorationTool(row.tool)) {
+      let j = i + 1;
+      while (j < rows.length) {
+        const next = rows[j];
+        if (!next || next.kind !== "tool" || !isExplorationTool(next.tool)) break;
+        j++;
+      }
+      const run = rows.slice(i, j);
+      if (run.length >= TOOL_GROUP_THRESHOLD) {
+        out.push({ kind: "tool-group", id: row.id, rows: run });
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return out;
 }
 
 function capHunk(
@@ -321,6 +422,14 @@ function colorizeSpan(
   const g = Math.round(fg.g * 255);
   const b = Math.round(fg.b * 255);
   return `${ESC}[38;2;${r};${g};${b}m${text}`;
+}
+
+/**
+ * Mix two hex colors. `t=0` returns `a`, `t=1` returns `b`. Used to
+ * desaturate "past" content by mixing toward the canvas bg.
+ */
+export function mix(a: string, b: string, t: number): string {
+  return mixHex(a, b, t);
 }
 
 function mixHex(a: string, b: string, t: number): string {

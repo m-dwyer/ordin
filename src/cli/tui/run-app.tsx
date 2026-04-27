@@ -24,7 +24,17 @@ import "opentui-spinner/solid";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import type { GateContext } from "../../gates/types";
 import { RunBanner } from "./banner";
-import { formatElapsed, shortenPath, toolRowStyle } from "./format";
+import {
+  ellipsizePath,
+  fileUri,
+  findCollapsibles,
+  formatElapsed,
+  isFileTool,
+  mix,
+  NOTE_COLLAPSE_THRESHOLD,
+  shortenPath,
+  toolRowStyle,
+} from "./format";
 import { PALETTE } from "./theme";
 import type {
   ControllerState,
@@ -79,6 +89,24 @@ export function RunApp(props: RunAppProps) {
 
   let scrollboxEl: ScrollBoxRenderable | undefined;
 
+  /**
+   * Click a phase dot in the footer rail → scroll the scrollback so
+   * that phase's most recent section comes into view. Most recent
+   * because re-runs after rejected gates produce multiple sections
+   * per phase id; the user almost always cares about the latest.
+   */
+  const jumpToPhase = (phaseId: string) => {
+    if (!scrollboxEl) return;
+    const list = state.sections();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const s = list[i];
+      if (s && s.phaseId === phaseId) {
+        scrollboxEl.scrollChildIntoView(phaseCardId(s.key));
+        return;
+      }
+    }
+  };
+
   useKeyboard((key) => {
     // Gate prompt — single-key approve/reject takes priority.
     if (state.gate()) {
@@ -90,6 +118,18 @@ export function RunApp(props: RunAppProps) {
     // Paused (failed/halted) — q/esc/enter dismisses the alt-screen.
     if (state.paused() && (key.name === "q" || key.name === "escape" || key.name === "return")) {
       state.dismiss();
+      return;
+    }
+    // Collapsible toggle: `e` expands the next collapsed thing in
+    // scroll order; `c` collapses everything back. Two distinct keys
+    // — easier to reason about than `e`/`E` shift dance. Mouse clicks
+    // handle "expand this specific one".
+    if (key.name === "e") {
+      state.cycleNextCollapsed(scrollboxEl);
+      return;
+    }
+    if (key.name === "c") {
+      state.collapseAll();
       return;
     }
     // Scroll keys — work any time. j/k for vim users, arrows + page
@@ -141,6 +181,10 @@ export function RunApp(props: RunAppProps) {
         scrollboxRef={(el) => {
           scrollboxEl = el;
         }}
+        expanded={state.expanded()}
+        toggleExpanded={state.toggleExpanded}
+        collapsedPhases={state.collapsedPhases()}
+        togglePhaseCollapsed={state.togglePhaseCollapsed}
       />
       <Footer
         phases={phases()}
@@ -150,6 +194,7 @@ export function RunApp(props: RunAppProps) {
         hint={state.hint()}
         cols={cols()}
         now={now()}
+        onJumpToPhase={jumpToPhase}
       />
     </box>
   );
@@ -162,6 +207,10 @@ function ScrollbackView(props: {
   sections: readonly PhaseSection[];
   cols: number;
   scrollboxRef: (el: ScrollBoxRenderable) => void;
+  expanded: ReadonlySet<number>;
+  toggleExpanded: (id: number) => void;
+  collapsedPhases: ReadonlySet<string>;
+  togglePhaseCollapsed: (sectionKey: string) => void;
 }) {
   const repoPath = () => props.header?.repoPath;
   return (
@@ -179,7 +228,16 @@ function ScrollbackView(props: {
           {(header: RunHeader) => <RunBanner header={header} />}
         </Show>
         <For each={props.sections}>
-          {(section) => <PhaseCard section={section} repoPath={repoPath()} />}
+          {(section) => (
+            <PhaseCard
+              section={section}
+              repoPath={repoPath()}
+              expanded={props.expanded}
+              toggleExpanded={props.toggleExpanded}
+              collapsed={props.collapsedPhases.has(section.key)}
+              onToggleCollapsed={() => props.togglePhaseCollapsed(section.key)}
+            />
+          )}
         </For>
       </box>
     </scrollbox>
@@ -192,62 +250,181 @@ function ScrollbackView(props: {
  * panel chrome makes it visually distinct from the rows below — the
  * header is the section label, the panel is the work.
  */
-function PhaseCard(props: { section: PhaseSection; repoPath?: string }) {
-  const color = () => statusColor(props.section.status);
+function PhaseCard(props: {
+  section: PhaseSection;
+  repoPath?: string;
+  expanded: ReadonlySet<number>;
+  toggleExpanded: (id: number) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  const isActive = () => props.section.status === "running" || props.section.status === "gate";
+  // "Past" phases drop bg to a half-mix toward canvas — still visible
+  // as a card, just less raised. Chrome colours mix 65% toward bg so
+  // the active phase pops without finished work disappearing.
+  const cardBg = () => (isActive() ? PALETTE.panelRaised : mix(PALETTE.panel, PALETTE.bg, 0.5));
+  const dim = (hex: string, amount = 0.65): string =>
+    isActive() ? hex : mix(hex, PALETTE.bg, amount);
+  const barColor = () => (isActive() ? statusColor(props.section.status) : PALETTE.border);
+  const headerColor = () => dim(statusColor(props.section.status));
+
+  // Convert the flat row stream into a render plan: standalone rows
+  // and tool-groups (Read/Glob/Grep ≥3 adjacent). Memoised on the row
+  // array reference so it only recomputes when rows change.
+  const grouped = createMemo(() => buildRenderPlan(props.section.rows));
+
+  const header = () => (
+    <PhaseHeader
+      section={props.section}
+      color={headerColor()}
+      dim={!isActive()}
+      collapsed={props.collapsed}
+      onToggle={props.onToggleCollapsed}
+    />
+  );
 
   return (
-    <box width="100%" flexDirection="column">
-      <PhaseHeader section={props.section} color={color()} />
-      <box
-        width="100%"
-        flexDirection="column"
-        backgroundColor={PALETTE.panelRaised}
-        border={["left"]}
-        borderColor={
-          props.section.status === "running" || props.section.status === "gate"
-            ? statusColor(props.section.status)
-            : PALETTE.borderStrong
+    // Stable id per section so the phase rail at the bottom can
+    // scroll into view via `scrollChildIntoView(phaseCardId(...))`.
+    <box id={phaseCardId(props.section.key)} width="100%" flexDirection="column">
+      <Show
+        when={!props.collapsed}
+        fallback={
+          /* Collapsed: header + footer wrapped in chrome together so
+             they read as one anchored unit, not two floating lines. */
+          <box
+            width="100%"
+            flexDirection="column"
+            backgroundColor={mix(PALETTE.panel, PALETTE.bg, 0.5)}
+            border={["left"]}
+            borderColor={barColor()}
+            paddingLeft={1}
+            paddingRight={1}
+            paddingTop={0}
+            paddingBottom={0}
+          >
+            {header()}
+            <PhaseFooter section={props.section} dim={!isActive()} />
+          </box>
         }
-        paddingLeft={1}
-        paddingRight={1}
-        paddingTop={0}
-        paddingBottom={1}
       >
-        {/* Wrap the row stream in a concrete box so its position is
-            anchored even when rows arrive AFTER sibling Show conditions
-            have already mounted (otherwise rows append at the end of
-            the parent regardless of JSX order). */}
-        <box width="100%" flexDirection="column">
-          <For each={props.section.rows}>
-            {(row) => <Row row={row} repoPath={props.repoPath} />}
-          </For>
+        {/* Expanded: header sits OUTSIDE the panel chrome so it reads
+            as a section label, distinct from the dense rows below. */}
+        {header()}
+        <box
+          width="100%"
+          flexDirection="column"
+          backgroundColor={cardBg()}
+          border={["left"]}
+          borderColor={barColor()}
+          paddingLeft={1}
+          paddingRight={1}
+          paddingTop={0}
+          paddingBottom={1}
+        >
+          {/* Concrete wrapper so the For's anchor stays put even when
+              sibling Show conditions mount/unmount around it. */}
+          <box width="100%" flexDirection="column">
+            <For each={grouped()}>
+              {(item) =>
+                item.kind === "group" ? (
+                  <ToolGroupRow
+                    group={item}
+                    repoPath={props.repoPath}
+                    expanded={props.expanded.has(item.id)}
+                    onToggle={() => props.toggleExpanded(item.id)}
+                  />
+                ) : (
+                  <Row
+                    row={item.row}
+                    repoPath={props.repoPath}
+                    expanded={props.expanded.has(item.row.id)}
+                    onToggle={() => props.toggleExpanded(item.row.id)}
+                  />
+                )
+              }
+            </For>
+          </box>
+          <Show when={props.section.gate} keyed>
+            {(gate: GateState) => <GateCard ctx={gate.ctx} repoPath={props.repoPath} />}
+          </Show>
+          <Show when={props.section.status === "failed" && props.section.error}>
+            <text fg={PALETTE.failed} wrapMode="word" content={props.section.error ?? ""} />
+          </Show>
+          <PhaseFooter section={props.section} dim={!isActive()} />
         </box>
-        <Show when={props.section.gate} keyed>
-          {(gate: GateState) => <GateCard ctx={gate.ctx} repoPath={props.repoPath} />}
-        </Show>
-        <Show when={props.section.status === "failed" && props.section.error}>
-          <text fg={PALETTE.failed} wrapMode="word" content={props.section.error ?? ""} />
-        </Show>
-        <PhaseFooter section={props.section} />
-      </box>
+      </Show>
     </box>
   );
+}
+
+/** Element id used by `scrollChildIntoView` from the phase rail. */
+function phaseCardId(sectionKey: string): string {
+  return `phase-card-${sectionKey}`;
+}
+
+// ── Render plan (rows + tool-groups) ────────────────────────────────
+
+type RenderItem =
+  | { kind: "row"; row: FeedRow }
+  | { kind: "group"; id: number; rows: readonly FeedRow[] };
+
+function buildRenderPlan(rows: readonly FeedRow[]): RenderItem[] {
+  const items: RenderItem[] = [];
+  const collapsibles = findCollapsibles(rows);
+  // Build a map of "first row id of a tool group" → group rows so we
+  // can emit one item per group and skip the rest.
+  const groupByFirstId = new Map<number, readonly FeedRow[]>();
+  const skipIds = new Set<number>();
+  for (const c of collapsibles) {
+    if (c.kind === "tool-group") {
+      groupByFirstId.set(c.id, c.rows);
+      for (const r of c.rows) skipIds.add(r.id);
+      // first id is the anchor — it represents the whole group
+      skipIds.delete(c.id);
+    }
+  }
+  for (const row of rows) {
+    if (groupByFirstId.has(row.id)) {
+      items.push({ kind: "group", id: row.id, rows: groupByFirstId.get(row.id) ?? [] });
+      continue;
+    }
+    if (skipIds.has(row.id)) continue;
+    items.push({ kind: "row", row });
+  }
+  return items;
 }
 
 /**
  * Section label that sits ABOVE the phase panel. Layout: status glyph
  * (or animated spinner for running) + bold phase id on the left;
- * model + iteration on the right. Right side truncates first so the
- * phase id is never lost at narrow widths.
+ * model on the right + a `▼` / `▶` chevron indicating expand/collapse
+ * state. Click anywhere on the row to toggle the card body.
  */
-function PhaseHeader(props: { section: PhaseSection; color: string }) {
+function PhaseHeader(props: {
+  section: PhaseSection;
+  color: string;
+  dim: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   const left = () => {
     const id = props.section.phaseId;
     const iter = props.section.iteration > 1 ? ` · iter ${props.section.iteration}` : "";
     return `${id}${iter}`;
   };
+  const modelColor = () => (props.dim ? mix(PALETTE.hint, PALETTE.bg, 0.65) : PALETTE.hint);
+  const chevron = () => (props.collapsed ? "▶" : "▼");
   return (
-    <box flexDirection="row" width="100%" gap={1} height={1} justifyContent="space-between">
+    // biome-ignore lint/a11y/noStaticElementInteractions: <box> is an OpenTUI renderable, not a DOM element; ARIA roles don't apply
+    <box
+      flexDirection="row"
+      width="100%"
+      gap={1}
+      height={1}
+      justifyContent="space-between"
+      onMouseDown={props.onToggle}
+    >
       <box flexDirection="row" gap={1} flexShrink={1}>
         <Show
           when={props.section.status === "running"}
@@ -274,21 +451,23 @@ function PhaseHeader(props: { section: PhaseSection; color: string }) {
           content={left()}
         />
       </box>
-      <Show when={props.section.model} keyed>
-        {(model: string) => (
-          <text flexShrink={1} fg={PALETTE.hint} wrapMode="none" truncate content={model} />
-        )}
-      </Show>
+      <box flexDirection="row" gap={1} flexShrink={0}>
+        <Show when={props.section.model} keyed>
+          {(model: string) => (
+            <text flexShrink={1} fg={modelColor()} wrapMode="none" truncate content={model} />
+          )}
+        </Show>
+        <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content={chevron()} />
+      </box>
     </box>
   );
 }
 
 // ── Rows ────────────────────────────────────────────────────────────
 
-const NAME_COL = 12;
 const GLYPH_COL = 2;
 
-function Row(props: { row: FeedRow; repoPath?: string }) {
+function Row(props: { row: FeedRow; repoPath?: string; expanded: boolean; onToggle: () => void }) {
   const kind = () => props.row.kind;
   return (
     <Show
@@ -297,15 +476,8 @@ function Row(props: { row: FeedRow; repoPath?: string }) {
         <Show
           when={kind() === "edit"}
           fallback={
-            <Show
-              when={kind() === "result"}
-              fallback={
-                <Show when={kind() === "note"} fallback={<ErrorRow row={props.row} />}>
-                  <NoteRow row={props.row} />
-                </Show>
-              }
-            >
-              <ResultRow row={props.row} repoPath={props.repoPath} />
+            <Show when={kind() === "note"} fallback={<ErrorRow row={props.row} />}>
+              <NoteRow row={props.row} expanded={props.expanded} onToggle={props.onToggle} />
             </Show>
           }
         >
@@ -318,9 +490,22 @@ function Row(props: { row: FeedRow; repoPath?: string }) {
   );
 }
 
+/**
+ * One tool call rendered as `▸ Read · /path/foo.ts          12ms`.
+ * Drops the rigid 12-char NAME_COL: glyph + name + " · " + detail
+ * flow inline; `extra` (duration, populated by the result event)
+ * sticks to the right with `justify-between`. Failed tools (failed
+ * flag set on the row) tint glyph + detail coral and drop the dim
+ * separator.
+ */
 function ToolRow(props: { row: FeedRow; repoPath?: string }) {
   const style = () => toolRowStyle(props.row.tool ?? "");
+  const failed = () => props.row.failed === true;
+  const glyphColor = () => (failed() ? PALETTE.failed : style().glyphColor);
+  const detailColor = () => (failed() ? PALETTE.failed : style().detailColor);
+  const glyph = () => (failed() ? "✗" : style().glyph);
   const nameAttr = () => {
+    if (failed()) return TextAttributes.NONE;
     const w = style().nameWeight;
     if (w === "bold") return TextAttributes.BOLD;
     if (w === "dim") return TextAttributes.DIM;
@@ -328,37 +513,52 @@ function ToolRow(props: { row: FeedRow; repoPath?: string }) {
   };
   const detail = () => prettifyDetail(props.row.tool, props.row.detail, props.repoPath);
   return (
-    <box flexDirection="row" width="100%">
-      <text
-        width={GLYPH_COL}
-        flexShrink={0}
-        fg={style().glyphColor}
-        wrapMode="none"
-        content={style().glyph}
-      />
-      <text
-        width={NAME_COL}
-        flexShrink={0}
-        fg={style().glyphColor}
-        attributes={nameAttr()}
-        wrapMode="none"
-        truncate
-        content={props.row.tool ?? ""}
-      />
-      <text
-        flexGrow={1}
-        flexShrink={1}
-        fg={style().detailColor}
-        wrapMode="word"
-        content={detail()}
-      />
+    <box flexDirection="row" width="100%" gap={1}>
+      <box flexDirection="row" flexShrink={1} flexGrow={1} gap={1}>
+        <text
+          width={GLYPH_COL}
+          flexShrink={0}
+          fg={glyphColor()}
+          wrapMode="none"
+          content={glyph()}
+        />
+        <text
+          flexShrink={0}
+          fg={glyphColor()}
+          attributes={nameAttr()}
+          wrapMode="none"
+          truncate
+          content={props.row.tool ?? ""}
+        />
+        <Show when={detail()}>
+          <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+          {/* wrapMode="none" + truncate keeps the OSC 8 link as one
+              continuous chunk (wrapping breaks the underline + click
+              target across lines). Detail is pre-ellipsized to the
+              basename so what gets shown is always the diagnostic
+              part of the path. */}
+          <text flexGrow={1} flexShrink={1} fg={detailColor()} wrapMode="none" truncate>
+            <Show when={linkUrl(props.row.tool, props.row.detail)} keyed fallback={detail()}>
+              {(href: string) => <a href={href}>{detail()}</a>}
+            </Show>
+          </text>
+        </Show>
+      </box>
+      <Show when={props.row.extra}>
+        <text
+          flexShrink={0}
+          fg={failed() ? PALETTE.failed : PALETTE.muted}
+          wrapMode="none"
+          content={props.row.extra ?? ""}
+        />
+      </Show>
     </box>
   );
 }
 
 /**
  * Edit / MultiEdit / NotebookEdit — render the regular tool row plus
- * a truncated unified diff underneath it (indented to the detail
+ * a truncated unified diff underneath it (indented to the glyph
  * column). The diff payload is built in `controller.pushEvent` via
  * `buildEditDiff` and passed through on `row.edit`.
  */
@@ -368,7 +568,7 @@ function EditRow(props: { row: FeedRow; repoPath?: string }) {
       <ToolRow row={props.row} repoPath={props.repoPath} />
       <Show when={props.row.edit} keyed>
         {(e: EditDiff) => (
-          <box flexDirection="column" width="100%" marginLeft={GLYPH_COL + NAME_COL}>
+          <box flexDirection="column" width="100%" marginLeft={GLYPH_COL + 1}>
             <diff
               diff={e.diff}
               view="unified"
@@ -394,27 +594,60 @@ function EditRow(props: { row: FeedRow; repoPath?: string }) {
   );
 }
 
-function ResultRow(props: { row: FeedRow; repoPath?: string }) {
-  const detail = () => {
-    const parts: string[] = [];
-    if (props.row.detail)
-      parts.push(prettifyDetail(props.row.tool, props.row.detail, props.repoPath));
-    if (props.row.extra) parts.push(props.row.extra);
-    return parts.join(" · ");
+/**
+ * Tool group — collapses 3+ adjacent Read/Glob/Grep calls under a
+ * single disclosure header. The header sits at the top in BOTH states
+ * (`▶ explored 5 files` collapsed, `▼ explored 5 files` expanded), so
+ * the click target doesn't move and you can re-collapse without
+ * scrolling back.
+ */
+function ToolGroupRow(props: {
+  group: { id: number; rows: readonly FeedRow[] };
+  repoPath?: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const fileCount = () => {
+    const seen = new Set<string>();
+    for (const r of props.group.rows) {
+      if (r.detail) seen.add(r.detail);
+    }
+    return seen.size || props.group.rows.length;
   };
   return (
-    <box flexDirection="row" width="100%">
-      <text width={GLYPH_COL} flexShrink={0} fg={PALETTE.done} wrapMode="none" content="✓" />
-      <text
-        width={NAME_COL}
-        flexShrink={0}
-        fg={PALETTE.muted}
-        attributes={TextAttributes.DIM}
-        wrapMode="none"
-        truncate
-        content={props.row.tool ?? ""}
+    <box flexDirection="column" width="100%">
+      <DisclosureRow
+        expanded={props.expanded}
+        label={`explored ${fileCount()} files`}
+        onToggle={props.onToggle}
       />
-      <text flexGrow={1} flexShrink={1} fg={PALETTE.hint} wrapMode="word" content={detail()} />
+      <Show when={props.expanded}>
+        <For each={props.group.rows}>
+          {(row) => <ToolRow row={row} repoPath={props.repoPath} />}
+        </For>
+      </Show>
+    </box>
+  );
+}
+
+/**
+ * Section disclosure: leading chunky triangle (`▶` collapsed / `▼`
+ * expanded) in the active accent colour. Lead position + bright tint
+ * + hover via mouse make it read clearly as "click to toggle".
+ */
+function DisclosureRow(props: { expanded: boolean; label: string; onToggle: () => void }) {
+  const glyph = () => (props.expanded ? "▼" : "▶");
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: <box> is an OpenTUI renderable, not a DOM element; ARIA roles don't apply
+    <box flexDirection="row" width="100%" gap={1} onMouseDown={props.onToggle}>
+      <text
+        width={GLYPH_COL}
+        flexShrink={0}
+        fg={PALETTE.accent}
+        wrapMode="none"
+        content={glyph()}
+      />
+      <text flexGrow={1} flexShrink={1} fg={PALETTE.accent} wrapMode="word" content={props.label} />
     </box>
   );
 }
@@ -423,19 +656,36 @@ function ResultRow(props: { row: FeedRow; repoPath?: string }) {
  * Agent prose. Renders the body via OpenTUI `<markdown>` so the
  * agent's `**bold**` / `- bullets` / `` `code` `` shows styled.
  * The `│` glyph + extra marginTop differentiate "agent talking"
- * from the dense tool-call rows above.
+ * from the dense tool-call rows above. When a note exceeds
+ * NOTE_COLLAPSE_THRESHOLD source lines, it collapses to the first 4
+ * lines + a clickable `… +N more lines  ⊕` footer; click or press
+ * `e` to expand.
  */
-function NoteRow(props: { row: FeedRow }) {
+function NoteRow(props: { row: FeedRow; expanded: boolean; onToggle: () => void }) {
+  const fullText = () => props.row.detail ?? "";
+  const lines = () => fullText().split("\n");
+  const isLong = () => lines().length > NOTE_COLLAPSE_THRESHOLD;
+  const collapsedText = () => lines().slice(0, 4).join("\n");
+  const hiddenCount = () => Math.max(0, lines().length - 4);
   return (
-    <box flexDirection="row" width="100%" marginTop={1}>
-      <text width={GLYPH_COL} flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="│" />
-      <box flexGrow={1} flexShrink={1}>
-        <markdown
-          content={props.row.detail ?? ""}
-          syntaxStyle={markdownSyntax()}
-          fg={PALETTE.text}
-        />
+    <box flexDirection="column" width="100%" marginTop={1}>
+      <box flexDirection="row" width="100%">
+        <text width={GLYPH_COL} flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="│" />
+        <box flexGrow={1} flexShrink={1}>
+          <markdown
+            content={isLong() && !props.expanded ? collapsedText() : fullText()}
+            syntaxStyle={markdownSyntax()}
+            fg={PALETTE.text}
+          />
+        </box>
       </box>
+      <Show when={isLong()}>
+        <DisclosureRow
+          expanded={props.expanded}
+          label={props.expanded ? "collapse" : `show ${hiddenCount()} more lines`}
+          onToggle={props.onToggle}
+        />
+      </Show>
     </box>
   );
 }
@@ -443,23 +693,19 @@ function NoteRow(props: { row: FeedRow }) {
 function ErrorRow(props: { row: FeedRow }) {
   const label = () => props.row.tool ?? "error";
   return (
-    <box flexDirection="row" width="100%">
+    <box flexDirection="row" width="100%" gap={1}>
       <text width={GLYPH_COL} flexShrink={0} fg={PALETTE.failed} wrapMode="none" content="✗" />
-      <text
-        width={NAME_COL}
-        flexShrink={0}
-        fg={PALETTE.failed}
-        wrapMode="none"
-        truncate
-        content={label()}
-      />
-      <text
-        flexGrow={1}
-        flexShrink={1}
-        fg={PALETTE.failed}
-        wrapMode="word"
-        content={props.row.detail ?? ""}
-      />
+      <text flexShrink={0} fg={PALETTE.failed} wrapMode="none" truncate content={label()} />
+      <Show when={props.row.detail}>
+        <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+        <text
+          flexGrow={1}
+          flexShrink={1}
+          fg={PALETTE.failed}
+          wrapMode="word"
+          content={props.row.detail ?? ""}
+        />
+      </Show>
     </box>
   );
 }
@@ -470,7 +716,7 @@ function ErrorRow(props: { row: FeedRow }) {
  * freeze) so each phase block has a consistent metadata footer —
  * borrowed from OpenCode's per-message signature pattern.
  */
-function PhaseFooter(props: { section: PhaseSection }) {
+function PhaseFooter(props: { section: PhaseSection; dim: boolean }) {
   const text = () => {
     const parts: string[] = [];
     if (props.section.durationMs !== undefined) {
@@ -498,9 +744,13 @@ function PhaseFooter(props: { section: PhaseSection }) {
     }
   };
   const color = () => {
-    if (props.section.status === "failed") return PALETTE.failed;
-    if (props.section.status === "done") return PALETTE.done;
-    return PALETTE.hint;
+    const base =
+      props.section.status === "failed"
+        ? PALETTE.failed
+        : props.section.status === "done"
+          ? PALETTE.done
+          : PALETTE.hint;
+    return props.dim ? mix(base, PALETTE.bg, 0.65) : base;
   };
   return (
     <box flexDirection="row" width="100%" marginTop={1}>
@@ -536,7 +786,11 @@ function GateCard(props: { ctx: GateContext; repoPath?: string }) {
       marginTop={1}
     >
       <Show when={props.ctx.summary}>
-        <markdown content={props.ctx.summary ?? ""} syntaxStyle={markdownSyntax()} />
+        {/* DIAGNOSTIC: temporarily plain <text> instead of <markdown>;
+            <markdown>'s text-buffer pipeline may be leaking OSC 8 state
+            and breaking hyperlinks elsewhere on screen when the gate
+            renders. See if links return with this swap. */}
+        <text fg={PALETTE.text} wrapMode="word" content={props.ctx.summary ?? ""} />
       </Show>
       <Show when={props.ctx.artefacts.length > 0}>
         <box width="100%" flexDirection="column" marginTop={1}>
@@ -550,13 +804,9 @@ function GateCard(props: { ctx: GateContext; repoPath?: string }) {
                   wrapMode="none"
                   content="•"
                 />
-                <text
-                  flexGrow={1}
-                  flexShrink={1}
-                  fg={PALETTE.text}
-                  wrapMode="word"
-                  content={shortenPath(a.path, props.repoPath)}
-                />
+                <text flexGrow={1} flexShrink={1} fg={PALETTE.text} wrapMode="none" truncate>
+                  <a href={fileUri(a.path)}>{ellipsizePath(shortenPath(a.path, props.repoPath))}</a>
+                </text>
               </box>
             )}
           </For>
@@ -589,6 +839,7 @@ function Footer(props: {
   hint: string;
   cols: number;
   now: number;
+  onJumpToPhase: (phaseId: string) => void;
 }) {
   const totals = createMemo(() => phaseTotals(props.phases));
   const showRight = () => props.cols >= 60;
@@ -622,6 +873,7 @@ function Footer(props: {
         paused={props.paused}
         hint={props.hint}
         showRight={showRight()}
+        onJumpToPhase={props.onJumpToPhase}
       />
     </box>
   );
@@ -658,10 +910,11 @@ function FooterBottomRow(props: {
   paused: PausedState | null;
   hint: string;
   showRight: boolean;
+  onJumpToPhase: (phaseId: string) => void;
 }) {
   return (
     <box flexDirection="row" width="100%" justifyContent="space-between" gap={2} height={1}>
-      <PhaseRail phases={props.phases} />
+      <PhaseRail phases={props.phases} onJumpToPhase={props.onJumpToPhase} />
       <Show when={props.showRight}>
         <KeyHint gate={props.gate} paused={props.paused} hint={props.hint} />
       </Show>
@@ -719,27 +972,49 @@ function KeyHint(props: { gate: boolean; paused: PausedState | null; hint: strin
 }
 
 /**
- * One-line phase chain. Shows progress through the workflow
- * (`◌ plan ▸ ⠋ build ▸ ◌ review`). Active phase uses an animated
- * spinner; others use a static glyph in their status colour.
+ * Workflow progress strip — `● plan ━━ ● build ━━ ○ review`. Filled
+ * dots for any non-pending phase coloured by status; open dots for
+ * pending. Connectors between phases take the prior phase's status
+ * colour, so the line "fills in" left-to-right as work flows
+ * through (sage when it completed, muted when it hasn't yet).
+ *
+ * No animated spinner here — color alone signals the active phase.
+ * The spinner lives in the active phase card's header so we don't
+ * have two moving things competing for attention.
  */
-function PhaseRail(props: { phases: readonly PhaseRow[] }) {
+function PhaseRail(props: {
+  phases: readonly PhaseRow[];
+  onJumpToPhase: (phaseId: string) => void;
+}) {
   return (
     <box flexDirection="row" flexShrink={1} height={1}>
       <For each={props.phases}>
         {(phase, i) => (
           <box flexDirection="row" flexShrink={1}>
-            <Show when={i() > 0}>
-              <text width={3} flexShrink={0} fg={PALETTE.muted} wrapMode="none" content=" ▸ " />
+            <Show when={i() > 0} keyed>
+              <PhaseConnector prior={props.phases[i() - 1]} />
             </Show>
-            <PhaseGlyph phase={phase} />
-            <text
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: <box> is an OpenTUI renderable, not a DOM element; ARIA roles don't apply */}
+            <box
+              flexDirection="row"
               flexShrink={1}
-              fg={phase.status === "pending" ? PALETTE.pending : PALETTE.text}
-              wrapMode="none"
-              truncate
-              content={` ${phase.id}`}
-            />
+              onMouseDown={() => props.onJumpToPhase(phase.id)}
+            >
+              <text
+                width={1}
+                flexShrink={0}
+                fg={statusColor(phase.status)}
+                wrapMode="none"
+                content={phase.status === "pending" ? "○" : "●"}
+              />
+              <text
+                flexShrink={1}
+                fg={phase.status === "pending" ? PALETTE.pending : PALETTE.text}
+                wrapMode="none"
+                truncate
+                content={` ${phase.id}`}
+              />
+            </box>
           </box>
         )}
       </For>
@@ -747,28 +1022,31 @@ function PhaseRail(props: { phases: readonly PhaseRow[] }) {
   );
 }
 
-function PhaseGlyph(props: { phase: PhaseRow }) {
-  return (
-    <Show
-      when={props.phase.status === "running"}
-      fallback={
-        <text
-          width={1}
-          flexShrink={0}
-          fg={statusColor(props.phase.status)}
-          wrapMode="none"
-          content={staticPhaseGlyph(props.phase.status)}
-        />
-      }
-    >
-      <box width={1} height={1} overflow="hidden">
-        <spinner name="dots" color={PALETTE.running} />
-      </box>
-    </Show>
-  );
+function PhaseConnector(props: { prior?: PhaseRow }) {
+  const color = () => {
+    const s = props.prior?.status;
+    if (s === "done") return PALETTE.done;
+    if (s === "failed") return PALETTE.failed;
+    return PALETTE.muted;
+  };
+  return <text flexShrink={0} fg={color()} wrapMode="none" content=" ━━ " />;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Build the OSC 8 link target for a tool row's detail, when applicable.
+ * - File tools (Read/Write/Edit/MultiEdit/NotebookEdit): wrap absolute
+ *   path in `file://` so cmd-click opens in the user's default handler.
+ * - WebFetch: detail is already a URL.
+ * - Everything else (Glob patterns, Bash commands, Skill names): no link.
+ */
+function linkUrl(tool: string | undefined, detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  if (isFileTool(tool)) return fileUri(detail);
+  if (tool === "WebFetch") return detail;
+  return undefined;
+}
 
 /**
  * For tools whose `detail` is a file path (Read/Write/Edit/Glob/etc.),
@@ -782,14 +1060,8 @@ function prettifyDetail(
 ): string {
   if (!detail) return "";
   if (!tool) return detail;
-  if (
-    tool === "Read" ||
-    tool === "Write" ||
-    tool === "Edit" ||
-    tool === "MultiEdit" ||
-    tool === "NotebookEdit"
-  ) {
-    return shortenPath(detail, repoPath);
+  if (isFileTool(tool)) {
+    return ellipsizePath(shortenPath(detail, repoPath));
   }
   return detail;
 }

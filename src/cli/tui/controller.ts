@@ -25,7 +25,14 @@ import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { GateContext, GateDecision } from "../../gates/types";
 import type { RunEvent, RunMeta } from "../../runtime/harness";
-import { ansiStyled, buildEditDiff, firstLine, formatDuration, summariseToolInput } from "./format";
+import {
+  ansiStyled,
+  buildEditDiff,
+  findCollapsibles,
+  firstLine,
+  formatDuration,
+  summariseToolInput,
+} from "./format";
 import { RunApp } from "./run-app";
 import { PALETTE } from "./theme";
 import type {
@@ -36,6 +43,7 @@ import type {
   PhaseSection,
   PhaseStatus,
   RunHeader,
+  ScrollLike,
 } from "./types";
 
 type RunStatus = RunMeta["status"];
@@ -48,8 +56,10 @@ export class OpenTuiRunController {
   private readonly hintSignal = createSignal("");
   private readonly toolMeta = new Map<
     string,
-    { name: string; preview?: string; startedAt: number; phaseId: string }
+    { name: string; preview?: string; startedAt: number; phaseId: string; rowId: number }
   >();
+  private readonly expandedSignal = createSignal<ReadonlySet<number>>(new Set());
+  private readonly collapsedPhasesSignal = createSignal<ReadonlySet<string>>(new Set());
 
   private readonly pausedSignal = createSignal<{ status: RunStatus } | null>(null);
 
@@ -73,6 +83,8 @@ export class OpenTuiRunController {
     const [hint] = this.hintSignal;
     const [header] = this.headerSignal;
     const [paused] = this.pausedSignal;
+    const [expanded] = this.expandedSignal;
+    const [collapsedPhases] = this.collapsedPhasesSignal;
     return {
       header,
       phases: () => phases.list,
@@ -80,9 +92,23 @@ export class OpenTuiRunController {
       gate,
       hint,
       paused,
+      expanded,
+      collapsedPhases,
       decideGate: (d) => this.decideGate(d),
       dismiss: () => this.dismiss(),
+      toggleExpanded: (id) => this.toggleExpanded(id),
+      collapseAll: () => this.collapseAll(),
+      togglePhaseCollapsed: (key) => this.togglePhaseCollapsed(key),
+      cycleNextCollapsed: (scroll) => this.cycleNextCollapsed(scroll),
     };
+  }
+
+  private togglePhaseCollapsed(sectionKey: string): void {
+    const [get, set] = this.collapsedPhasesSignal;
+    const next = new Set(get());
+    if (next.has(sectionKey)) next.delete(sectionKey);
+    else next.add(sectionKey);
+    set(next);
   }
 
   async mount(header: RunHeader, phaseIds: readonly string[] = []): Promise<void> {
@@ -196,55 +222,50 @@ export class OpenTuiRunController {
 
       case "agent.tool.use": {
         const preview = summariseToolInput(ev.name, ev.input);
-        this.toolMeta.set(ev.id, {
-          name: ev.name,
-          ...(preview ? { preview } : {}),
-          startedAt: Date.now(),
-          phaseId: ev.phaseId,
-        });
         const label = `${ev.name}${preview ? ` · ${preview}` : ""}`;
         this.setPhase(ev.phaseId, { activity: label });
         const edit =
           ev.name === "Edit" || ev.name === "MultiEdit" || ev.name === "NotebookEdit"
             ? buildEditDiff(ev.name, ev.input)
             : undefined;
-        if (edit) {
-          this.appendRow(ev.phaseId, {
-            kind: "edit",
-            tool: ev.name,
-            detail: edit.filePath,
-            edit,
-          });
-        } else {
-          this.appendRow(ev.phaseId, {
-            kind: "tool",
-            tool: ev.name,
-            ...(preview ? { detail: preview } : {}),
-          });
-        }
+        const rowId = edit
+          ? this.appendRow(ev.phaseId, {
+              kind: "edit",
+              tool: ev.name,
+              detail: edit.filePath,
+              edit,
+            })
+          : this.appendRow(ev.phaseId, {
+              kind: "tool",
+              tool: ev.name,
+              ...(preview ? { detail: preview } : {}),
+            });
+        this.toolMeta.set(ev.id, {
+          name: ev.name,
+          ...(preview ? { preview } : {}),
+          startedAt: Date.now(),
+          phaseId: ev.phaseId,
+          rowId,
+        });
         return;
       }
 
       case "agent.tool.result": {
         const meta = this.toolMeta.get(ev.id);
         if (!meta) return;
+        const elapsed = Date.now() - meta.startedAt;
+        // Mutate the originating tool row in place — adds duration on
+        // the right and (on failure) the failed flag + a reason note.
+        // Avoids stacking a separate ResultRow under every tool call.
         if (!ev.ok) {
-          const reason = ev.preview ? ` — ${firstLine(ev.preview)}` : "";
-          this.appendRow(meta.phaseId, {
-            kind: "error",
-            tool: meta.name,
-            detail: `${meta.preview ? `${meta.preview} · ` : ""}failed${reason}`,
+          const reason = ev.preview ? firstLine(ev.preview) : "failed";
+          this.mutateRow(meta.phaseId, meta.rowId, {
+            failed: true,
+            extra: `${formatDuration(elapsed)} · ${reason}`,
           });
-        } else if (Date.now() - meta.startedAt > SLOW_TOOL_MS) {
-          // Quick tools (Read/Grep) finish within a frame and would
-          // double up on the ▸ line; only confirm tools whose latency
-          // crosses the visibility threshold so the user knows they
-          // returned.
-          this.appendRow(meta.phaseId, {
-            kind: "result",
-            tool: meta.name,
-            ...(meta.preview ? { detail: meta.preview } : {}),
-            extra: formatDuration(Date.now() - meta.startedAt),
+        } else {
+          this.mutateRow(meta.phaseId, meta.rowId, {
+            extra: formatDuration(elapsed),
           });
         }
         return;
@@ -481,7 +502,7 @@ export class OpenTuiRunController {
     );
   }
 
-  private appendRow(phaseId: string, row: Omit<FeedRow, "id">): void {
+  private appendRow(phaseId: string, row: Omit<FeedRow, "id">): number {
     const id = this.nextRowId++;
     this.setSections(
       "list",
@@ -495,6 +516,61 @@ export class OpenTuiRunController {
         }
       }),
     );
+    return id;
+  }
+
+  /** Patch a row's mutable fields in place (extra, failed, etc.). The
+   * row's identity is `(phaseId, rowId)` — phaseId narrows the search
+   * to the matching section so we don't scan every section's rows. */
+  private mutateRow(phaseId: string, rowId: number, patch: Partial<FeedRow>): void {
+    this.setSections(
+      "list",
+      produce((list) => {
+        for (let i = list.length - 1; i >= 0; i--) {
+          const section = list[i];
+          if (!section || section.phaseId !== phaseId) continue;
+          const row = section.rows.find((r) => r.id === rowId);
+          if (row) Object.assign(row, patch);
+          return;
+        }
+      }),
+    );
+  }
+
+  private toggleExpanded(id: number): void {
+    const [get, set] = this.expandedSignal;
+    const next = new Set(get());
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    set(next);
+  }
+
+  private collapseAll(): void {
+    this.expandedSignal[1](new Set<number>());
+  }
+
+  /**
+   * Walk every phase's collapsibles in order and expand the first one
+   * not already expanded. Returns true if a row was expanded.
+   * Optionally scrolls the scrollbox so the new content is visible —
+   * we just jump to bottom for simplicity since notes/groups expand
+   * "downward" (showing more rows where their stub used to be).
+   */
+  private cycleNextCollapsed(scroll?: ScrollLike): boolean {
+    const [get, set] = this.expandedSignal;
+    const expanded = get();
+    for (const section of this.sectionsStore[0].list) {
+      for (const c of findCollapsibles(section.rows)) {
+        if (!expanded.has(c.id)) {
+          const next = new Set(expanded);
+          next.add(c.id);
+          set(next);
+          if (scroll) scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private appendNotes(phaseId: string, text: string): void {
@@ -505,8 +581,6 @@ export class OpenTuiRunController {
 }
 
 // ── Module helpers ────────────────────────────────────────────────────
-
-const SLOW_TOOL_MS = 1_000;
 
 function statusToGlyph(status: PhaseStatus): string {
   switch (status) {

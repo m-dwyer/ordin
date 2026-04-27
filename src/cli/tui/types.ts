@@ -53,6 +53,9 @@ export interface FeedRow {
   readonly detail?: string;
   readonly extra?: string;
   readonly edit?: EditDiff;
+  /** Set by `agent.tool.result` when the tool returned !ok. Drives a
+   * coral-tinted glyph + detail without changing kind. */
+  readonly failed?: boolean;
 }
 
 export interface PhaseSection {
@@ -74,6 +77,17 @@ export interface PausedState {
   status: "failed" | "halted" | "completed" | "aborted" | "running" | "pending" | "rejected";
 }
 
+/**
+ * Decides where `cycleNextCollapsed` jumps to. Just the methods the
+ * controller actually needs from the OpenTUI scrollbox — kept as a
+ * shape so types.ts doesn't pull in `@opentui/core` (its rule).
+ */
+export interface ScrollLike {
+  scrollTop: number;
+  scrollHeight: number;
+  scrollTo: (pos: { x: number; y: number }) => void;
+}
+
 export interface ControllerState {
   header: Accessor<RunHeader | null>;
   phases: () => readonly PhaseRow[];
@@ -81,6 +95,18 @@ export interface ControllerState {
   gate: Accessor<GateState | null>;
   hint: Accessor<string>;
   paused: Accessor<PausedState | null>;
+  /** Set of row ids (or group keys) currently expanded. Anything not
+   * in this set renders in its collapsed form. */
+  expanded: Accessor<ReadonlySet<number>>;
+  /** Set of phase section keys currently collapsed. Default: all
+   * sections are expanded; user click on a phase header collapses. */
+  collapsedPhases: Accessor<ReadonlySet<string>>;
   decideGate: (decision: GateDecision) => void;
   dismiss: () => void;
+  toggleExpanded: (id: number) => void;
+  collapseAll: () => void;
+  togglePhaseCollapsed: (sectionKey: string) => void;
+  /** Expand the next collapsible row in scroll order. Returns true if
+   * something was expanded; false if there were no collapsibles left. */
+  cycleNextCollapsed: (scroll?: ScrollLike) => boolean;
 }
