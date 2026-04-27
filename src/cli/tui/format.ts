@@ -1,4 +1,5 @@
 import type { CapturedFrame } from "@opentui/core";
+import { formatPatch, type StructuredPatchHunk, structuredPatch } from "diff";
 import { PALETTE } from "./theme";
 import type { EditDiff } from "./types";
 
@@ -104,13 +105,13 @@ const FILETYPE_BY_EXT: Record<string, string> = {
 };
 
 /**
- * Build a tiny unified-diff string for OpenTUI's `<diff>` from an
- * Edit / MultiEdit tool input. Each hunk is capped at `maxSide` rows
- * removed + `maxSide` rows added; if any hunk overflows, the result's
- * `truncated` flag is set so the renderer can show an overflow hint.
- *
- * Hunk headers stay placeholder (`@@ -1 +1 @@`) — `<diff>` parses
- * line prefixes (`-`/`+`/space) but doesn't validate the header.
+ * Build a unified-diff string for OpenTUI's `<diff>` from an Edit /
+ * MultiEdit / NotebookEdit tool input. Uses the `diff` package so the
+ * patch is always well-formed (correct hunk headers, line counts,
+ * starting positions). Each hunk is capped at `maxSide` removed +
+ * `maxSide` added lines so huge edits don't fill the screen; when any
+ * hunk is capped, the result's `truncated` flag tells the renderer to
+ * show an overflow hint.
  */
 export function buildEditDiff(name: string, input: unknown, maxSide = 3): EditDiff | undefined {
   if (!input || typeof input !== "object") return undefined;
@@ -118,40 +119,51 @@ export function buildEditDiff(name: string, input: unknown, maxSide = 3): EditDi
   const filePath = typeof rec["file_path"] === "string" ? rec["file_path"] : undefined;
   if (!filePath) return undefined;
 
-  type Hunk = { old_string: string; new_string: string };
-  const hunks: Hunk[] = [];
+  type RawEdit = { old_string: string; new_string: string };
+  const edits: RawEdit[] = [];
 
   if (name === "Edit" || name === "NotebookEdit") {
     const oldStr = typeof rec["old_string"] === "string" ? rec["old_string"] : "";
     const newStr = typeof rec["new_string"] === "string" ? rec["new_string"] : "";
     if (!oldStr && !newStr) return undefined;
-    hunks.push({ old_string: oldStr, new_string: newStr });
+    edits.push({ old_string: oldStr, new_string: newStr });
   } else if (name === "MultiEdit") {
-    const edits = Array.isArray(rec["edits"]) ? (rec["edits"] as unknown[]) : [];
-    for (const edit of edits) {
+    const list = Array.isArray(rec["edits"]) ? (rec["edits"] as unknown[]) : [];
+    for (const edit of list) {
       if (!edit || typeof edit !== "object") continue;
       const e = edit as Record<string, unknown>;
       const oldStr = typeof e["old_string"] === "string" ? e["old_string"] : "";
       const newStr = typeof e["new_string"] === "string" ? e["new_string"] : "";
-      if (oldStr || newStr) hunks.push({ old_string: oldStr, new_string: newStr });
+      if (oldStr || newStr) edits.push({ old_string: oldStr, new_string: newStr });
     }
-    if (hunks.length === 0) return undefined;
+    if (edits.length === 0) return undefined;
   } else {
     return undefined;
   }
 
   const base = filePath.split("/").pop() ?? filePath;
-  const out: string[] = [`--- a/${base}`, `+++ b/${base}`];
+  const hunks: StructuredPatchHunk[] = [];
   let truncated = false;
-  for (const hunk of hunks) {
-    const removed = hunk.old_string.split("\n");
-    const added = hunk.new_string.split("\n");
-    const removedShown = removed.slice(0, maxSide);
-    const addedShown = added.slice(0, maxSide);
-    if (removed.length > maxSide || added.length > maxSide) truncated = true;
-    out.push("@@ -1 +1 @@");
-    for (const line of removedShown) out.push(`-${line}`);
-    for (const line of addedShown) out.push(`+${line}`);
+  for (const edit of edits) {
+    // context: 0 keeps hunks tight to the actual changes (no
+    // surrounding context lines), since we're showing isolated edits
+    // not full file diffs.
+    const sub = structuredPatch(
+      base,
+      base,
+      edit.old_string,
+      edit.new_string,
+      undefined,
+      undefined,
+      {
+        context: 0,
+      },
+    );
+    for (const hunk of sub.hunks) {
+      const capped = capHunk(hunk, maxSide);
+      if (capped.truncated) truncated = true;
+      hunks.push(capped.hunk);
+    }
   }
 
   const ext = base.includes(".") ? (base.split(".").pop() ?? "").toLowerCase() : "";
@@ -159,9 +171,42 @@ export function buildEditDiff(name: string, input: unknown, maxSide = 3): EditDi
 
   return {
     filePath,
-    diff: out.join("\n"),
+    diff: formatPatch({
+      oldFileName: base,
+      newFileName: base,
+      oldHeader: undefined,
+      newHeader: undefined,
+      hunks,
+    }),
     ...(filetype ? { filetype } : {}),
     truncated,
+  };
+}
+
+function capHunk(
+  hunk: StructuredPatchHunk,
+  maxSide: number,
+): { hunk: StructuredPatchHunk; truncated: boolean } {
+  const removed: string[] = [];
+  const added: string[] = [];
+  const context: string[] = [];
+  for (const line of hunk.lines) {
+    if (line.startsWith("-")) removed.push(line);
+    else if (line.startsWith("+")) added.push(line);
+    else context.push(line);
+  }
+  const truncated = removed.length > maxSide || added.length > maxSide;
+  if (!truncated) return { hunk, truncated: false };
+  const cappedRemoved = removed.slice(0, maxSide);
+  const cappedAdded = added.slice(0, maxSide);
+  return {
+    hunk: {
+      ...hunk,
+      oldLines: cappedRemoved.length + context.length,
+      newLines: cappedAdded.length + context.length,
+      lines: [...context, ...cappedRemoved, ...cappedAdded],
+    },
+    truncated: true,
   };
 }
 

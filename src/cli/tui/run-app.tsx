@@ -174,12 +174,12 @@ function ScrollbackView(props: {
       verticalScrollbarOptions={{ visible: false }}
       horizontalScrollbarOptions={{ visible: false }}
     >
-      <box width="100%" flexDirection="column" gap={1}>
+      <box width="100%" flexDirection="column" gap={2}>
         <Show when={props.header} keyed>
           {(header: RunHeader) => <RunBanner header={header} />}
         </Show>
         <For each={props.sections}>
-          {(section) => <PhaseCard section={section} cols={props.cols} repoPath={repoPath()} />}
+          {(section) => <PhaseCard section={section} repoPath={repoPath()} />}
         </For>
       </box>
     </scrollbox>
@@ -187,91 +187,98 @@ function ScrollbackView(props: {
 }
 
 /**
- * A phase renders as a thin left-border `│` + a darker panel
- * background. No top/bottom/right border — borrowed from OpenCode's
- * message-panel style for compact visual hierarchy.
+ * A phase renders as a header label *above* a thin-left-border panel
+ * grouping the phase's tool activity. Pulling the header out of the
+ * panel chrome makes it visually distinct from the rows below — the
+ * header is the section label, the panel is the work.
  */
-function PhaseCard(props: { section: PhaseSection; cols: number; repoPath?: string }) {
+function PhaseCard(props: { section: PhaseSection; repoPath?: string }) {
   const color = () => statusColor(props.section.status);
-  const showSummary = () => props.section.status === "done" || props.section.status === "failed";
 
   return (
-    <box
-      width="100%"
-      flexDirection="column"
-      backgroundColor={PALETTE.panel}
-      border={["left"]}
-      borderColor={
-        props.section.status === "running" || props.section.status === "gate"
-          ? statusColor(props.section.status)
-          : PALETTE.borderStrong
-      }
-      paddingLeft={1}
-      paddingRight={1}
-      paddingTop={0}
-      paddingBottom={1}
-    >
-      <PhaseHeader section={props.section} cols={props.cols} color={color()} />
-      {/* Wrap the row stream in a concrete box so its position is
-          anchored even when rows arrive AFTER sibling Show conditions
-          have already mounted (otherwise rows append at the end of
-          the parent regardless of JSX order). */}
-      <box width="100%" flexDirection="column">
-        <For each={props.section.rows}>{(row) => <Row row={row} repoPath={props.repoPath} />}</For>
+    <box width="100%" flexDirection="column">
+      <PhaseHeader section={props.section} color={color()} />
+      <box
+        width="100%"
+        flexDirection="column"
+        backgroundColor={PALETTE.panelRaised}
+        border={["left"]}
+        borderColor={
+          props.section.status === "running" || props.section.status === "gate"
+            ? statusColor(props.section.status)
+            : PALETTE.borderStrong
+        }
+        paddingLeft={1}
+        paddingRight={1}
+        paddingTop={0}
+        paddingBottom={1}
+      >
+        {/* Wrap the row stream in a concrete box so its position is
+            anchored even when rows arrive AFTER sibling Show conditions
+            have already mounted (otherwise rows append at the end of
+            the parent regardless of JSX order). */}
+        <box width="100%" flexDirection="column">
+          <For each={props.section.rows}>
+            {(row) => <Row row={row} repoPath={props.repoPath} />}
+          </For>
+        </box>
+        <Show when={props.section.gate} keyed>
+          {(gate: GateState) => <GateCard ctx={gate.ctx} repoPath={props.repoPath} />}
+        </Show>
+        <Show when={props.section.status === "failed" && props.section.error}>
+          <text fg={PALETTE.failed} wrapMode="word" content={props.section.error ?? ""} />
+        </Show>
+        <PhaseFooter section={props.section} />
       </box>
-      <Show when={props.section.gate} keyed>
-        {(gate: GateState) => <GateCard ctx={gate.ctx} repoPath={props.repoPath} />}
-      </Show>
-      <Show when={showSummary()}>
-        <SummaryLine section={props.section} />
-      </Show>
-      <Show when={props.section.status === "failed" && props.section.error}>
-        <text fg={PALETTE.failed} wrapMode="word" content={props.section.error ?? ""} />
-      </Show>
     </box>
   );
 }
 
 /**
- * Header row for a phase card: animated spinner (when running) or
- * static status glyph (otherwise) + bold phase id with optional
- * model + iteration metadata. Replaces the `<box title>` string prop
- * approach so the running state can host a real `<spinner>`.
+ * Section label that sits ABOVE the phase panel. Layout: status glyph
+ * (or animated spinner for running) + bold phase id on the left;
+ * model + iteration on the right. Right side truncates first so the
+ * phase id is never lost at narrow widths.
  */
-function PhaseHeader(props: { section: PhaseSection; cols: number; color: string }) {
-  const text = () => {
+function PhaseHeader(props: { section: PhaseSection; color: string }) {
+  const left = () => {
     const id = props.section.phaseId;
     const iter = props.section.iteration > 1 ? ` · iter ${props.section.iteration}` : "";
-    if (props.cols < 80) return `${id}${iter}`;
-    const model = props.section.model ? ` · ${props.section.model}` : "";
-    return `${id}${model}${iter}`;
+    return `${id}${iter}`;
   };
   return (
-    <box flexDirection="row" width="100%" gap={1} height={1}>
-      <Show
-        when={props.section.status === "running"}
-        fallback={
-          <text
-            width={1}
-            flexShrink={0}
-            fg={props.color}
-            wrapMode="none"
-            content={staticPhaseGlyph(props.section.status)}
-          />
-        }
-      >
-        <box width={1} height={1} overflow="hidden">
-          <spinner name="dots" color={props.color} />
-        </box>
+    <box flexDirection="row" width="100%" gap={1} height={1} justifyContent="space-between">
+      <box flexDirection="row" gap={1} flexShrink={1}>
+        <Show
+          when={props.section.status === "running"}
+          fallback={
+            <text
+              width={1}
+              flexShrink={0}
+              fg={props.color}
+              wrapMode="none"
+              content={staticPhaseGlyph(props.section.status)}
+            />
+          }
+        >
+          <box width={1} height={1} overflow="hidden">
+            <spinner name="dots" color={props.color} />
+          </box>
+        </Show>
+        <text
+          flexShrink={1}
+          fg={props.color}
+          attributes={TextAttributes.BOLD}
+          wrapMode="none"
+          truncate
+          content={left()}
+        />
+      </box>
+      <Show when={props.section.model} keyed>
+        {(model: string) => (
+          <text flexShrink={1} fg={PALETTE.hint} wrapMode="none" truncate content={model} />
+        )}
       </Show>
-      <text
-        flexShrink={1}
-        fg={props.color}
-        attributes={TextAttributes.BOLD}
-        wrapMode="none"
-        truncate
-        content={text()}
-      />
     </box>
   );
 }
@@ -415,16 +422,19 @@ function ResultRow(props: { row: FeedRow; repoPath?: string }) {
 /**
  * Agent prose. Renders the body via OpenTUI `<markdown>` so the
  * agent's `**bold**` / `- bullets` / `` `code` `` shows styled.
- * The `│` glyph stays as the column marker so notes stay aligned
- * with tool rows; we drop the redundant "note" label since the
- * markdown's own visual structure does the heavy lifting.
+ * The `│` glyph + extra marginTop differentiate "agent talking"
+ * from the dense tool-call rows above.
  */
 function NoteRow(props: { row: FeedRow }) {
   return (
-    <box flexDirection="row" width="100%">
+    <box flexDirection="row" width="100%" marginTop={1}>
       <text width={GLYPH_COL} flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="│" />
       <box flexGrow={1} flexShrink={1}>
-        <markdown content={props.row.detail ?? ""} syntaxStyle={markdownSyntax()} />
+        <markdown
+          content={props.row.detail ?? ""}
+          syntaxStyle={markdownSyntax()}
+          fg={PALETTE.text}
+        />
       </box>
     </box>
   );
@@ -454,19 +464,44 @@ function ErrorRow(props: { row: FeedRow }) {
   );
 }
 
-function SummaryLine(props: { section: PhaseSection }) {
+/**
+ * Soft per-phase signature line at the bottom of every card. Always
+ * present (running phases get live token counts; finished phases
+ * freeze) so each phase block has a consistent metadata footer —
+ * borrowed from OpenCode's per-message signature pattern.
+ */
+function PhaseFooter(props: { section: PhaseSection }) {
   const text = () => {
     const parts: string[] = [];
-    if (props.section.durationMs !== undefined) parts.push(formatElapsed(props.section.durationMs));
+    if (props.section.durationMs !== undefined) {
+      parts.push(formatElapsed(props.section.durationMs));
+    } else if (props.section.startedAt !== undefined) {
+      parts.push(formatElapsed(Date.now() - props.section.startedAt));
+    }
     if (props.section.tokensIn !== undefined || props.section.tokensOut !== undefined) {
       parts.push(
-        `${(props.section.tokensIn ?? 0).toLocaleString()} in / ${(props.section.tokensOut ?? 0).toLocaleString()} out tok`,
+        `${(props.section.tokensIn ?? 0).toLocaleString()} in / ${(props.section.tokensOut ?? 0).toLocaleString()} out`,
       );
     }
     return parts.join(" · ");
   };
-  const glyph = () => (props.section.status === "failed" ? "✗" : "✓");
-  const color = () => (props.section.status === "failed" ? PALETTE.failed : PALETTE.done);
+  const glyph = () => {
+    switch (props.section.status) {
+      case "done":
+        return "✓";
+      case "failed":
+        return "✗";
+      case "gate":
+        return "◆";
+      default:
+        return "·";
+    }
+  };
+  const color = () => {
+    if (props.section.status === "failed") return PALETTE.failed;
+    if (props.section.status === "done") return PALETTE.done;
+    return PALETTE.hint;
+  };
   return (
     <box flexDirection="row" width="100%" marginTop={1}>
       <text width={GLYPH_COL} flexShrink={0} fg={color()} wrapMode="none" content={glyph()} />
