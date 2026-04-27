@@ -29,87 +29,29 @@ export function registerRuns(program: Command): void {
         return;
       }
 
-      printRunsTable(slice);
+      // TTY path: OpenTUI TextTableRenderable does the column fitting,
+      // proportional shrinking, and cell padding via Yoga — no
+      // hand-rolled width math. Non-TTY (piped to a file / grep / etc.)
+      // gets a minimal plain row print since the layout would just be
+      // ANSI noise in captured output.
+      if (process.stdout.isTTY) {
+        const { renderRunsTable } = await import("./tui/runs-table");
+        await renderRunsTable(slice);
+      } else {
+        printPlainRows(slice);
+      }
       printBlank();
       printRunsSummary(all);
     });
 }
 
-interface Column {
-  readonly key: string;
-  readonly label: string;
-  readonly align?: "left" | "right";
-  /** Cell value as plain text (used for width math). */
-  readonly value: (meta: RunMeta, now: number) => string;
-  /** Optional color for the cell — defaults to PALETTE.text. */
-  readonly color?: (meta: RunMeta) => string;
-}
-
-function printRunsTable(rows: readonly RunMeta[]): void {
+function printPlainRows(rows: readonly RunMeta[]): void {
   const now = Date.now();
-  const columns: readonly Column[] = [
-    {
-      key: "runId",
-      label: "RUN ID",
-      value: (m) => m.runId,
-      color: () => PALETTE.text,
-    },
-    {
-      key: "status",
-      label: "STATUS",
-      value: (m) => m.status,
-      color: (m) => colorForRunStatus(m.status),
-    },
-    {
-      key: "tier",
-      label: "TIER",
-      value: (m) => m.tier,
-      color: () => PALETTE.hint,
-    },
-    {
-      key: "elapsed",
-      label: "ELAPSED",
-      align: "right",
-      value: (m) =>
-        m.completedAt
-          ? timeBetween(m.startedAt, m.completedAt)
-          : timeBetween(m.startedAt, new Date(now).toISOString()),
-      color: () => PALETTE.hint,
-    },
-    {
-      key: "task",
-      label: "TASK",
-      value: (m) => m.task,
-      color: () => PALETTE.toolPreview,
-    },
-  ];
-
-  // Reserve space for the task column to truncate gracefully on
-  // narrow terminals. Other columns are sized to their max content.
-  const cols = process.stdout.columns ?? 120;
-  const fixedWidths = columns
-    .slice(0, -1)
-    .map((c) => Math.max(c.label.length, ...rows.map((r) => c.value(r, now).length)));
-  const padding = 2 * (columns.length - 1);
-  const remaining = Math.max(20, cols - fixedWidths.reduce((a, b) => a + b, 0) - padding);
-  const widths = [...fixedWidths, remaining];
-
-  // Header row
-  const header = columns
-    .map((c, i) => styled(padCell(c.label, widths[i] ?? 0, c.align ?? "left"), PALETTE.hint))
-    .join("  ");
-  writeLine(header);
-  writeLine(styled("─".repeat(visibleWidthRow(widths, padding)), PALETTE.border));
-
-  // Body rows
   for (const meta of rows) {
-    const cells = columns.map((c, i) => {
-      const raw = c.value(meta, now);
-      const width = widths[i] ?? 0;
-      const truncated = c.key === "task" ? truncate(raw, width) : raw;
-      return styled(padCell(truncated, width, c.align ?? "left"), c.color?.(meta) ?? PALETTE.text);
-    });
-    writeLine(cells.join("  "));
+    const elapsed = meta.completedAt
+      ? timeBetween(meta.startedAt, meta.completedAt)
+      : timeBetween(meta.startedAt, new Date(now).toISOString());
+    writeLine(`${meta.runId}\t${meta.status}\t${meta.tier}\t${elapsed}\t${meta.task}`);
   }
 }
 
@@ -133,20 +75,6 @@ function printEmptyState(): void {
   writeLine(
     `    ${styled('ordin run --tier S "describe what you want to build"', PALETTE.toolName)}`,
   );
-}
-
-function visibleWidthRow(widths: readonly number[], padding: number): number {
-  return widths.reduce((a, b) => a + b, 0) + padding;
-}
-
-function padCell(text: string, width: number, align: "left" | "right"): string {
-  if (text.length >= width) return text;
-  return align === "right" ? text.padStart(width) : text.padEnd(width);
-}
-
-function truncate(text: string, width: number): string {
-  if (text.length <= width) return text;
-  return `${text.slice(0, Math.max(1, width - 1))}…`;
 }
 
 function timeBetween(startIso: string, endIso: string): string {
