@@ -2,11 +2,18 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Command } from "commander";
 import { createMcpServer } from "../mcp/server";
 import { RunService } from "../run-service/run-service";
+import { styled } from "./tui/print";
+import { PALETTE } from "./tui/theme";
 
 /**
  * `ordin mcp` — boots the MCP server over stdio. MCP hosts (Claude
  * Code, Cursor, Claude Desktop, …) launch this as a subprocess and
  * speak JSON-RPC over stdin/stdout, so logging must go to stderr only.
+ *
+ * Lifecycle messages are written through `styled()` instead of the
+ * `print.ts` helpers because those write to stdout, which would
+ * corrupt the JSON-RPC stream. `styled()` returns ANSI-or-plain based
+ * on the same NO_COLOR / TTY rules as the rest of the CLI.
  */
 export function registerMcp(program: Command): void {
   program
@@ -22,7 +29,7 @@ export function registerMcp(program: Command): void {
       });
 
       const stop = async (signal: NodeJS.Signals) => {
-        process.stderr.write(`\nordin mcp · received ${signal}, closing\n`);
+        process.stderr.write(`\n${styled(`mcp · received ${signal}, closing`, PALETTE.hint)}\n`);
         await server.close();
         process.exit(0);
       };
@@ -30,7 +37,9 @@ export function registerMcp(program: Command): void {
       process.once("SIGTERM", stop);
 
       await server.connect(transport);
-      process.stderr.write("ordin mcp · connected (stdio)\n");
+      process.stderr.write(
+        `${styled("✓", PALETTE.done)}  ${styled("mcp connected (stdio)", PALETTE.text)}\n`,
+      );
 
       await closed;
     });

@@ -1,6 +1,8 @@
 import type { Command } from "commander";
 import { createHttpApp, isLoopbackHost, startHttpServer, tokenFromEnv } from "../http";
 import { RunService } from "../run-service/run-service";
+import { printBlank, printHint, printKeyValue, printSectionDivider, styled } from "./tui/print";
+import { PALETTE } from "./tui/theme";
 
 /**
  * `ordin serve` — boots the HTTP transport over `RunService`. Runs in the
@@ -21,8 +23,8 @@ export function registerServe(program: Command): void {
       const token = tokenFromEnv();
       if (!token && !isLoopbackHost(opts.host)) {
         process.stderr.write(
-          `ordin serve · refusing to bind to non-loopback host ${opts.host} without ORDIN_API_TOKEN.\n` +
-            "  Set ORDIN_API_TOKEN to enable bearer-token auth, or bind to 127.0.0.1.\n",
+          `${styled("✗", PALETTE.failed)} serve refused to bind to non-loopback host ${opts.host} without ORDIN_API_TOKEN.\n` +
+            `  ${styled("Set ORDIN_API_TOKEN to enable bearer-token auth, or bind to 127.0.0.1.", PALETTE.hint)}\n`,
         );
         process.exit(2);
       }
@@ -33,15 +35,18 @@ export function registerServe(program: Command): void {
 
       const url = `http://${server.hostname}:${server.port}`;
       const authMode = token ? "bearer-token (ORDIN_API_TOKEN)" : "none (loopback only)";
-      process.stdout.write(`ordin serve · ${url}\n`);
-      process.stdout.write(`  auth     ${authMode}\n`);
-      process.stdout.write(`  docs     ${url}/docs\n`);
-      process.stdout.write(`  openapi  ${url}/openapi.json\n`);
-      process.stdout.write(`  runs     POST ${url}/runs\n`);
-      process.stdout.write(`  events   GET  ${url}/runs/:runId/events\n`);
+      printSectionDivider(`serve ─ ${url}`);
+      printBlank();
+      printKeyValue("auth:", authMode);
+      printKeyValue("docs:", `${url}/docs`);
+      printKeyValue("openapi:", `${url}/openapi.json`);
+      printKeyValue("runs:", `POST ${url}/runs`);
+      printKeyValue("events:", `GET ${url}/runs/:runId/events`);
+      printBlank();
 
       const stop = async (signal: NodeJS.Signals) => {
-        process.stdout.write(`\nordin serve · received ${signal}, closing\n`);
+        printBlank();
+        printHint(`serve · received ${signal}, closing`);
         await server.close();
         process.exit(0);
       };

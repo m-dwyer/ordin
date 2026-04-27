@@ -78,15 +78,35 @@ export function startTracing(): void {
   process.once("SIGINT", flush);
 }
 
+/**
+ * Bound the OTel shutdown — `sdk.shutdown()` flushes pending spans
+ * over HTTP, and an unreachable Langfuse host (network blip, dev
+ * machine off-VPN, wrong env vars) can leave the request hanging
+ * until the OTLP exporter's own timeout fires (often 30s+). That
+ * blocks every CLI exit until the user gives up. Cap the wait at
+ * 2s; if the flush hasn't completed by then, drop the spans with a
+ * warning and let the process exit cleanly.
+ */
+const SHUTDOWN_TIMEOUT_MS = 2_000;
+
 export async function shutdownTracing(): Promise<void> {
   if (!sdk) return;
   if (!shutdownPromise) {
-    shutdownPromise = sdk
-      .shutdown()
-      .catch((err) => {
-        console.warn(
-          `[tracing] shutdown failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    const flush = sdk.shutdown().catch((err) => {
+      console.warn(
+        `[tracing] shutdown failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    const timeout = new Promise<"timeout">((resolve) => {
+      setTimeout(() => resolve("timeout"), SHUTDOWN_TIMEOUT_MS).unref();
+    });
+    shutdownPromise = Promise.race([flush.then(() => "ok" as const), timeout])
+      .then((outcome) => {
+        if (outcome === "timeout") {
+          console.warn(
+            `[tracing] shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms — dropping pending spans`,
+          );
+        }
       })
       .finally(() => {
         sdk = undefined;

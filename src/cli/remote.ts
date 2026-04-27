@@ -2,6 +2,8 @@ import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { Command } from "commander";
 import { type GateDecision, OrdinHttpClient, type StartRunRequest } from "../client/http-client";
 import { parseTier, slugify } from "./common";
+import { styled, writeLine } from "./tui/print";
+import { PALETTE } from "./tui/theme";
 
 /**
  * `ordin remote ...` — talks to a running `ordin serve` over HTTP. Same
@@ -34,7 +36,9 @@ export function registerRemote(program: Command): void {
       const client = makeClient(cmd);
       const input = buildStartRequest(taskParts, opts);
       const { runId } = await client.startRun(input);
-      process.stdout.write(`${runId}\n`);
+      // styled() gates ANSI on stdout.isTTY, so command substitution
+      // (`RUN_ID=$(ordin remote start ...)`) still captures plain text.
+      writeLine(styled(runId, PALETTE.text));
     });
 
   remote
@@ -88,7 +92,9 @@ export function registerRemote(program: Command): void {
         const payload = parseDecision(decision, reason);
         const { resolved } = await client.resolveGate(runId, phaseId, payload);
         if (!resolved) {
-          process.stderr.write(`No pending gate for ${runId}/${phaseId}\n`);
+          process.stderr.write(
+            `${styled("✗", PALETTE.failed)}  ${styled(`No pending gate for ${runId}/${phaseId}`, PALETTE.text)}\n`,
+          );
           process.exitCode = 1;
         }
       },
