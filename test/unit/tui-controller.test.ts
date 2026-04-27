@@ -87,7 +87,7 @@ describe("OpenTuiRunController", () => {
       ]);
     });
 
-    it("phase.runtime.completed marks the phase done with duration + token totals", () => {
+    it("phase.runtime.completed records totals while the phase awaits post-runtime checks", () => {
       const controller = new OpenTuiRunController();
       controller.pushEvent(phaseStarted("plan"));
       controller.pushEvent({
@@ -96,7 +96,27 @@ describe("OpenTuiRunController", () => {
         phaseId: "plan",
         iteration: 1,
         durationMs: 32_400,
-        tokens: { input: 100, output: 1840, total: 1940 },
+        tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
+      });
+
+      const phase = controller.state().phases()[0];
+      expect(phase?.status).toBe("running");
+      expect(phase?.activity).toBe("validating outputs");
+      expect(phase?.durationMs).toBe(32_400);
+      expect(phase?.tokensIn).toBe(100);
+      expect(phase?.tokensOut).toBe(1840);
+    });
+
+    it("phase.completed marks the phase done with duration + token totals", () => {
+      const controller = new OpenTuiRunController();
+      controller.pushEvent(phaseStarted("plan"));
+      controller.pushEvent({
+        type: "phase.completed",
+        runId: RUN_ID,
+        phaseId: "plan",
+        iteration: 1,
+        durationMs: 32_400,
+        tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
       });
 
       const phase = controller.state().phases()[0];
@@ -240,7 +260,7 @@ describe("OpenTuiRunController", () => {
     // either flow through other channels (gate.requested via requestGate)
     // or aren't user-facing (run.started, agent.tokens). Asserting they
     // don't mutate state guards against accidental wiring.
-    it("ignores run.started / run.completed / agent.tokens / phase.completed", () => {
+    it("ignores run.started / run.completed / agent.tokens", () => {
       const controller = new OpenTuiRunController();
       controller.pushEvent(phaseStarted("plan"));
       const before = controller.state().phases()[0];
@@ -251,15 +271,7 @@ describe("OpenTuiRunController", () => {
         type: "agent.tokens",
         runId: RUN_ID,
         phaseId: "plan",
-        usage: { input: 10, output: 20, total: 30 },
-      });
-      controller.pushEvent({
-        type: "phase.completed",
-        runId: RUN_ID,
-        phaseId: "plan",
-        iteration: 1,
-        durationMs: 1000,
-        tokens: { input: 0, output: 0, total: 0 },
+        usage: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0 },
       });
 
       expect(controller.state().phases()[0]).toEqual(before);

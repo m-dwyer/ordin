@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { createHttpApp, isLoopbackHost, startHttpServer, tokenFromEnv } from "../http";
 import { RunService } from "../run-service/run-service";
-import { printBlank, printHint, printKeyValue, printSectionDivider, styled } from "./tui/print";
+import { printBlank, printCommandHeader, printHint, printKeyValue, styled } from "./tui/print";
 import { PALETTE } from "./tui/theme";
 
 /**
@@ -35,7 +35,7 @@ export function registerServe(program: Command): void {
 
       const url = `http://${server.hostname}:${server.port}`;
       const authMode = token ? "bearer-token (ORDIN_API_TOKEN)" : "none (loopback only)";
-      printSectionDivider(`serve ─ ${url}`);
+      printCommandHeader("serve", url);
       printBlank();
       printKeyValue("auth:", authMode);
       printKeyValue("docs:", `${url}/docs`);

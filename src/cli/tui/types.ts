@@ -23,14 +23,24 @@ export interface PhaseRow {
   durationMs?: number;
   tokensIn?: number;
   tokensOut?: number;
+  error?: string;
 }
 
 export interface GateState {
   ctx: GateContext;
 }
 
+export interface FeedItem {
+  id: number;
+  glyph: string;
+  label: string;
+  detail?: string;
+  color: string;
+}
+
 export interface ControllerState {
   phases: () => readonly PhaseRow[];
+  feed: () => readonly FeedItem[];
   gate: Accessor<GateState | null>;
   hint: Accessor<string>;
   decideGate: (decision: GateDecision) => void;

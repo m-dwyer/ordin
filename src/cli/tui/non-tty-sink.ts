@@ -12,6 +12,7 @@ import type { Phase } from "../../domain/workflow";
 import { gateResolverFor } from "../../gates/resolver";
 import type { Gate, GateContext, GateDecision, GatePrompter } from "../../gates/types";
 import type { RunEvent } from "../../runtime/harness";
+import { firstLine, formatDuration, summariseToolInput } from "./format";
 
 export interface NonTtySession {
   readonly onEvent: (event: RunEvent) => void;
@@ -97,46 +98,4 @@ class NonInteractiveGatePrompter implements GatePrompter {
         "and decide gates over the wire with `ordin remote decide`.",
     );
   }
-}
-
-function summariseToolInput(name: string, input: unknown): string | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const rec = input as Record<string, unknown>;
-  const str = (key: string): string | undefined => {
-    const v = rec[key];
-    return typeof v === "string" ? v : undefined;
-  };
-  switch (name) {
-    case "Read":
-    case "Write":
-    case "Edit":
-    case "NotebookEdit":
-      return str("file_path");
-    case "Bash": {
-      const cmd = str("command");
-      return cmd ? firstLine(cmd) : undefined;
-    }
-    case "Grep":
-    case "Glob":
-      return str("pattern");
-    case "Skill":
-      return str("skill");
-    case "WebFetch":
-      return str("url");
-    default: {
-      const json = JSON.stringify(input);
-      return json.length > 80 ? `${json.slice(0, 77)}...` : json;
-    }
-  }
-}
-
-function firstLine(s: string): string {
-  const line = s.split("\n", 1)[0] ?? "";
-  return line.length > 120 ? `${line.slice(0, 117)}...` : line;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60_000).toFixed(1)}m`;
 }
