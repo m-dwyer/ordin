@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import { ordin } from "./common";
+import { colorForRunStatus, printHint, styled, writeLine } from "./tui/print";
+import { PALETTE } from "./tui/theme";
 
 export function registerRuns(program: Command): void {
   program
@@ -11,15 +13,26 @@ export function registerRuns(program: Command): void {
       const all = await runtime.listRuns();
       const slice = all.slice(0, opts.limit);
       if (slice.length === 0) {
-        process.stdout.write("No runs yet.\n");
+        printHint("No runs yet.");
         return;
       }
+      const now = Date.now();
       for (const meta of slice) {
+        // Show elapsed-since-start for in-flight runs so the duration
+        // column carries information even before completion. The
+        // status column already says "running" — repeating it here is
+        // noise.
         const duration = meta.completedAt
           ? timeBetween(meta.startedAt, meta.completedAt)
-          : "running";
-        process.stdout.write(
-          `${meta.runId}  ${meta.status.padEnd(9)}  tier=${meta.tier}  ${duration}  ${meta.task}\n`,
+          : timeBetween(meta.startedAt, new Date(now).toISOString());
+        writeLine(
+          [
+            styled(meta.runId, PALETTE.text),
+            styled(meta.status.padEnd(9), colorForRunStatus(meta.status)),
+            styled(`tier=${meta.tier}`, PALETTE.hint),
+            styled(duration.padEnd(7), PALETTE.hint),
+            styled(meta.task, PALETTE.toolPreview),
+          ].join("  "),
         );
       }
     });

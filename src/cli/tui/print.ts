@@ -57,8 +57,13 @@ export function printSubheader(label: string): void {
   process.stdout.write(`  ${fg(PALETTE.toolName)}▸ ${label}${RESET}\n`);
 }
 
-/** A `key:   value` row inside a section, with the key dimmed. */
-export function printKeyValue(key: string, value: string, keyWidth = 9): void {
+/**
+ * A `key:   value` row inside a section, with the key dimmed.
+ * `keyWidth` is the column the value starts at — must exceed the
+ * longest key in the group, otherwise long keys collapse against the
+ * value with no space.
+ */
+export function printKeyValue(key: string, value: string, keyWidth = 11): void {
   const paddedKey = key.padEnd(keyWidth);
   process.stdout.write(
     `  ${fg(PALETTE.hint)}${paddedKey}${RESET}${fg(PALETTE.text)}${value}${RESET}\n`,
@@ -80,4 +85,52 @@ export function printBlank(): void {
 /** Single-line note in muted hint color. */
 export function printHint(text: string): void {
   process.stdout.write(`${fg(PALETTE.hint)}${text}${RESET}\n`);
+}
+
+/**
+ * ✓/✗ status row used by `doctor`. Glyph and label colored by outcome,
+ * optional detail in muted hint.
+ */
+export function printStatusLine(ok: boolean, label: string, detail?: string): void {
+  const glyph = ok ? "✓" : "✗";
+  const color = ok ? PALETTE.done : PALETTE.failed;
+  const tail = detail ? `${fg(PALETTE.hint)}  — ${detail}${RESET}` : "";
+  process.stdout.write(
+    `${fg(color)}${glyph}${RESET}  ${fg(PALETTE.text)}${label}${RESET}${tail}\n`,
+  );
+}
+
+/**
+ * Color a run-meta status string the same way the run UI does.
+ * `halted` maps to gate-orange because it always means "human paused
+ * the run at a gate" — same semantic as the live gate panel, so it
+ * reads as "needs attention" rather than blending into metadata.
+ * Unknown states render in PALETTE.hint as a safe fallback.
+ */
+export function colorForRunStatus(status: string): string {
+  switch (status) {
+    case "completed":
+      return PALETTE.done;
+    case "failed":
+    case "aborted":
+    case "rejected":
+      return PALETTE.failed;
+    case "running":
+      return PALETTE.running;
+    case "pending":
+      return PALETTE.pending;
+    case "halted":
+      return PALETTE.gate;
+    default:
+      return PALETTE.hint;
+  }
+}
+
+/** Concatenate a styled segment without writing — composer for table rows. */
+export function styled(text: string, hex: string): string {
+  return `${fg(hex)}${text}${RESET}`;
+}
+
+export function writeLine(text: string): void {
+  process.stdout.write(`${text}\n`);
 }

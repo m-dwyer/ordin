@@ -87,7 +87,7 @@ describe("OpenTuiRunController", () => {
       ]);
     });
 
-    it("phase.runtime.completed marks the phase done with duration + output tokens", () => {
+    it("phase.runtime.completed marks the phase done with duration + token totals", () => {
       const controller = new OpenTuiRunController();
       controller.pushEvent(phaseStarted("plan"));
       controller.pushEvent({
@@ -103,6 +103,7 @@ describe("OpenTuiRunController", () => {
       expect(phase?.status).toBe("done");
       expect(phase?.activity).toBeUndefined();
       expect(phase?.durationMs).toBe(32_400);
+      expect(phase?.tokensIn).toBe(100);
       expect(phase?.tokensOut).toBe(1840);
     });
 

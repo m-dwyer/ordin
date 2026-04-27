@@ -21,6 +21,7 @@ export interface PhaseRow {
   iteration: number;
   activity?: string;
   durationMs?: number;
+  tokensIn?: number;
   tokensOut?: number;
 }
 

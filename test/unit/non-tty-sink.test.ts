@@ -128,10 +128,7 @@ describe("nonTtyRunSession", () => {
       ok: false,
       preview: "exited with code 1",
     });
-    expect(lines()).toEqual([
-      "  ▸ Bash · exit 1",
-      "  ✗ Bash · exit 1 failed — exited with code 1",
-    ]);
+    expect(lines()).toEqual(["  ▸ Bash · exit 1", "  ✗ Bash · exit 1 failed — exited with code 1"]);
   });
 
   it("agent.tool.result is silent when ok=true (use line already covers it)", () => {

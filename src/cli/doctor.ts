@@ -1,10 +1,35 @@
-import { execFile } from "node:child_process";
-import { stat } from "node:fs/promises";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { Command } from "commander";
 import { ordin } from "./common";
+import { printStatusLine } from "./tui/print";
 
-const execFileAsync = promisify(execFile);
+/**
+ * Run `claude` with stdin explicitly closed. The promisified
+ * `execFile` keeps stdin as an open pipe — when two `claude`
+ * subprocesses share the same parent, the second one can wedge
+ * waiting on something stdin-shaped. Closing stdin via
+ * `stdio: ['ignore', ...]` mirrors a shell-launched invocation.
+ */
+function runClaude(args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("claude", [...args], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`claude ${args.join(" ")} exited ${code}: ${stderr.trim()}`));
+    });
+  });
+}
 
 /**
  * Health check — catches the common Stage 1 failure modes before a run:
@@ -29,8 +54,7 @@ export function registerDoctor(program: Command): void {
       const results = await Promise.all(checks);
       let failures = 0;
       for (const { label, ok, detail } of results) {
-        const status = ok ? "✓" : "✗";
-        process.stdout.write(`${status}  ${label}${detail ? `  — ${detail}` : ""}\n`);
+        printStatusLine(ok, label, detail);
         if (!ok) failures += 1;
       }
       if (failures > 0) process.exitCode = 1;
@@ -63,7 +87,7 @@ async function checkBun(): Promise<DoctorResult> {
 
 async function checkClaudeBinary(): Promise<DoctorResult> {
   try {
-    const { stdout } = await execFileAsync("claude", ["--version"]);
+    const { stdout } = await runClaude(["--version"]);
     return { label: "claude binary", ok: true, detail: stdout.trim().split("\n")[0] };
   } catch (err) {
     return {
@@ -87,16 +111,33 @@ async function checkOrdinFiles(): Promise<DoctorResult> {
 }
 
 async function checkPluginManifest(): Promise<DoctorResult> {
-  const root = ordin().paths().root;
+  // Don't shell out to `claude plugin validate` here — older claude
+  // builds don't have the subcommand and treat it as a one-shot prompt,
+  // and resolving `claude` via spawn can land on a different binary
+  // than the shell's PATH (mise/asdf shims). Reading + parsing the
+  // manifest directly is faster, deterministic, and catches the only
+  // failure modes that matter at doctor time: missing file, invalid
+  // JSON, missing required `name` field.
+  const manifestPath = join(ordin().paths().root, ".claude-plugin", "plugin.json");
   try {
-    const { stdout } = await execFileAsync("claude", ["plugin", "validate", root]);
-    const summary = stdout.trim().split("\n").slice(-1)[0] ?? "";
-    return { label: "plugin manifest", ok: true, detail: summary.replace(/^[✔✓]\s*/, "") };
+    const raw = await readFile(manifestPath, "utf8");
+    const parsed = JSON.parse(raw) as { name?: unknown };
+    if (typeof parsed.name !== "string" || parsed.name.length === 0) {
+      return {
+        label: "plugin manifest",
+        ok: false,
+        detail: `${manifestPath} missing required "name" field`,
+      };
+    }
+    return { label: "plugin manifest", ok: true, detail: parsed.name };
   } catch (err) {
     return {
       label: "plugin manifest",
       ok: false,
-      detail: (err as Error).message.split("\n")[0],
+      detail:
+        err instanceof SyntaxError
+          ? `${manifestPath} is not valid JSON`
+          : `cannot read ${manifestPath}: ${(err as Error).message}`,
     };
   }
 }

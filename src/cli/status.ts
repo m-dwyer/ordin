@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import { ordin } from "./common";
+import { colorForRunStatus, printHint, styled, writeLine } from "./tui/print";
+import { PALETTE } from "./tui/theme";
 
 /**
  * Phase 1 `status` is a simple read of the most recent run's meta.json.
@@ -13,14 +15,30 @@ export function registerStatus(program: Command): void {
       const runtime = ordin();
       const [latest] = await runtime.listRuns();
       if (!latest) {
-        process.stdout.write("No runs yet.\n");
+        printHint("No runs yet.");
         return;
       }
-      process.stdout.write(`${latest.runId} — ${latest.status}\n`);
+      writeLine(
+        `${styled(latest.runId, PALETTE.text)} ${styled("—", PALETTE.hint)} ${styled(latest.status, colorForRunStatus(latest.status))}`,
+      );
       for (const phase of latest.phases) {
         const gate = phase.gateDecision ?? "-";
-        process.stdout.write(
-          `  ${phase.phaseId.padEnd(8)}  ${phase.status.padEnd(10)}  gate=${gate}\n`,
+        const gateColor =
+          phase.gateDecision === "approved"
+            ? PALETTE.done
+            : phase.gateDecision === "rejected"
+              ? PALETTE.failed
+              : PALETTE.hint;
+        writeLine(
+          [
+            "  ",
+            styled(phase.phaseId.padEnd(8), PALETTE.text),
+            "  ",
+            styled(phase.status.padEnd(10), colorForRunStatus(phase.status)),
+            "  ",
+            styled("gate=", PALETTE.hint),
+            styled(gate, gateColor),
+          ].join(""),
         );
       }
     });

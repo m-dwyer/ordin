@@ -14,12 +14,10 @@
  * status list and gate prompt live in the footer panel.
  */
 import {
-  ASCIIFontRenderable,
   BoxRenderable,
   CliRenderEvents,
   type CliRenderer,
   createCliRenderer,
-  measureText,
   TextRenderable,
 } from "@opentui/core";
 import { render } from "@opentui/solid";
@@ -37,7 +35,10 @@ export class OpenTuiRunController {
   private readonly phasesStore = createStore<{ list: PhaseRow[] }>({ list: [] });
   private readonly gateSignal = createSignal<GateState | null>(null);
   private readonly hintSignal = createSignal("");
-  private readonly toolMeta = new Map<string, { name: string; preview?: string }>();
+  private readonly toolMeta = new Map<
+    string,
+    { name: string; preview?: string; startedAt: number }
+  >();
 
   private renderer?: CliRenderer;
   private pendingGate: ((d: GateDecision) => void) | null = null;
@@ -79,8 +80,7 @@ export class OpenTuiRunController {
       this.renderer.screenMode = "main-screen";
     });
 
-    writeBanner(this.renderer);
-    writeHeaderLine(this.renderer, header);
+    writeBannerHeader(this.renderer, header);
     writeScrollbackLine(this.renderer, "", PALETTE.text);
 
     // render() returns Promise<void>; the Solid tree's lifetime is tied
@@ -122,6 +122,7 @@ export class OpenTuiRunController {
           status: "done",
           activity: undefined,
           durationMs: ev.durationMs,
+          tokensIn: ev.tokens.input,
           tokensOut: ev.tokens.output,
         });
         this.scrollback(
@@ -141,31 +142,50 @@ export class OpenTuiRunController {
 
       case "agent.text": {
         const text = ev.text.trim();
-        if (text) this.scrollback(`  ${text}`, PALETTE.text);
+        if (!text) return;
+        // Prose gets a left gutter so model speech is visually distinct
+        // from `▸ tool` and `✓ tool` lines that share the same indent.
+        for (const line of text.split("\n")) {
+          this.scrollback(`  │ ${line}`, PALETTE.text);
+        }
         return;
       }
 
       case "agent.tool.use": {
         const preview = summariseToolInput(ev.name, ev.input);
-        this.toolMeta.set(ev.id, { name: ev.name, ...(preview ? { preview } : {}) });
+        this.toolMeta.set(ev.id, {
+          name: ev.name,
+          ...(preview ? { preview } : {}),
+          startedAt: Date.now(),
+        });
         const label = `${ev.name}${preview ? ` · ${preview}` : ""}`;
         this.setPhase(ev.phaseId, { activity: label });
         this.scrollback(`  ▸ ${label}`, PALETTE.toolName);
         return;
       }
 
-      case "agent.tool.result":
+      case "agent.tool.result": {
+        const meta = this.toolMeta.get(ev.id);
+        const label = meta ? `${meta.name}${meta.preview ? ` · ${meta.preview}` : ""}` : ev.id;
         if (!ev.ok) {
-          const meta = this.toolMeta.get(ev.id);
-          const label = meta ? `${meta.name}${meta.preview ? ` · ${meta.preview}` : ""}` : ev.id;
           const reason = ev.preview ? ` — ${firstLine(ev.preview)}` : "";
           this.scrollback(`  ✗ ${label} failed${reason}`, PALETTE.failed);
+        } else if (meta && Date.now() - meta.startedAt > SLOW_TOOL_MS) {
+          // Quick tools (Read/Grep) finish within a frame and would
+          // double up on the ▸ line; only confirm tools whose latency
+          // crosses the visibility threshold so the user knows they
+          // returned.
+          this.scrollback(
+            `  ✓ ${label} · ${formatDuration(Date.now() - meta.startedAt)}`,
+            PALETTE.done,
+          );
         }
         // Don't reset activity here — for fast tools (Read/Grep) the
         // result lands within a frame of the use, and flashing back to
         // "thinking…" makes tool names unreadable. The next
         // agent.thinking event resets it explicitly.
         return;
+      }
 
       case "agent.error":
         this.scrollback(`  ✗ ${ev.message.trim()}`, PALETTE.failed);
@@ -257,66 +277,68 @@ export class OpenTuiRunController {
 
 // ── Module helpers ────────────────────────────────────────────────────
 
+const SLOW_TOOL_MS = 1_000;
+
 const GRADIENT = ["#7AB8FF", "#A28BFF", "#D77CC8"] as const;
 
 /**
- * Per-letter gradient banner. ASCIIFontRenderable's `color` array is
- * indexed by `<cN>` segment tags baked into the font's glyph definitions,
- * not by user text — so a real horizontal gradient needs one renderable
- * per letter laid out in a flex row, with colors interpolated across
- * the gradient stops.
+ * One-line gradient banner + run header. The big block-font banner
+ * rendered on every `ordin run` invocation costs ~7 vertical lines of
+ * scrollback; this compact form keeps the brand identity (per-letter
+ * gradient on `ordin`) while leaving room for the actual transcript
+ * above the footer.
+ *
+ * Layout: a horizontal flex row of one TextRenderable per gradient
+ * letter, then a single muted TextRenderable for the run metadata.
+ * The dry-run path keeps the full ASCII banner via preview.tsx — that
+ * output is one-shot and gets the brand moment instead.
  */
-function writeBanner(renderer: CliRenderer): void {
+function writeBannerHeader(renderer: CliRenderer, header: RunHeader): void {
   const word = "ordin";
-  const font = "block" as const;
-  const gap = 1;
-  const stops = [...GRADIENT];
   const letters = word.split("");
+  const stops = [...GRADIENT];
   const palette = letters.map((_, i) =>
     interpolateStops(stops, letters.length <= 1 ? 0 : i / (letters.length - 1)),
   );
-  const measured = letters.map((ch) => measureText({ text: ch, font }));
-  const totalWidth = measured.reduce((sum, m, i) => sum + m.width + (i > 0 ? gap : 0), 0);
-  const totalHeight = measured.reduce((max, m) => Math.max(max, m.height), 0);
+  const meta = ` · ${header.task} · tier ${header.tier}`;
+  const totalWidth = letters.length + meta.length;
 
   renderer.writeToScrollback((ctx) => {
-    const banner = new BoxRenderable(ctx.renderContext, {
-      id: "ordin-banner",
-      position: "absolute",
-      left: 0,
-      top: 0,
-      width: totalWidth,
-      height: totalHeight,
+    const row = new BoxRenderable(ctx.renderContext, {
+      id: "ordin-banner-row",
       flexDirection: "row",
-      gap,
+      width: Math.max(totalWidth, ctx.width),
+      height: 1,
       backgroundColor: "transparent",
     });
     for (const [i, ch] of letters.entries()) {
-      const letter = new ASCIIFontRenderable(ctx.renderContext, {
-        id: `ordin-banner-${i}`,
-        text: ch,
-        font,
-        color: palette[i],
-        backgroundColor: "transparent",
-      });
-      banner.add(letter);
+      row.add(
+        new TextRenderable(ctx.renderContext, {
+          id: `ordin-banner-${i}`,
+          content: ch,
+          width: 1,
+          height: 1,
+          fg: palette[i],
+        }),
+      );
     }
+    row.add(
+      new TextRenderable(ctx.renderContext, {
+        id: "ordin-banner-meta",
+        content: meta,
+        width: meta.length,
+        height: 1,
+        fg: PALETTE.hint,
+      }),
+    );
     return {
-      root: banner,
-      width: totalWidth,
-      height: totalHeight,
-      startOnNewLine: false,
+      root: row,
+      width: ctx.width,
+      height: 1,
+      startOnNewLine: true,
       trailingNewline: true,
     };
   });
-}
-
-function writeHeaderLine(renderer: CliRenderer, header: RunHeader): void {
-  writeScrollbackLine(
-    renderer,
-    `  run · ${header.task} · ${header.slug} · tier=${header.tier}`,
-    PALETTE.hint,
-  );
 }
 
 function writeScrollbackLine(renderer: CliRenderer, text: string, fg: string): void {
