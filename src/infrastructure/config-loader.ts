@@ -25,6 +25,7 @@ export class HarnessConfigLoader {
       result.data.default_runtime,
       result.data.default_model,
       result.data.allowed_tools,
+      result.data.sandbox,
       result.data.runtimes,
       result.data.tiers,
     );

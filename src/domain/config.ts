@@ -59,11 +59,21 @@ export type TiersRaw = z.infer<typeof TiersSchema>;
 export const RuntimesConfigSchema = z.record(z.string(), z.unknown()).default({});
 export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
 
+/**
+ * Sandbox mode. v1 ships `passthrough` (no isolation, default — ADR-007)
+ * and `seatbelt` (macOS kernel-enforced — ADR-001 + ADR-014). Linux,
+ * Docker, and Windows variants are deferred to v2 behind the same
+ * `Sandbox` interface.
+ */
+export const SandboxModeSchema = z.enum(["passthrough", "seatbelt"]);
+export type SandboxMode = z.infer<typeof SandboxModeSchema>;
+
 export const HarnessConfigSchema = z.object({
   run_store: RunStoreSchema.default(DEFAULT_RUN_STORE),
   default_runtime: z.string().default("ai-sdk"),
   default_model: z.string().min(1).default("qwen3-8b"),
   allowed_tools: z.array(z.string()).default([]),
+  sandbox: SandboxModeSchema.default("passthrough"),
   runtimes: RuntimesConfigSchema,
   tiers: TiersSchema,
 });
@@ -74,6 +84,7 @@ export class HarnessConfig {
     readonly defaultRuntime: string,
     readonly defaultModel: string,
     readonly allowedTools: readonly string[],
+    readonly sandbox: SandboxMode,
     readonly runtimes: RuntimesConfigRaw,
     readonly tiers: TiersRaw,
   ) {}
@@ -93,5 +104,9 @@ export class HarnessConfig {
 
   runStoreDir(): string {
     return this.runStore.base_dir;
+  }
+
+  sandboxMode(): SandboxMode {
+    return this.sandbox;
   }
 }

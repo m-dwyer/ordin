@@ -18,6 +18,11 @@ default_runtime: ai-sdk
 default_model: qwen3-8b
 allowed_tools: []
 
+# Sandbox mode for `ordin run`. `passthrough` = no isolation (current
+# default; ADR-007). `seatbelt` = macOS kernel-enforced via sandbox-exec
+# (ADR-014). Override per-run with `--sandbox <mode>`.
+sandbox: passthrough
+
 # Per-runtime configs. Keys here match the `runtime:` field in
 # workflows/<name>.yaml phases. Schemas validated by each runtime.
 runtimes:
