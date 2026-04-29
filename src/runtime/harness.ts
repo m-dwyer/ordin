@@ -28,8 +28,12 @@ import { MastraEngine } from "../orchestrator/mastra";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
 import { AiSdkRuntime } from "../runtimes/ai-sdk";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
+import { ScriptedRuntime } from "../runtimes/scripted";
 import type { AgentRuntime } from "../runtimes/types";
+import { type SandboxMode, selectSandbox } from "../sandbox";
+import type { Sandbox } from "../sandbox/types";
 
+export type { SandboxMode } from "../domain/config";
 export type { PhasePreview } from "../domain/phase-preview";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
@@ -71,6 +75,24 @@ export interface HarnessRuntimeOptions {
    * flows always supply their own resolver explicitly.
    */
   readonly gateForKind?: (kind: Phase["gate"]) => Gate;
+  /**
+   * Direct override — programmatic callers (tests, eval suite) inject
+   * a `Sandbox` instance to bypass mode resolution. Highest priority.
+   */
+  readonly sandbox?: Sandbox;
+  /**
+   * Sandbox mode override — typically the CLI's `--sandbox` flag.
+   * Beats the config file's `sandbox:` field. Lower priority than
+   * `sandbox` (which is a fully-resolved instance).
+   */
+  readonly sandboxMode?: SandboxMode;
+  /**
+   * Path to a YAML plan file for `ScriptedRuntime`. Wins over the
+   * `runtimes.scripted.script_path` config value and the auto-detected
+   * `scripts/<workflow>.yaml` convention. Typically set by the CLI's
+   * `--script <path>` flag.
+   */
+  readonly scriptPath?: string;
 }
 
 export interface StartRunInput {
@@ -112,6 +134,9 @@ export class HarnessRuntime {
   private readonly runtimesOverride?: ReadonlyMap<string, AgentRuntime>;
   private readonly gateResolver: (kind: Phase["gate"]) => Gate;
   private readonly engines: EngineRegistry;
+  private readonly sandboxOverride?: Sandbox;
+  private readonly sandboxModeOverride?: SandboxMode;
+  private readonly scriptPathOverride?: string;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
     startTracing();
@@ -121,10 +146,19 @@ export class HarnessRuntime {
     this.runtimesOverride = opts.runtimes;
     this.gateResolver = opts.gateForKind ?? defaultGateResolver;
     this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
+    this.sandboxOverride = opts.sandbox;
+    this.sandboxModeOverride = opts.sandboxMode;
+    this.scriptPathOverride = opts.scriptPath;
   }
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
+    const sandbox = this.resolveSandbox(state.config.sandboxMode());
+    await sandbox.enterIfNeeded({
+      workspaceRoot,
+      runStoreDir: state.config.runStoreDir(),
+      harnessRoot: this.root,
+    });
     const runInput: EngineRunInput = {
       task: input.task,
       slug,
@@ -171,6 +205,45 @@ export class HarnessRuntime {
   async workflowDefinition(): Promise<WorkflowManifest> {
     const { workflow } = await this.load();
     return workflow;
+  }
+
+  /**
+   * Configured sandbox mode (after applying the resolution order:
+   * `sandboxMode` constructor override > config file). Used by the
+   * doctor command for diagnostic reporting.
+   */
+  async sandboxMode(): Promise<SandboxMode> {
+    if (this.sandboxModeOverride) return this.sandboxModeOverride;
+    const { config } = await this.load();
+    return config.sandboxMode();
+  }
+
+  /**
+   * Resolve workspace and re-exec under the sandbox if needed. CLIs
+   * MUST call this *before* any terminal / UI initialisation — when
+   * a re-exec happens, `execve` replaces the outer process and any
+   * raw-mode / alt-screen / mouse-tracking state leaks into the
+   * terminal because the renderer never gets to clean up.
+   *
+   * Cheap on the inner (post-reexec) invocation: `shouldReexec`
+   * returns false and the call resolves immediately. Cheap on
+   * passthrough: `enterIfNeeded` is a no-op. Only the outer-with-
+   * seatbelt case actually re-execs (and never returns).
+   *
+   * `startRun` calls `enterIfNeeded` again as a backstop so
+   * programmatic callers (tests, eval suite, RunService) that skip
+   * this method still get correct behaviour.
+   */
+  async prepareSandbox(input: StartRunInput): Promise<void> {
+    const state = await this.load();
+    requireSlug(input.slug);
+    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
+    const sandbox = this.resolveSandbox(state.config.sandboxMode());
+    await sandbox.enterIfNeeded({
+      workspaceRoot,
+      runStoreDir: state.config.runStoreDir(),
+      harnessRoot: this.root,
+    });
   }
 
   /** Paths ordin knows about — useful for the CLI `doctor` command. */
@@ -235,6 +308,16 @@ export class HarnessRuntime {
     return workflow;
   }
 
+  /**
+   * Resolution order: explicit `Sandbox` instance > `sandboxMode`
+   * override (typically the CLI flag) > config file's `sandbox:` field.
+   * Defer resolution until run time so config has been loaded.
+   */
+  private resolveSandbox(configMode: SandboxMode): Sandbox {
+    if (this.sandboxOverride) return this.sandboxOverride;
+    return selectSandbox(this.sandboxModeOverride ?? configMode);
+  }
+
   private engineServices(state: LoadedState): EngineServices {
     return {
       config: state.config,
@@ -279,6 +362,15 @@ export class HarnessRuntime {
             // per-invocation means zero pollution of ~/.claude/.
             pluginDirs: [this.root],
             runsDirFallback: config.runStoreDir(),
+          }),
+        ],
+        [
+          "scripted",
+          ScriptedRuntime.fromConfig(config.runtimeConfig("scripted"), {
+            workflowName: this.workflowName,
+            harnessRoot: this.root,
+            runsDirFallback: config.runStoreDir(),
+            ...(this.scriptPathOverride ? { scriptPath: this.scriptPathOverride } : {}),
           }),
         ],
       ])

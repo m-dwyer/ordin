@@ -17,6 +17,7 @@ const config = new HarnessConfig(
   "default-runtime",
   "default-model",
   [],
+  "passthrough",
   {},
   { S: {}, M: {}, L: {} },
 );
