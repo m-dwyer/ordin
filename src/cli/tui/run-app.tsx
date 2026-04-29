@@ -558,23 +558,44 @@ function ToolRow(props: { row: FeedRow; repoPath?: string }) {
           />
         </Show>
       </box>
-      {/* Tool result preview — first line of stdout / returned value,
-          dim, indented to align with the detail column. Phase 5b
-          minimum-visibility implementation; richer expand/collapse is
-          queued for a later iteration. */}
+      {/* Tool result preview — multi-line, dim, indented to align with
+          the detail column. We split on `\n`, render the first
+          RESULT_PREVIEW_LINES via OpenTUI text rows (each truncates
+          natively if it overflows the viewport width), and emit a
+          muted "(+N more)" trailer when output ran long. The runtime-
+          side preview builders (ai-sdk, scripted) already cap total
+          length, so this is purely a layout concern. */}
       <Show when={props.row.result}>
-        <box flexDirection="row" width="100%" marginLeft={GLYPH_COL + 1}>
-          <text
-            flexShrink={1}
-            fg={PALETTE.muted}
-            wrapMode="none"
-            truncate
-            content={props.row.result ?? ""}
-          />
+        <box flexDirection="column" width="100%" marginLeft={GLYPH_COL + 1}>
+          <For each={visibleResultLines(props.row.result ?? "")}>
+            {(line) => (
+              <text flexShrink={1} fg={PALETTE.muted} wrapMode="none" truncate content={line} />
+            )}
+          </For>
+          <Show when={hiddenResultLineCount(props.row.result ?? "") > 0}>
+            <text
+              flexShrink={1}
+              fg={PALETTE.muted}
+              wrapMode="none"
+              truncate
+              content={`(+${hiddenResultLineCount(props.row.result ?? "")} more)`}
+            />
+          </Show>
         </box>
       </Show>
     </box>
   );
+}
+
+const RESULT_PREVIEW_LINES = 5;
+
+function visibleResultLines(result: string): readonly string[] {
+  return result.replace(/\s+$/, "").split("\n").slice(0, RESULT_PREVIEW_LINES);
+}
+
+function hiddenResultLineCount(result: string): number {
+  const total = result.replace(/\s+$/, "").split("\n").length;
+  return Math.max(0, total - RESULT_PREVIEW_LINES);
 }
 
 /**

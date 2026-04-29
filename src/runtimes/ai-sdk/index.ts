@@ -187,7 +187,7 @@ export class AiSdkRuntime implements AgentRuntime {
       emit({ type: "tool.use", id: call.toolCallId, name: call.toolName, input: call.input });
     }
     for (const result of step.toolResults) {
-      const preview = typeof result.output === "string" ? previewLines(result.output) : undefined;
+      const preview = typeof result.output === "string" ? result.output : undefined;
       emit({
         type: "tool.result",
         id: result.toolCallId,
@@ -207,7 +207,7 @@ export class AiSdkRuntime implements AgentRuntime {
         type: "tool.result",
         id: part.toolCallId,
         ok: false,
-        preview: previewLines(message),
+        preview: message,
       });
     }
 
@@ -226,9 +226,4 @@ export class AiSdkRuntime implements AgentRuntime {
       emit({ type: "tokens", usage: { ...tokens } });
     }
   }
-}
-
-function previewLines(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length <= 160 ? trimmed : `${trimmed.slice(0, 160)}…`;
 }
