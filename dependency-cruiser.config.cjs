@@ -73,6 +73,16 @@ module.exports = {
       to: { path: "^src/(runtimes|orchestrator)/" },
     },
     {
+      name: "sandbox-is-leaf",
+      severity: "error",
+      comment:
+        "Sandbox is a self-contained isolation primitive. It is consumed by the harness and CLI; it must not depend on other ordin layers.",
+      from: { path: "^src/sandbox" },
+      to: {
+        path: "^src/(domain|orchestrator|runtimes|gates|cli|infrastructure|runtime|run-service|observability)/",
+      },
+    },
+    {
       name: "no-orphans",
       severity: "warn",
       from: {
