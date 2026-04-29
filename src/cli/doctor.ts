@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { resolveClaudeBin } from "../runtime/harness";
+import { selectSandbox } from "../sandbox";
 import { ordin } from "./common";
 import { printBlank, printCommandHeader, styled, writeLine } from "./tui/print";
 import { PALETTE } from "./tui/theme";
@@ -62,6 +63,10 @@ export function registerDoctor(program: Command): void {
         {
           title: "Files",
           checks: () => [checkOrdinFiles(), checkPluginManifest()],
+        },
+        {
+          title: "Sandbox",
+          checks: () => [checkSandboxMode(), checkSandboxReadiness()],
         },
       ];
 
@@ -167,6 +172,34 @@ async function checkOrdinFiles(): Promise<DoctorResult> {
     }
   }
   return { label: "ordin files", ok: true };
+}
+
+async function checkSandboxMode(): Promise<DoctorResult> {
+  try {
+    const mode = await ordin().sandboxMode();
+    return { label: "sandbox mode", ok: true, detail: mode };
+  } catch (err) {
+    return { label: "sandbox mode", ok: false, detail: (err as Error).message };
+  }
+}
+
+async function checkSandboxReadiness(): Promise<DoctorResult> {
+  let mode: string;
+  try {
+    mode = await ordin().sandboxMode();
+  } catch (err) {
+    return { label: "sandbox readiness", ok: false, detail: (err as Error).message };
+  }
+  const sandbox = selectSandbox(mode as Parameters<typeof selectSandbox>[0]);
+  const readiness = await sandbox.readiness();
+  if (readiness.ok) {
+    return { label: "sandbox readiness", ok: true, detail: `${mode} ready` };
+  }
+  return {
+    label: "sandbox readiness",
+    ok: false,
+    detail: readiness.reasons.join("; "),
+  };
 }
 
 async function checkPluginManifest(): Promise<DoctorResult> {

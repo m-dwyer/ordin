@@ -1,5 +1,11 @@
 import { InvalidArgumentError } from "commander";
-import { HarnessRuntime, type RunEvent, type RunMeta } from "../runtime/harness";
+import {
+  HarnessRuntime,
+  type RunEvent,
+  type RunMeta,
+  type SandboxMode,
+  type StartRunInput,
+} from "../runtime/harness";
 import type { RunHeader } from "./tui/types";
 
 export function parseTier(value: string): "S" | "M" | "L" {
@@ -7,8 +13,15 @@ export function parseTier(value: string): "S" | "M" | "L" {
   throw new InvalidArgumentError("Tier must be S, M, or L");
 }
 
+export function parseSandboxMode(value: string): SandboxMode {
+  if (value === "passthrough" || value === "seatbelt") return value;
+  throw new InvalidArgumentError("Sandbox mode must be passthrough or seatbelt");
+}
+
 export interface OrdinCliOptions {
   readonly workflow?: string;
+  readonly sandboxMode?: SandboxMode;
+  readonly scriptPath?: string;
 }
 
 /**
@@ -24,6 +37,8 @@ export interface OrdinCliOptions {
 export function ordin(opts: OrdinCliOptions = {}): HarnessRuntime {
   return new HarnessRuntime({
     ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+    ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
   });
 }
 
@@ -54,27 +69,49 @@ export interface OrdinRunSession {
  */
 export async function ordinRunSession(opts: {
   readonly workflow?: string;
+  readonly sandboxMode?: SandboxMode;
+  readonly scriptPath?: string;
+  /**
+   * Run input — passed through so we can call `prepareSandbox` BEFORE
+   * any TUI work. Re-exec under sandbox-exec replaces the outer
+   * process; if the renderer has already initialised raw-mode / mouse
+   * tracking / alt-screen, those sequences leak to stdout because the
+   * dying outer process can't clean up.
+   */
+  readonly runInput?: StartRunInput;
   readonly header: RunHeader;
 }): Promise<OrdinRunSession> {
   if (process.stdout.isTTY === true) {
+    const runtime = new HarnessRuntime({
+      ...(opts.workflow ? { workflow: opts.workflow } : {}),
+      ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+      ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
+      // gateForKind set after sandbox prepare — we need the controller
+      // first, but the controller mount must happen post-reexec.
+    });
+    if (opts.runInput) await runtime.prepareSandbox(opts.runInput);
+    // Past this line we're either passthrough or post-reexec. Safe to
+    // touch the terminal.
     const { OpenTuiRunController } = await import("./tui/controller");
     const { openTuiGateResolver } = await import("./gate-prompters/opentui");
     const controller = new OpenTuiRunController();
-    const runtime = new HarnessRuntime({
+    const runtimeWithGates = new HarnessRuntime({
       ...(opts.workflow ? { workflow: opts.workflow } : {}),
+      ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+      ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
       gateForKind: openTuiGateResolver(controller),
     });
     // Pre-populate the footer's phase list so all phases show up as
     // `pending` from the first frame, instead of appearing one-by-one
     // as `phase.started` events arrive. workflowDefinition() just
     // loads the YAML — cheap, no composition.
-    const manifest = await runtime.workflowDefinition();
+    const manifest = await runtimeWithGates.workflowDefinition();
     await controller.mount(
       opts.header,
       manifest.phases.map((p) => p.id),
     );
     return {
-      runtime,
+      runtime: runtimeWithGates,
       onEvent: (ev) => controller.pushEvent(ev),
       finish: (summary) => controller.finish(summary),
       dispose: async () => {
@@ -87,11 +124,19 @@ export async function ordinRunSession(opts: {
     };
   }
 
+  const baseRuntime = new HarnessRuntime({
+    ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+    ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
+  });
+  if (opts.runInput) await baseRuntime.prepareSandbox(opts.runInput);
   const { nonTtyRunSession } = await import("./tui/non-tty-sink");
   const session = nonTtyRunSession();
   return {
     runtime: new HarnessRuntime({
       ...(opts.workflow ? { workflow: opts.workflow } : {}),
+      ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+      ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
       gateForKind: session.gateForKind,
     }),
     onEvent: session.onEvent,

@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { Command } from "commander";
-import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
-import { ordin, ordinRunSession, parseTier, slugify } from "./common";
+import type { HarnessRuntime, PhasePreview, SandboxMode } from "../runtime/harness";
+import { ordin, ordinRunSession, parseSandboxMode, parseTier, slugify } from "./common";
 import { renderDryRun } from "./tui/dry-run";
 
 export interface RunCommandDeps {
@@ -36,6 +36,8 @@ interface RunCommandOpts {
   readonly only?: string;
   readonly from?: string;
   readonly dryRun?: boolean;
+  readonly sandbox?: SandboxMode;
+  readonly script?: string;
 }
 
 /**
@@ -55,6 +57,15 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
     .option("--only <phase>", "Run only this phase id")
     .option("--from <phase>", "Start at this phase id and run the remaining workflow")
     .option("--dry-run", "Print each phase's composed prompt without invoking any runtime")
+    .option(
+      "--sandbox <mode>",
+      "Sandbox mode: passthrough (no isolation) or seatbelt (macOS kernel-enforced)",
+      parseSandboxMode,
+    )
+    .option(
+      "--script <path>",
+      "Path to a YAML plan for ScriptedRuntime (deterministic test runs without an LLM)",
+    )
     .action(async (taskParts: string[], opts: RunCommandOpts) => {
       const input = buildRunInput(taskParts, opts);
 
@@ -67,6 +78,9 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
 
       const session = await (deps.createSession ?? ordinRunSession)({
         workflow: opts.workflow,
+        ...(opts.sandbox ? { sandboxMode: opts.sandbox } : {}),
+        ...(opts.script ? { scriptPath: opts.script } : {}),
+        runInput: input,
         header: {
           task: input.task,
           slug: input.slug,
