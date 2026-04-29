@@ -268,6 +268,12 @@ export class OpenTuiRunController {
         } else {
           this.mutateRow(meta.phaseId, meta.rowId, {
             extra: formatDuration(elapsed),
+            // First-line truncation keeps the row quiet for short
+            // outputs (`echo ok` → "ok") and gives a useful glance
+            // at long ones (`ls -la` → first listing line). Phase 5b
+            // ships this as minimum visibility; richer expand/collapse
+            // is queued as a follow-up.
+            ...(ev.preview ? { result: firstLine(ev.preview) } : {}),
           });
         }
         return;
@@ -323,13 +329,13 @@ export class OpenTuiRunController {
     };
     const [, setHint] = this.hintSignal;
     setHint("");
-    // Failed/halted runs deserve a moment with the failure visible —
-    // tearing down the alt-screen would throw the user back to a bare
-    // shell with only the post-dispose summary left. Park the UI in
-    // a paused state and wait for the user to dismiss.
-    if (summary.status === "failed" || summary.status === "halted") {
-      this.pausedSignal[1]({ status: summary.status });
-    }
+    // Pause the UI on every terminal status so the user can review
+    // final state (artefacts, tool sequence, token usage, failure
+    // context) before being thrown back to the shell. The alt-screen
+    // TUI is a takeover UX — exiting it should be a deliberate
+    // keypress, not silent teardown. Press `q` (handled in <RunApp>)
+    // to dismiss.
+    this.pausedSignal[1]({ status: summary.status });
   }
 
   /**

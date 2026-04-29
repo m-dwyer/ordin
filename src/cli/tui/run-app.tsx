@@ -516,45 +516,62 @@ function ToolRow(props: { row: FeedRow; repoPath?: string }) {
   };
   const detail = () => prettifyDetail(props.row.tool, props.row.detail, props.repoPath);
   return (
-    <box flexDirection="row" width="100%" gap={1}>
-      <box flexDirection="row" flexShrink={1} flexGrow={1} gap={1}>
-        <text
-          width={GLYPH_COL}
-          flexShrink={0}
-          fg={glyphColor()}
-          wrapMode="none"
-          content={glyph()}
-        />
-        <text
-          flexShrink={0}
-          fg={glyphColor()}
-          attributes={nameAttr()}
-          wrapMode="none"
-          truncate
-          content={props.row.tool ?? ""}
-        />
-        <Show when={detail()}>
-          <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
-          {/* wrapMode="none" + truncate keeps the OSC 8 link as one
-              continuous chunk (wrapping breaks the underline + click
-              target across lines). Detail is pre-ellipsized to the
-              basename so what gets shown is always the diagnostic
-              part of the path. */}
-          <text flexGrow={1} flexShrink={1} fg={detailColor()} wrapMode="none" truncate>
-            <Show when={linkUrl(props.row.tool, props.row.detail)} keyed fallback={detail()}>
-              {(href: string) => <a href={href}>{detail()}</a>}
-            </Show>
-          </text>
+    <box flexDirection="column" width="100%">
+      <box flexDirection="row" width="100%" gap={1}>
+        <box flexDirection="row" flexShrink={1} flexGrow={1} gap={1}>
+          <text
+            width={GLYPH_COL}
+            flexShrink={0}
+            fg={glyphColor()}
+            wrapMode="none"
+            content={glyph()}
+          />
+          <text
+            flexShrink={0}
+            fg={glyphColor()}
+            attributes={nameAttr()}
+            wrapMode="none"
+            truncate
+            content={props.row.tool ?? ""}
+          />
+          <Show when={detail()}>
+            <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+            {/* wrapMode="none" + truncate keeps the OSC 8 link as one
+                continuous chunk (wrapping breaks the underline + click
+                target across lines). Detail is pre-ellipsized to the
+                basename so what gets shown is always the diagnostic
+                part of the path. */}
+            <text flexGrow={1} flexShrink={1} fg={detailColor()} wrapMode="none" truncate>
+              <Show when={linkUrl(props.row.tool, props.row.detail)} keyed fallback={detail()}>
+                {(href: string) => <a href={href}>{detail()}</a>}
+              </Show>
+            </text>
+          </Show>
+        </box>
+        <Show when={props.row.extra}>
+          <text
+            width={EXTRA_COL}
+            flexShrink={0}
+            fg={failed() ? PALETTE.failed : PALETTE.muted}
+            wrapMode="none"
+            content={(props.row.extra ?? "").padStart(EXTRA_COL)}
+          />
         </Show>
       </box>
-      <Show when={props.row.extra}>
-        <text
-          width={EXTRA_COL}
-          flexShrink={0}
-          fg={failed() ? PALETTE.failed : PALETTE.muted}
-          wrapMode="none"
-          content={(props.row.extra ?? "").padStart(EXTRA_COL)}
-        />
+      {/* Tool result preview — first line of stdout / returned value,
+          dim, indented to align with the detail column. Phase 5b
+          minimum-visibility implementation; richer expand/collapse is
+          queued for a later iteration. */}
+      <Show when={props.row.result}>
+        <box flexDirection="row" width="100%" marginLeft={GLYPH_COL + 1}>
+          <text
+            flexShrink={1}
+            fg={PALETTE.muted}
+            wrapMode="none"
+            truncate
+            content={props.row.result ?? ""}
+          />
+        </box>
       </Show>
     </box>
   );
@@ -948,24 +965,32 @@ function KeyHint(props: { gate: boolean; paused: PausedState | null; hint: strin
             />
           }
         >
-          {(p: PausedState) => (
-            <box flexDirection="row" flexShrink={0} gap={1}>
-              <text
-                flexShrink={0}
-                fg={p.status === "halted" ? PALETTE.gate : PALETTE.failed}
-                attributes={TextAttributes.BOLD}
-                wrapMode="none"
-                content={p.status === "halted" ? "✗ run halted" : "✗ run failed"}
-              />
-              <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
-              <text
-                flexShrink={0}
-                fg={PALETTE.hint}
-                wrapMode="none"
-                content="↑↓ scroll · q to exit"
-              />
-            </box>
-          )}
+          {(p: PausedState) => {
+            const ui =
+              p.status === "completed"
+                ? { glyph: "✓ run completed", color: PALETTE.done }
+                : p.status === "halted"
+                  ? { glyph: "✗ run halted", color: PALETTE.gate }
+                  : { glyph: "✗ run failed", color: PALETTE.failed };
+            return (
+              <box flexDirection="row" flexShrink={0} gap={1}>
+                <text
+                  flexShrink={0}
+                  fg={ui.color}
+                  attributes={TextAttributes.BOLD}
+                  wrapMode="none"
+                  content={ui.glyph}
+                />
+                <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+                <text
+                  flexShrink={0}
+                  fg={PALETTE.hint}
+                  wrapMode="none"
+                  content="↑↓ scroll · q to exit"
+                />
+              </box>
+            );
+          }}
         </Show>
       }
     >

@@ -56,6 +56,11 @@ export interface FeedRow {
   /** Set by `agent.tool.result` when the tool returned !ok. Drives a
    * coral-tinted glyph + detail without changing kind. */
   readonly failed?: boolean;
+  /** First-line preview of the tool's stdout (Bash etc.) or returned
+   * value (Read excerpt, Glob match list head). Captured from
+   * `agent.tool.result.preview` on success; rendered as a dim line
+   * under the tool row. */
+  readonly result?: string;
 }
 
 export interface PhaseSection {
