@@ -164,11 +164,11 @@ export class ScriptedRuntime implements AgentRuntime {
               type: "tool.result",
               id,
               ok: true,
-              ...(result ? { preview: result } : {}),
+              ...(result ? { result } : {}),
             });
           } catch (err) {
             const message = (err as Error).message;
-            emit({ type: "tool.result", id, ok: false, preview: message });
+            emit({ type: "tool.result", id, ok: false, result: message });
             throw err;
           }
         }

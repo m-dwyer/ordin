@@ -156,7 +156,7 @@ describe("ScriptedRuntime", () => {
     await runtime.invoke(makeRequest({ runDir: scratch, onEvent: (e) => events.push(e) }));
 
     const result = events.find((e) => e.type === "tool.result");
-    expect(result).toMatchObject({ type: "tool.result", ok: true, preview: "hello world output" });
+    expect(result).toMatchObject({ type: "tool.result", ok: true, result: "hello world output" });
   });
 
   it("emits tool.result with ok=false and returns failed status when dispatcher throws", async () => {
@@ -180,7 +180,7 @@ describe("ScriptedRuntime", () => {
     expect(result.failure?.kind).toBe("tool");
     expect(result.failure?.message).toBe("boom");
     const failResult = events.find((e) => e.type === "tool.result");
-    expect(failResult).toMatchObject({ type: "tool.result", ok: false, preview: "boom" });
+    expect(failResult).toMatchObject({ type: "tool.result", ok: false, result: "boom" });
   });
 
   it("throws when no script exists for the requested phase", async () => {

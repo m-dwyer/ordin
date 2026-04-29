@@ -124,7 +124,7 @@ export type RuntimeEvent =
       readonly type: "tool.result";
       readonly id: string;
       readonly ok: boolean;
-      readonly preview?: string;
+      readonly result?: string;
       /** Set when the tool result belongs to a subagent (Task tool). */
       readonly parentToolUseId?: string;
     }

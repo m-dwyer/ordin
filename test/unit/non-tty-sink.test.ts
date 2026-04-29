@@ -126,7 +126,7 @@ describe("nonTtyRunSession", () => {
       phaseId: "plan",
       id: "t1",
       ok: false,
-      preview: "exited with code 1",
+      result: "exited with code 1",
     });
     expect(lines()).toEqual(["  ▸ Bash · exit 1", "  ✗ Bash · exit 1 failed — exited with code 1"]);
   });
@@ -277,7 +277,7 @@ describe("nonTtyRunSession", () => {
         phaseId: "build",
         id: "t2",
         ok: false,
-        preview: "tsc: 1 error in src/foo.ts",
+        result: "tsc: 1 error in src/foo.ts",
       },
       {
         type: "phase.failed",

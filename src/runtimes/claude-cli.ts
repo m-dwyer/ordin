@@ -372,12 +372,12 @@ export class ClaudeCliRuntime implements AgentRuntime {
       const parentToolUseId = event.parent_tool_use_id;
       for (const block of event.message.content) {
         if (block.type === "tool_result" && block.tool_use_id) {
-          const preview = typeof block.content === "string" ? block.content : undefined;
+          const output = typeof block.content === "string" ? block.content : undefined;
           emit({
             type: "tool.result",
             id: block.tool_use_id,
             ok: block.is_error !== true,
-            ...(preview ? { preview } : {}),
+            ...(output ? { result: output } : {}),
             ...(parentToolUseId ? { parentToolUseId } : {}),
           });
         }

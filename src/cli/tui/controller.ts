@@ -260,29 +260,16 @@ export class OpenTuiRunController {
         // the right and (on failure) the failed flag + a reason note.
         // Avoids stacking a separate ResultRow under every tool call.
         if (!ev.ok) {
-          // Failure-path: inline `extra` stays single-line (it sits next
-          // to the timing on the same row, so it must fit in one row).
-          // BUT we still populate `result` with the full multi-line
-          // preview — that's where the diagnostic detail lives (curl
-          // verbose output, assertion FAIL lines, build error tail).
-          // Without this, a failed Bash with `set -e` or `exit 1` shows
-          // only its first line of stdout, hiding the actual reason.
-          const reason = ev.preview ? firstLine(ev.preview) : "failed";
+          const reason = ev.result ? firstLine(ev.result) : "failed";
           this.mutateRow(meta.phaseId, meta.rowId, {
             failed: true,
             extra: `${formatDuration(elapsed)} · ${reason}`,
-            ...(ev.preview ? { result: ev.preview } : {}),
+            ...(ev.result ? { result: ev.result } : {}),
           });
         } else {
           this.mutateRow(meta.phaseId, meta.rowId, {
             extra: formatDuration(elapsed),
-            // Pass the preview through verbatim (already length-bounded
-            // at the runtime source). The renderer splits on `\n` and
-            // caps to a few lines; per-line truncation is OpenTUI's
-            // job via `<text wrapMode="none" truncate>`. Critical for
-            // multi-step Bash outputs (assertion runs, `ls -la`, curl
-            // -v) where the first line is rarely the diagnostic line.
-            ...(ev.preview ? { result: ev.preview } : {}),
+            ...(ev.result ? { result: ev.result } : {}),
           });
         }
         return;

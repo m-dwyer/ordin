@@ -56,10 +56,8 @@ export interface FeedRow {
   /** Set by `agent.tool.result` when the tool returned !ok. Drives a
    * coral-tinted glyph + detail without changing kind. */
   readonly failed?: boolean;
-  /** First-line preview of the tool's stdout (Bash etc.) or returned
-   * value (Read excerpt, Glob match list head). Captured from
-   * `agent.tool.result.preview` on success; rendered as a dim line
-   * under the tool row. */
+  /** Tool output (Bash stdout, Read excerpt, Glob list, …). Rendered
+   * multi-line under the tool row, capped by the renderer. */
   readonly result?: string;
 }
 
