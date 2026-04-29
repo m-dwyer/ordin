@@ -9,6 +9,7 @@ import {
   type RunMeta,
   type StartRunInput,
 } from "../runtime/harness";
+import { PassthroughSandbox } from "../sandbox/passthrough";
 import { DeferredGatePrompter, type PendingGate } from "./deferred-gate-prompter";
 import { EventBus } from "./event-bus";
 
@@ -39,6 +40,12 @@ export class RunService {
     this.harness = new HarnessRuntime({
       ...opts,
       gateForKind: gateResolverFor(this.prompter),
+      // ADR-008: v1 sandboxing is `ordin run` only. Server modes
+      // (serve/mcp) force PassthroughSandbox so a seatbelt config
+      // can't accidentally apply where re-execing the server would
+      // mid-flight is nonsensical. Callers can still override
+      // explicitly via `opts.sandbox`.
+      sandbox: opts.sandbox ?? new PassthroughSandbox(),
     });
   }
 
