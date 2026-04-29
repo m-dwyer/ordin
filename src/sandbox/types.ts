@@ -4,9 +4,11 @@
  * agnostic by design: any future engine inherits sandboxing without
  * re-implementation.
  *
- * v1 ships `PassthroughSandbox` (no-op default) and `SeatbeltSandbox`
- * (macOS, `sandbox-exec`). Linux (`bwrap`), Docker, and a separate
- * sandboxed-worker variant live behind this same interface.
+ * Ships `PassthroughSandbox` (no-op default) and `SrtSandbox`
+ * (`@anthropic-ai/sandbox-runtime` — Seatbelt on macOS, bwrap+seccomp
+ * on Linux, plus deny-by-default network egress through localhost
+ * proxies). A separate sandboxed-worker variant lives behind this
+ * same interface.
  *
  * See docs/decisions/sandboxing.md (ADR-001) for the boundary choice.
  */

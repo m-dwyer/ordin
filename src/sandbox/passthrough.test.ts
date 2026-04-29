@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type SandboxMode, selectSandbox } from "./index";
 import { PassthroughSandbox } from "./passthrough";
-import { SeatbeltSandbox } from "./seatbelt";
+import { SrtSandbox } from "./srt";
 
 describe("PassthroughSandbox", () => {
   it("is named 'passthrough'", () => {
@@ -32,10 +32,10 @@ describe("selectSandbox", () => {
     expect(sandbox.name).toBe("passthrough");
   });
 
-  it("returns a SeatbeltSandbox for mode 'seatbelt'", () => {
-    const sandbox = selectSandbox("seatbelt");
-    expect(sandbox).toBeInstanceOf(SeatbeltSandbox);
-    expect(sandbox.name).toBe("seatbelt");
+  it("returns an SrtSandbox for mode 'srt'", () => {
+    const sandbox = selectSandbox("srt");
+    expect(sandbox).toBeInstanceOf(SrtSandbox);
+    expect(sandbox.name).toBe("srt");
   });
 
   it("throws on unknown modes", () => {

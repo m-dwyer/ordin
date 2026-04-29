@@ -219,16 +219,18 @@ export class HarnessRuntime {
   }
 
   /**
-   * Resolve workspace and re-exec under the sandbox if needed. CLIs
-   * MUST call this *before* any terminal / UI initialisation — when
-   * a re-exec happens, `execve` replaces the outer process and any
-   * raw-mode / alt-screen / mouse-tracking state leaks into the
-   * terminal because the renderer never gets to clean up.
+   * Resolve workspace and enter the sandbox if needed. CLIs MUST call
+   * this *before* any terminal / UI initialisation — under `srt` the
+   * outer process spawns a wrapped child and waits for it; if the
+   * renderer has already initialised raw-mode / mouse tracking / alt-
+   * screen the inner process inherits a polluted terminal state.
    *
-   * Cheap on the inner (post-reexec) invocation: `shouldReexec`
-   * returns false and the call resolves immediately. Cheap on
-   * passthrough: `enterIfNeeded` is a no-op. Only the outer-with-
-   * seatbelt case actually re-execs (and never returns).
+   * Cheap on the inner (post-spawn) invocation: srt sets
+   * `SANDBOX_RUNTIME=1` in the wrapped command's env, so subsequent
+   * `enterIfNeeded` calls return immediately. Cheap on passthrough:
+   * `enterIfNeeded` is a no-op. Only the outer-with-srt case actually
+   * spawns the wrapper (and that call never returns — the outer
+   * process exits with the child's status when the child exits).
    *
    * `startRun` calls `enterIfNeeded` again as a backstop so
    * programmatic callers (tests, eval suite, RunService) that skip

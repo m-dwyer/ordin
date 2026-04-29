@@ -60,12 +60,13 @@ export const RuntimesConfigSchema = z.record(z.string(), z.unknown()).default({}
 export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
 
 /**
- * Sandbox mode. v1 ships `passthrough` (no isolation, default — ADR-007)
- * and `seatbelt` (macOS kernel-enforced — ADR-001 + ADR-014). Linux,
- * Docker, and Windows variants are deferred to v2 behind the same
- * `Sandbox` interface.
+ * Sandbox mode. `passthrough` = no isolation (default — ADR-007).
+ * `srt` = `@anthropic-ai/sandbox-runtime`-backed kernel enforcement
+ * (Seatbelt on macOS, bwrap+seccomp on Linux) plus deny-by-default
+ * network egress through srt's HTTP+SOCKS proxies (Phase 9c). Linux
+ * and Docker variants stay behind the same `Sandbox` interface.
  */
-export const SandboxModeSchema = z.enum(["passthrough", "seatbelt"]);
+export const SandboxModeSchema = z.enum(["passthrough", "srt"]);
 export type SandboxMode = z.infer<typeof SandboxModeSchema>;
 
 export const HarnessConfigSchema = z.object({

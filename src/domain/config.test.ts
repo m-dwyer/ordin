@@ -12,9 +12,9 @@ describe("HarnessConfigSchema — sandbox field", () => {
     expect(result.sandbox).toBe("passthrough");
   });
 
-  it("accepts 'seatbelt'", () => {
-    const result = HarnessConfigSchema.parse({ sandbox: "seatbelt" });
-    expect(result.sandbox).toBe("seatbelt");
+  it("accepts 'srt'", () => {
+    const result = HarnessConfigSchema.parse({ sandbox: "srt" });
+    expect(result.sandbox).toBe("srt");
   });
 
   it("rejects unknown sandbox modes with a useful error path", () => {
@@ -23,7 +23,7 @@ describe("HarnessConfigSchema — sandbox field", () => {
     if (!result.success) {
       const issue = result.error.issues.find((i) => i.path.join(".") === "sandbox");
       expect(issue).toBeDefined();
-      expect(issue?.message).toMatch(/passthrough|seatbelt/);
+      expect(issue?.message).toMatch(/passthrough|srt/);
     }
   });
 });

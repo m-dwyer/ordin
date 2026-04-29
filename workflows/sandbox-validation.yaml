@@ -3,7 +3,7 @@
 # Uses ScriptedRuntime (no LLM) — paired with scripts/sandbox-validation.yaml.
 # Run with:
 #   bun ordin run --workflow sandbox-validation -p fixture 'validate'
-#   bun ordin run --sandbox seatbelt --workflow sandbox-validation -p fixture 'validate'
+#   bun ordin run --sandbox srt --workflow sandbox-validation -p fixture 'validate'
 #
 # Both invocations should produce identical artefacts; the second proves
 # the v1 sandbox doesn't break the agent's tool surface.

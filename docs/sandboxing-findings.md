@@ -344,3 +344,47 @@ If you ever need to spin up a different macOS sandbox profile from scratch (a se
 ```
 
 That's the skeleton. Tools that JIT need it; tools that load native modules need `file-map-executable`; everyone needs `file-write*` somewhere for state. Past that, the profile is what it is.
+
+## Phase 9c spike — `@anthropic-ai/sandbox-runtime` under Bun (2026-04-29)
+
+Spike (throwaway, no commit): does `@anthropic-ai/sandbox-runtime` ("srt") work under Bun on macOS, and does it cover the cases our hand-rolled v1 had to learn the hard way? Spike script: `scripts/spike/srt-bun.ts`. Package: `@anthropic-ai/sandbox-runtime@0.0.49`.
+
+### Outcome
+
+Adoption green-lit. Every check passed; the proxies and seatbelt profile both behave correctly under Bun.
+
+| Check | Result |
+|---|---|
+| `SandboxManager.initialize` under Bun | ✓ 6ms; HTTP+SOCKS proxies bound on dynamic localhost ports |
+| `waitForNetworkInitialization` | ✓ resolves to `true` |
+| `wrapWithSandbox` produces runnable command | ✓ — `env <proxy-vars> sandbox-exec -p "<profile>" /opt/homebrew/bin/bash -c "<cmd>"` |
+| Workspace write+read | ✓ allowed |
+| Write outside workspace | ✓ denied (`Operation not permitted`) |
+| `~/.ssh` read with `denyRead: ["~/.ssh"]` | ✓ denied (note: `~` expands; explicit `${HOME}/.ssh` also works) |
+| `~/.claude` read with `allowRead: [".../.claude"]` + `denyWrite: [".../.claude"]` | ✓ matches ADR-006 (Max-plan auth) |
+| Network: `https://example.com` with `allowedDomains: ["example.com"]` | ✓ HTTP 200 |
+| Network: `https://github.com` (not allowlisted) | ✓ denied (curl exit 56, `httpcode=000`) |
+| Network: `https://api.anthropic.com` (not allowlisted) | ✓ denied |
+| `getSandboxViolationStore()` | ✓ accessible — useful for piping violations into our `RunEvent` stream |
+
+### Critical impl note — must use async spawn
+
+The first spike attempt timed out on every network call. Cause: `child_process.spawnSync` blocks the parent JS event loop, and srt's HTTP+SOCKS proxies run on that same loop. The child opens connections to the proxy ports → proxy can't service them → curl times out after 8s.
+
+Fix: use `child_process.spawn` (or `Bun.spawn`) and `await` the exit. The spike worked immediately after switching. **For our `SrtSandbox.spawnWorker` impl this means non-negotiable async spawn semantics — `spawnSync` is a footgun that will manifest as "network mysteriously broken" with no obvious tie-back to the spawn API.**
+
+### Other observations from the spike
+
+- The wrapped command sets a long list of proxy env vars: `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `ALL_PROXY=socks5h://...`, `FTP_PROXY`, `RSYNC_PROXY`, `GIT_SSH_COMMAND='ssh -o ProxyCommand=...'`, `GRPC_PROXY`, `DOCKER_HTTP_PROXY`, `CLOUDSDK_PROXY_*`. Most dev tools that respect *some* proxy env var are covered; ad-hoc tools that hard-code `https://` may not be.
+- `NO_PROXY` covers the standard localhost set + RFC1918 ranges. LiteLLM at `localhost:4000` will be reachable without going through srt's proxy (NO_PROXY effect). This means our default LiteLLM-only policy can be expressed as `allowedDomains: []` + reliance on `NO_PROXY` letting localhost through — *or* explicitly allowlist the model-API hostnames. Worth a follow-up during Phase B: confirm what `localhost` traffic looks like under the kernel profile when `allowLocalBinding` is unset.
+- srt's generated profile already includes a Chromium-pattern system baseline + a Bun-friendly mach-lookup list + IOKit allows. Several v1 findings (Finding 1: `system.sb` import, Finding 3: JIT permission, Finding 10: file-ioctl) are subsumed by srt's defaults.
+- `denyRead`/`denyWrite` deny the resolved real path; the `ls` error came back via *stdout* (`ls: /Users/em/.ssh: Operation not permitted`) rather than stderr, so test detection logic must scan both streams.
+- `~/.claude` (ADR-006 — Max-plan auth) works exactly as we'd want: `allowRead` + `denyWrite` lets `claude -p` authenticate without giving the agent a path to mutate the credentials.
+- The `mitmProxy` config field accepts a Unix socket path + domain list — this is **the broker substitution seam ADR-015 will document**. Future work can run our own Bun-based capability-broker listener at a Unix socket, register it for selected domains, and srt routes traffic through it. No need to replace srt's HTTP+SOCKS proxies wholesale.
+- zod versions don't conflict — srt nests zod 3.24 in its own `node_modules`; our zod 4 stays at the top level.
+
+### Decision
+
+Phase 9c plan stands. Phase B builds an `SrtSandbox` adapter; Phase C restructures to parent/worker (parent runs the JS event loop hosting srt's proxies; worker is the sandboxed child). The async-spawn requirement is naturally satisfied by Phase C's design — the worker is spawned, never run in-process, and the parent's event loop stays free for the proxies to service the worker's traffic.
+
+The spike script `scripts/spike/srt-bun.ts` and the dep added to `package.json` / `bun.lock` are reverted before merge — Phase B re-introduces the dep with a real adapter.

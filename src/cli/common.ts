@@ -14,8 +14,8 @@ export function parseTier(value: string): "S" | "M" | "L" {
 }
 
 export function parseSandboxMode(value: string): SandboxMode {
-  if (value === "passthrough" || value === "seatbelt") return value;
-  throw new InvalidArgumentError("Sandbox mode must be passthrough or seatbelt");
+  if (value === "passthrough" || value === "srt") return value;
+  throw new InvalidArgumentError("Sandbox mode must be passthrough or srt");
 }
 
 export interface OrdinCliOptions {
@@ -73,10 +73,10 @@ export async function ordinRunSession(opts: {
   readonly scriptPath?: string;
   /**
    * Run input — passed through so we can call `prepareSandbox` BEFORE
-   * any TUI work. Re-exec under sandbox-exec replaces the outer
-   * process; if the renderer has already initialised raw-mode / mouse
-   * tracking / alt-screen, those sequences leak to stdout because the
-   * dying outer process can't clean up.
+   * any TUI work. Under `srt`, the outer process spawns a sandboxed
+   * child and waits for it; if the renderer has already initialised
+   * raw-mode / mouse tracking / alt-screen, those sequences would
+   * pollute the terminal that the inner process now owns.
    */
   readonly runInput?: StartRunInput;
   readonly header: RunHeader;

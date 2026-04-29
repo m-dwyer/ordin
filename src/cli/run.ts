@@ -59,7 +59,7 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
     .option("--dry-run", "Print each phase's composed prompt without invoking any runtime")
     .option(
       "--sandbox <mode>",
-      "Sandbox mode: passthrough (no isolation) or seatbelt (macOS kernel-enforced)",
+      "Sandbox mode: passthrough (no isolation) or srt (kernel + network egress via @anthropic-ai/sandbox-runtime)",
       parseSandboxMode,
     )
     .option(

@@ -19,8 +19,9 @@ default_model: qwen3-8b
 allowed_tools: []
 
 # Sandbox mode for `ordin run`. `passthrough` = no isolation (current
-# default; ADR-007). `seatbelt` = macOS kernel-enforced via sandbox-exec
-# (ADR-014). Override per-run with `--sandbox <mode>`.
+# default; ADR-007). `srt` = kernel-enforced FS isolation + deny-by-
+# default network egress via `@anthropic-ai/sandbox-runtime` (Phase 9c).
+# Override per-run with `--sandbox <mode>`.
 sandbox: passthrough
 
 # Per-runtime configs. Keys here match the `runtime:` field in
