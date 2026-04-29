@@ -1,0 +1,84 @@
+# Deterministic plan for the sandbox-validation workflow.
+#
+# Auto-loaded by ScriptedRuntime when the matching workflow runs.
+# Override with `--script <path>` if you want a different plan.
+#
+# Variables substituted at dispatch time: {cwd}, {workspace}, {run_id},
+# {phase}. Slugs are NOT substituted here — the orchestrator does slug
+# substitution at the artefact-path layer (see workflow YAML's `outputs`).
+
+phases:
+  validate:
+    steps:
+      - text: |
+          Sandbox validation plan starting. Tool surface for this phase:
+          Read, Write, Glob, Bash. Workspace: {workspace}.
+
+      # 1. Read tool — read a file from the workspace.
+      - tool:
+          name: Read
+          input:
+            file_path: README.md
+
+      # 2. Glob tool — list workspace contents.
+      - tool:
+          name: Glob
+          input:
+            pattern: "**/*"
+
+      # 3. Bash tool — verify shell + filesystem access work end-to-end
+      #    inside the sandbox. Should succeed because cwd is the workspace
+      #    (read-allowed) and ls is on system PATH.
+      - tool:
+          name: Bash
+          input:
+            command: "ls -la && pwd"
+
+      # 4. Bash tool — verify a write to the workspace succeeds via shell
+      #    redirection (different code path from the Write tool).
+      - tool:
+          name: Bash
+          input:
+            command: "echo 'sandbox validation: shell write OK' > .sandbox-validation-marker && cat .sandbox-validation-marker"
+
+      - text: |
+          Tool surface verified. Writing the validation report.
+
+      # 5. Write tool — produce the declared output artefact.
+      - tool:
+          name: Write
+          input:
+            # NB: workflow's `outputs[0].path` substitutes {slug} via
+            # the orchestrator before this script runs. The path here
+            # must match what the workflow declared after substitution.
+            # We can't reference {slug} from here, so we use the
+            # already-substituted relative path that the orchestrator
+            # surfaces in the user prompt — workflow output `path` is
+            # `reviews/sandbox-validation-{slug}-report.md`. The
+            # scripted runtime reads the path from the prompt context
+            # and the harness verifies the file exists at the declared
+            # location, so we must write to the slug-substituted path.
+            #
+            # For deterministic test purposes, the slug always comes
+            # from the run input — the user supplies it. We hard-code
+            # an expected name and require callers to use slug=validate.
+            file_path: reviews/sandbox-validation-validate-report.md
+            content: |
+              # Sandbox validation report
+
+              Workflow: sandbox-validation
+              Run ID: {run_id}
+              Workspace: {workspace}
+              Phase: {phase}
+
+              ## Tool surface
+              - Read: succeeded
+              - Glob: succeeded
+              - Bash: succeeded (ls + pwd)
+              - Bash: succeeded (shell-redirect write)
+              - Write: succeeded (this report)
+
+              ## Outcome
+              All five probes succeeded under the active sandbox profile.
+              The v1 sandbox correctly permits the documented tool surface
+              while denying everything else by default (see ADR-014).
