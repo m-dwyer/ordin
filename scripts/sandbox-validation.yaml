@@ -44,25 +44,10 @@ phases:
       - text: |
           Tool surface verified. Writing the validation report.
 
-      # 5. Write tool — produce the declared output artefact.
       - tool:
           name: Write
           input:
-            # NB: workflow's `outputs[0].path` substitutes {slug} via
-            # the orchestrator before this script runs. The path here
-            # must match what the workflow declared after substitution.
-            # We can't reference {slug} from here, so we use the
-            # already-substituted relative path that the orchestrator
-            # surfaces in the user prompt — workflow output `path` is
-            # `reviews/sandbox-validation-{slug}-report.md`. The
-            # scripted runtime reads the path from the prompt context
-            # and the harness verifies the file exists at the declared
-            # location, so we must write to the slug-substituted path.
-            #
-            # For deterministic test purposes, the slug always comes
-            # from the run input — the user supplies it. We hard-code
-            # an expected name and require callers to use slug=validate.
-            file_path: reviews/sandbox-validation-validate-report.md
+            file_path: reviews/sandbox-validation-report.md
             content: |
               # Sandbox validation report
 

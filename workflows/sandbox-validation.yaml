@@ -29,5 +29,5 @@ phases:
     fresh_context: true
     outputs:
       - label: Validation report
-        path: reviews/sandbox-validation-{slug}-report.md
+        path: reviews/sandbox-validation-report.md
         description: Probe outcomes — what was reachable, what wasn't

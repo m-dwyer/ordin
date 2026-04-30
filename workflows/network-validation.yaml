@@ -39,5 +39,5 @@ phases:
     fresh_context: true
     outputs:
       - label: Network validation report
-        path: reviews/network-validation-{slug}-report.md
+        path: reviews/network-validation-report.md
         description: Per-host probe outcomes + assertion summary

@@ -24,7 +24,7 @@ phases:
           name: Bash
           input:
             command: |
-              cat > reviews/network-validation-validate-report.md <<'EOF'
+              cat > reviews/network-validation-report.md <<'EOF'
               # Network validation report
 
               Each line below is one egress probe. `code=` is curl's
@@ -46,7 +46,7 @@ phases:
               { printf "anthropic-denied: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 10 https://api.anthropic.com 2>/dev/null; \
                 echo "exit=$?"; \
-              } >> reviews/network-validation-validate-report.md
+              } >> reviews/network-validation-report.md
 
       # Probe 2: github.com is NOT allowlisted. Expected denied (curl exit
       # non-zero, code= empty).
@@ -57,7 +57,7 @@ phases:
               { printf "github-denied: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 10 https://github.com 2>/dev/null; \
                 echo "exit=$?"; \
-              } >> reviews/network-validation-validate-report.md
+              } >> reviews/network-validation-report.md
 
       # Probe 3: example.com is NOT allowlisted. Expected denied.
       - tool:
@@ -67,7 +67,7 @@ phases:
               { printf "example-denied: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 10 https://example.com 2>/dev/null; \
                 echo "exit=$?"; \
-              } >> reviews/network-validation-validate-report.md
+              } >> reviews/network-validation-report.md
 
       # Probe 4: api.openai.com is NOT allowlisted. Expected denied. The
       # default policy locks egress to LiteLLM (localhost) + Anthropic;
@@ -79,7 +79,7 @@ phases:
               { printf "openai-denied: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 10 https://api.openai.com 2>/dev/null; \
                 echo "exit=$?"; \
-              } >> reviews/network-validation-validate-report.md
+              } >> reviews/network-validation-report.md
 
       # Probe 5: localhost:4000 (LiteLLM). srt sets NO_PROXY=localhost,...
       # so this bypasses the egress proxy. Expected exit 0 (LiteLLM up)
@@ -92,7 +92,7 @@ phases:
               { printf "litellm-allowed: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 5 http://localhost:4000/health 2>/dev/null; \
                 echo "exit=$?"; \
-              } >> reviews/network-validation-validate-report.md
+              } >> reviews/network-validation-report.md
 
       # Probe 6: raw IP. Confirms that hostname-based allowlists aren't
       # bypassed by directly CONNECT-ing to an IP. Expected denied.
@@ -103,7 +103,7 @@ phases:
               { printf "rawip-denied: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 10 https://1.1.1.1 2>/dev/null; \
                 echo "exit=$?"; \
-              } >> reviews/network-validation-validate-report.md
+              } >> reviews/network-validation-report.md
 
       - text: |
           Probes complete. Asserting the egress matrix.
@@ -116,7 +116,7 @@ phases:
           name: Bash
           input:
             command: |
-              R=reviews/network-validation-validate-report.md
+              R=reviews/network-validation-report.md
               fail=0
               echo "--- assertions ---"
 

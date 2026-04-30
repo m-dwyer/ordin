@@ -95,7 +95,7 @@ export function startTracing(): void {
  * 2s; if the flush hasn't completed by then, drop the spans with a
  * warning and let the process exit cleanly.
  */
-const SHUTDOWN_TIMEOUT_MS = 2_000;
+const SHUTDOWN_TIMEOUT_MS = 5_000;
 
 export async function shutdownTracing(): Promise<void> {
   if (!sdk) return;
