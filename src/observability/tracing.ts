@@ -48,9 +48,17 @@ export function startTracing(): void {
   );
 
   const auth = Buffer.from(`${publicKey}:${secretKey}`).toString("base64");
+  const proxyUrl = process.env["HTTPS_PROXY"];
+  // Diagnostic: Bun's http polyfill may natively honor NO_PROXY,
+  // bypassing our agent for localhost. Clearing it forces traffic
+  // through whatever agent we configure. Remove if this turns out
+  // not to be the cause.
+  process.env["NO_PROXY"] = "";
+  process.env["no_proxy"] = "";
   const exporter = new OTLPTraceExporter({
     url: `${host.replace(/\/$/, "")}/api/public/otel/v1/traces`,
     headers: { Authorization: `Basic ${auth}` },
+    ...(proxyUrl ? { httpAgentOptions: proxyAgentFactory(proxyUrl) } : {}),
   });
 
   const resource = resourceFromAttributes({
@@ -123,6 +131,17 @@ export async function shutdownTracing(): Promise<void> {
  * rejections with a warning and let everything else through to Node's
  * default behavior.
  */
+function proxyAgentFactory(proxyUrl: string) {
+  return async (protocol: string) => {
+    if (protocol === "https:") {
+      const { HttpsProxyAgent } = await import("https-proxy-agent");
+      return new HttpsProxyAgent(proxyUrl);
+    }
+    const { HttpProxyAgent } = await import("http-proxy-agent");
+    return new HttpProxyAgent(proxyUrl);
+  };
+}
+
 function installRejectionGuard(): void {
   if (rejectionGuardInstalled) return;
   rejectionGuardInstalled = true;

@@ -17,7 +17,7 @@ const config = new HarnessConfig(
   "default-runtime",
   "default-model",
   [],
-  "passthrough",
+  { mode: "passthrough", local_services: {} },
   {},
   { S: {}, M: {}, L: {} },
 );

@@ -12,15 +12,13 @@
 # fail loudly — that's the design):
 #   bun ordin run --workflow network-validation -p fixture 'validate'
 #
-# Asserts:
-#   - api.anthropic.com (allowlisted)        -> reachable
-#   - github.com        (not allowlisted)    -> denied
-#   - example.com       (not allowlisted)    -> denied
-#   - api.openai.com    (not allowlisted)    -> denied
-#   - localhost:4000    (NO_PROXY bypass)    -> reachable OR refused-not-blocked
-#   - 1.1.1.1           (raw IP, no DNS)     -> denied (confirms hostname-only
-#                                                allowlists aren't bypassed
-#                                                by direct-IP CONNECT)
+# Asserts (default policy = empty allowlist; all external denied):
+#   - api.anthropic.com -> denied
+#   - github.com        -> denied
+#   - example.com       -> denied
+#   - api.openai.com    -> denied
+#   - 1.1.1.1 (raw IP)  -> denied (hostname-only allowlist not bypassed)
+#   - localhost:4000    -> reachable OR refused-not-blocked (NO_PROXY)
 
 name: network-validation
 version: 1

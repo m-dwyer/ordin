@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type LocalServicesConfig, LocalServicesConfigSchema } from "../broker";
 
 /**
  * ordin.config.yaml — global defaults, tier overrides, run-store
@@ -69,12 +70,29 @@ export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
 export const SandboxModeSchema = z.enum(["passthrough", "srt"]);
 export type SandboxMode = z.infer<typeof SandboxModeSchema>;
 
+/**
+ * Sandbox config accepts the legacy string form (`sandbox: srt`) and
+ * the object form (`sandbox: { mode: srt, local_services: {...} }`).
+ * Preprocess folds the string variant into the object shape so
+ * downstream code only sees one type.
+ */
+const SandboxConfigInner = z.object({
+  mode: SandboxModeSchema.default("passthrough"),
+  local_services: LocalServicesConfigSchema.default({}),
+});
+export const SandboxConfigSchema = z.preprocess(
+  (v) => (typeof v === "string" ? { mode: v } : v),
+  SandboxConfigInner,
+);
+export type SandboxConfigRaw = z.infer<typeof SandboxConfigInner>;
+const DEFAULT_SANDBOX: SandboxConfigRaw = { mode: "passthrough", local_services: {} };
+
 export const HarnessConfigSchema = z.object({
   run_store: RunStoreSchema.default(DEFAULT_RUN_STORE),
   default_runtime: z.string().default("ai-sdk"),
   default_model: z.string().min(1).default("qwen3-8b"),
   allowed_tools: z.array(z.string()).default([]),
-  sandbox: SandboxModeSchema.default("passthrough"),
+  sandbox: SandboxConfigSchema.default(DEFAULT_SANDBOX),
   runtimes: RuntimesConfigSchema,
   tiers: TiersSchema,
 });
@@ -85,7 +103,7 @@ export class HarnessConfig {
     readonly defaultRuntime: string,
     readonly defaultModel: string,
     readonly allowedTools: readonly string[],
-    readonly sandbox: SandboxMode,
+    readonly sandbox: SandboxConfigRaw,
     readonly runtimes: RuntimesConfigRaw,
     readonly tiers: TiersRaw,
   ) {}
@@ -108,6 +126,10 @@ export class HarnessConfig {
   }
 
   sandboxMode(): SandboxMode {
-    return this.sandbox;
+    return this.sandbox.mode;
+  }
+
+  localServices(): LocalServicesConfig {
+    return this.sandbox.local_services;
   }
 }

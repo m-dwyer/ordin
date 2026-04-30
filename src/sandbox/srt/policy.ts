@@ -1,17 +1,12 @@
 import { z } from "zod";
 
 /**
- * Network policy describing which hostnames the agent process tree may
- * reach. Translated into srt's `network.allowedDomains` /
- * `network.deniedDomains` at run time. Patterns follow srt semantics:
- * literal hostnames (`api.anthropic.com`) or wildcard (`*.github.com`).
- *
- * Default is LiteLLM-only — every other host is denied. LiteLLM at
- * `localhost:4000` is reachable without an allowlist entry because srt
- * sets `NO_PROXY=localhost,127.0.0.1,::1,...` for the wrapped process,
- * and the kernel profile permits localhost. `api.anthropic.com` is
- * allowlisted so `ClaudeCliRuntime` (Max-plan auth, ADR-006) keeps
- * working.
+ * Network policy describing which hostnames the agent may reach via
+ * srt's HTTP/SOCKS proxies. Patterns follow srt semantics: literal
+ * hostnames or wildcards (`*.github.com`). Default is empty — every
+ * external host is denied. Local services declared in the broker's
+ * `local_services` map are auto-added so srt's filter approves them
+ * before routing to the mitmProxy socket.
  */
 export const NetworkPolicySchema = z.object({
   allowedDomains: z.array(z.string().min(1)).default([]),
@@ -19,11 +14,29 @@ export const NetworkPolicySchema = z.object({
 });
 export type NetworkPolicy = z.infer<typeof NetworkPolicySchema>;
 
-export function defaultLiteLlmOnlyPolicy(): NetworkPolicy {
+export interface DefaultPolicyInput {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly localServiceNames?: readonly string[];
+}
+
+export function defaultPolicy(input: DefaultPolicyInput = {}): NetworkPolicy {
+  const env = input.env ?? process.env;
+  const allowed = new Set<string>(input.localServiceNames ?? []);
+  const langfuse = hostnameOf(env["LANGFUSE_HOST"]);
+  if (langfuse) allowed.add(langfuse);
   return {
-    allowedDomains: ["api.anthropic.com"],
+    allowedDomains: [...allowed],
     deniedDomains: [],
   };
+}
+
+function hostnameOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

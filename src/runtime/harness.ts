@@ -1,5 +1,6 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Broker } from "../broker";
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
@@ -30,7 +31,7 @@ import { AiSdkRuntime } from "../runtimes/ai-sdk";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
 import { ScriptedRuntime } from "../runtimes/scripted";
 import type { AgentRuntime } from "../runtimes/types";
-import { type SandboxMode, selectSandbox } from "../sandbox";
+import { prepareInnerProcess, type SandboxMode, selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
 
 export type { SandboxMode } from "../domain/config";
@@ -139,6 +140,7 @@ export class HarnessRuntime {
   private readonly scriptPathOverride?: string;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
+    prepareInnerProcess();
     startTracing();
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
@@ -153,7 +155,7 @@ export class HarnessRuntime {
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
-    const sandbox = this.resolveSandbox(state.config.sandboxMode());
+    const sandbox = this.resolveSandbox(state);
     await sandbox.enterIfNeeded({
       workspaceRoot,
       runStoreDir: state.config.runStoreDir(),
@@ -240,7 +242,7 @@ export class HarnessRuntime {
     const state = await this.load();
     requireSlug(input.slug);
     const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
-    const sandbox = this.resolveSandbox(state.config.sandboxMode());
+    const sandbox = this.resolveSandbox(state);
     await sandbox.enterIfNeeded({
       workspaceRoot,
       runStoreDir: state.config.runStoreDir(),
@@ -315,9 +317,12 @@ export class HarnessRuntime {
    * override (typically the CLI flag) > config file's `sandbox:` field.
    * Defer resolution until run time so config has been loaded.
    */
-  private resolveSandbox(configMode: SandboxMode): Sandbox {
+  private resolveSandbox(state: LoadedState): Sandbox {
     if (this.sandboxOverride) return this.sandboxOverride;
-    return selectSandbox(this.sandboxModeOverride ?? configMode);
+    const mode = this.sandboxModeOverride ?? state.config.sandboxMode();
+    const services = state.config.localServices();
+    const broker = Object.keys(services).length > 0 ? new Broker(services) : undefined;
+    return selectSandbox(mode, broker ? { broker } : {});
   }
 
   private engineServices(state: LoadedState): EngineServices {

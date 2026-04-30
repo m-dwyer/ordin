@@ -36,13 +36,14 @@ phases:
               EOF
               mkdir -p reviews
 
-      # Probe 1: api.anthropic.com is on the default allowlist (Max-plan
-      # auth via ClaudeCliRuntime — ADR-006). Expected reachable.
+      # Probe 1: api.anthropic.com is NOT in the default policy. Expected
+      # denied — verifies that even Anthropic's API is locked down by
+      # default; ClaudeCliRuntime users opt in via --allow-domain.
       - tool:
           name: Bash
           input:
             command: |
-              { printf "anthropic-allowed: "; \
+              { printf "anthropic-denied: "; \
                 curl -sS -o /dev/null -w "code=%{http_code} " --max-time 10 https://api.anthropic.com 2>/dev/null; \
                 echo "exit=$?"; \
               } >> reviews/network-validation-validate-report.md
@@ -132,16 +133,12 @@ phases:
                 fi
               }
 
-              # Allowlisted -> exit=0 with a real HTTP code (host responded;
-              # 200 / 401 / 403 / 404 / 5xx are all "allowlist let it through").
-              check "anthropic-allowed" "code=[1-9][0-9][0-9] exit=0"
-
-              # Denied -> exit non-zero AND no HTTP response. curl always
-              # emits `code=000` when the connection was refused at the
-              # proxy layer; under srt's deny path that's typically
-              # exit=56 (recv-failure-on-close). Match the exact shape;
-              # any non-000 code means the host responded HTTP, which is
-              # an egress leak.
+              # Denied -> exit non-zero AND no HTTP response. curl emits
+              # `code=000` when the connection was refused at the proxy
+              # layer; under srt's deny path that's typically exit=56
+              # (recv-failure-on-close). Any non-000 code means the host
+              # responded HTTP — an egress leak.
+              check "anthropic-denied"  "code=000 exit=[1-9]"
               check "github-denied"     "code=000 exit=[1-9]"
               check "example-denied"    "code=000 exit=[1-9]"
               check "openai-denied"     "code=000 exit=[1-9]"

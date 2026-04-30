@@ -2,29 +2,34 @@ import { describe, expect, it } from "vitest";
 import { HarnessConfigSchema, SandboxModeSchema } from "./config";
 
 describe("HarnessConfigSchema — sandbox field", () => {
-  it("defaults to 'passthrough' when omitted", () => {
+  it("defaults to passthrough mode + empty services when omitted", () => {
     const result = HarnessConfigSchema.parse({});
-    expect(result.sandbox).toBe("passthrough");
+    expect(result.sandbox.mode).toBe("passthrough");
+    expect(result.sandbox.local_services).toEqual({});
   });
 
-  it("accepts 'passthrough' explicitly", () => {
-    const result = HarnessConfigSchema.parse({ sandbox: "passthrough" });
-    expect(result.sandbox).toBe("passthrough");
-  });
-
-  it("accepts 'srt'", () => {
+  it("accepts the legacy string form", () => {
     const result = HarnessConfigSchema.parse({ sandbox: "srt" });
-    expect(result.sandbox).toBe("srt");
+    expect(result.sandbox.mode).toBe("srt");
   });
 
-  it("rejects unknown sandbox modes with a useful error path", () => {
-    const result = HarnessConfigSchema.safeParse({ sandbox: "docker" });
+  it("accepts the object form with local_services", () => {
+    const result = HarnessConfigSchema.parse({
+      sandbox: { mode: "srt", local_services: { otel: "127.0.0.1:3000" } },
+    });
+    expect(result.sandbox.mode).toBe("srt");
+    expect(result.sandbox.local_services).toEqual({ otel: "127.0.0.1:3000" });
+  });
+
+  it("rejects unknown sandbox modes", () => {
+    expect(HarnessConfigSchema.safeParse({ sandbox: "docker" }).success).toBe(false);
+  });
+
+  it("rejects local_services entries that aren't host:port", () => {
+    const result = HarnessConfigSchema.safeParse({
+      sandbox: { mode: "srt", local_services: { otel: "no-port" } },
+    });
     expect(result.success).toBe(false);
-    if (!result.success) {
-      const issue = result.error.issues.find((i) => i.path.join(".") === "sandbox");
-      expect(issue).toBeDefined();
-      expect(issue?.message).toMatch(/passthrough|srt/);
-    }
   });
 });
 

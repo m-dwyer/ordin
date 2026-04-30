@@ -18,11 +18,15 @@ default_runtime: ai-sdk
 default_model: qwen3-8b
 allowed_tools: []
 
-# Sandbox mode for `ordin run`. `passthrough` = no isolation (current
-# default; ADR-007). `srt` = kernel-enforced FS isolation + deny-by-
-# default network egress via `@anthropic-ai/sandbox-runtime` (Phase 9c).
-# Override per-run with `--sandbox <mode>`.
-sandbox: passthrough
+# Sandbox configuration for `ordin run`. Legacy string form is still
+# accepted (`sandbox: passthrough` / `sandbox: srt`); the object form
+# below is the full shape:
+#
+sandbox:
+  mode: srt
+  local_services:
+    otel: 127.0.0.1:3000 # OTel receiver (Langfuse, etc.)
+    llm-gateway: 127.0.0.1:4000 # OpenAI-compatible gateway (LiteLLM, etc.)
 
 # Per-runtime configs. Keys here match the `runtime:` field in
 # workflows/<name>.yaml phases. Schemas validated by each runtime.

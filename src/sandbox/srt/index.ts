@@ -1,13 +1,15 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { setDefaultResultOrder } from "node:dns";
 import { existsSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import {
   SandboxManager as DefaultSandboxManager,
   type SandboxRuntimeConfig,
 } from "@anthropic-ai/sandbox-runtime";
+import type { Broker } from "../../broker";
 import type { Sandbox, SandboxParams, SandboxReadiness } from "../types";
 import { buildSrtConfig } from "./config";
-import { defaultLiteLlmOnlyPolicy, type NetworkPolicy } from "./policy";
+import { defaultPolicy, type NetworkPolicy } from "./policy";
 
 /**
  * Sandbox impl backed by `@anthropic-ai/sandbox-runtime` ("srt"). srt
@@ -36,6 +38,9 @@ const SANDBOX_EXEC_BIN = "/usr/bin/sandbox-exec";
 
 export interface SrtSandboxDeps {
   readonly policy?: NetworkPolicy;
+  /** Broker that fronts local services via srt's mitmProxy hook. Owned
+   * by the harness; SrtSandbox starts/stops it around the wrapped spawn. */
+  readonly broker?: Broker;
   /** Inject for test seams. Defaults to the singleton from srt. */
   readonly manager?: typeof DefaultSandboxManager;
   /** Inject for test seams. Defaults to `os.platform()`. */
@@ -61,6 +66,7 @@ export class SrtSandbox implements Sandbox {
   readonly name = "srt";
 
   private readonly policy: NetworkPolicy;
+  private readonly broker?: Broker;
   private readonly manager: typeof DefaultSandboxManager;
   private readonly platform: () => string;
   private readonly homeDir: () => string;
@@ -71,7 +77,8 @@ export class SrtSandbox implements Sandbox {
   private readonly exit: (code: number) => never;
 
   constructor(deps: SrtSandboxDeps = {}) {
-    this.policy = deps.policy ?? defaultLiteLlmOnlyPolicy();
+    this.broker = deps.broker;
+    this.policy = deps.policy ?? defaultPolicy({ localServiceNames: this.broker?.domains() ?? [] });
     this.manager = deps.manager ?? DefaultSandboxManager;
     this.platform = deps.platform ?? platform;
     this.homeDir = deps.homeDir ?? homedir;
@@ -84,12 +91,21 @@ export class SrtSandbox implements Sandbox {
 
   async enterIfNeeded(params: SandboxParams): Promise<void> {
     if (this.alreadyInside()) return;
+    // srt's HTTP proxy and our broker (both in this parent process)
+    // dial outbound by hostname. Default getaddrinfo prefers IPv6 on
+    // recent Node/Bun, but Docker Desktop binds host ports to IPv4
+    // only by default — `localhost:3000` resolves to `::1:3000` which
+    // has no listener, hangs ~2s, then ECONNREFUSED. ipv4first
+    // matches the typical local-services bind shape.
+    setDefaultResultOrder("ipv4first");
+    if (this.broker) await this.broker.start();
     const config = this.buildConfig(params);
     await this.manager.initialize(config);
     await this.manager.waitForNetworkInitialization();
     const command = argvToShellCommand(this.argv());
     const wrapped = await this.manager.wrapWithSandbox(command);
     const code = await this.runWrapped(wrapped);
+    if (this.broker) await this.broker.stop();
     this.exit(code);
   }
 
@@ -114,6 +130,9 @@ export class SrtSandbox implements Sandbox {
       params,
       policy: this.policy,
       homeDir: this.homeDir(),
+      ...(this.broker
+        ? { mitmProxy: { socketPath: this.broker.socketPath, domains: this.broker.domains() } }
+        : {}),
     });
   }
 

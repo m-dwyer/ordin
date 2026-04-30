@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SandboxParams } from "../types";
 import { buildSrtConfig } from "./config";
 import { SrtSandbox } from "./index";
-import { defaultLiteLlmOnlyPolicy, mergePolicy, NetworkPolicySchema } from "./policy";
+import { defaultPolicy, mergePolicy, NetworkPolicySchema } from "./policy";
 
 const homeDir = "/Users/test";
 const params: SandboxParams = {
@@ -24,20 +24,20 @@ describe("NetworkPolicySchema", () => {
   });
 });
 
-describe("defaultLiteLlmOnlyPolicy", () => {
-  it("allows api.anthropic.com only (LiteLLM via NO_PROXY localhost bypass)", () => {
-    const p = defaultLiteLlmOnlyPolicy();
-    expect(p.allowedDomains).toEqual(["api.anthropic.com"]);
+describe("defaultPolicy", () => {
+  it("is empty by default — only localhost (NO_PROXY bypass) reaches", () => {
+    const p = defaultPolicy({ env: {} });
+    expect(p.allowedDomains).toEqual([]);
     expect(p.deniedDomains).toEqual([]);
   });
 });
 
 describe("mergePolicy", () => {
   it("dedupes appended allowedDomains", () => {
-    const merged = mergePolicy(defaultLiteLlmOnlyPolicy(), {
-      allowedDomains: ["api.anthropic.com", "*.npmjs.org"],
+    const merged = mergePolicy(defaultPolicy({ env: {} }), {
+      allowedDomains: ["*.npmjs.org", "*.npmjs.org"],
     });
-    expect(merged.allowedDomains).toEqual(["api.anthropic.com", "*.npmjs.org"]);
+    expect(merged.allowedDomains).toEqual(["*.npmjs.org"]);
   });
 
   it("preserves base deny list", () => {
@@ -51,17 +51,17 @@ describe("buildSrtConfig", () => {
   it("maps params + policy into the srt schema shape", () => {
     const cfg = buildSrtConfig({
       params,
-      policy: defaultLiteLlmOnlyPolicy(),
+      policy: defaultPolicy({ env: {} }),
       homeDir,
     });
-    expect(cfg.network.allowedDomains).toEqual(["api.anthropic.com"]);
+    expect(cfg.network.allowedDomains).toEqual([]);
     expect(cfg.filesystem.allowWrite).toContain(params.workspaceRoot);
     expect(cfg.filesystem.allowWrite).toContain(params.runStoreDir);
     expect(cfg.filesystem.allowWrite).toContain(params.tempDir);
   });
 
   it("denies sensitive credential dirs", () => {
-    const cfg = buildSrtConfig({ params, policy: defaultLiteLlmOnlyPolicy(), homeDir });
+    const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
     const denies = cfg.filesystem.denyRead;
     expect(denies).toContain(`${homeDir}/.ssh`);
     expect(denies).toContain(`${homeDir}/.aws`);
@@ -70,22 +70,22 @@ describe("buildSrtConfig", () => {
   });
 
   it("allows ~/.claude read for ADR-006 Max-plan auth", () => {
-    const cfg = buildSrtConfig({ params, policy: defaultLiteLlmOnlyPolicy(), homeDir });
+    const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
     expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.claude`);
   });
 
   it("does not include harnessRoot in allowWrite (the allow-only model denies it by default)", () => {
-    const cfg = buildSrtConfig({ params, policy: defaultLiteLlmOnlyPolicy(), homeDir });
+    const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
     expect(cfg.filesystem.allowWrite).not.toContain(params.harnessRoot);
   });
 
   it("leaves denyWrite empty — allow-only model handles defense, no overlap with allowWrite", () => {
-    const cfg = buildSrtConfig({ params, policy: defaultLiteLlmOnlyPolicy(), homeDir });
+    const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
     expect(cfg.filesystem.denyWrite).toEqual([]);
   });
 
   it("enables allowPty so TUI raw-mode setRawMode works inside the sandbox", () => {
-    const cfg = buildSrtConfig({ params, policy: defaultLiteLlmOnlyPolicy(), homeDir });
+    const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
     expect(cfg.allowPty).toBe(true);
   });
 });
@@ -161,6 +161,7 @@ describe("SrtSandbox.enterIfNeeded", () => {
     let runWrappedArg: string | undefined;
     let exitCode: number | undefined;
     const s = new SrtSandbox({
+      policy: defaultPolicy({ env: {} }),
       manager: fakeManager,
       env: () => ({}),
       argv: () => ["/bin/bun", "src/cli/index.ts", "run", "verify"],
@@ -192,7 +193,7 @@ describe("SrtSandbox.enterIfNeeded", () => {
     expect(runWrappedArg).toContain("'verify'");
     expect(exitCode).toBe(42);
     expect(receivedConfig).toMatchObject({
-      network: { allowedDomains: ["api.anthropic.com"] },
+      network: { allowedDomains: [] },
     });
   });
 });

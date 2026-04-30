@@ -4,6 +4,11 @@ import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxParams } from "../types";
 import type { NetworkPolicy } from "./policy";
 
+export interface MitmProxyConfig {
+  readonly socketPath: string;
+  readonly domains: readonly string[];
+}
+
 /**
  * Build the `SandboxRuntimeConfig` srt expects from harness-level
  * `SandboxParams` + a `NetworkPolicy`. Pure function — no I/O beyond
@@ -19,6 +24,8 @@ import type { NetworkPolicy } from "./policy";
 export interface BuildSrtConfigInput {
   readonly params: SandboxParams;
   readonly policy: NetworkPolicy;
+  /** Routes listed domains through our broker's Unix socket. */
+  readonly mitmProxy?: MitmProxyConfig;
   /** Inject for tests. Defaults to `os.homedir()`. */
   readonly homeDir?: string;
 }
@@ -54,6 +61,14 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
     network: {
       allowedDomains: [...input.policy.allowedDomains],
       deniedDomains: [...input.policy.deniedDomains],
+      ...(input.mitmProxy
+        ? {
+            mitmProxy: {
+              socketPath: input.mitmProxy.socketPath,
+              domains: [...input.mitmProxy.domains],
+            },
+          }
+        : {}),
     },
     // Required for any TUI inside the sandbox: OpenTUI's setRawMode
     // calls TIOCSETA on /dev/ttysNN, and srt's default ioctl allow-list

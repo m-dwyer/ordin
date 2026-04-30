@@ -47,6 +47,8 @@
     "diff": "^9.0.0",
     "gray-matter": "^4.0.3",
     "hono": "^4.12.15",
+    "http-proxy-agent": "^9.0.0",
+    "https-proxy-agent": "^9.0.0",
     "openai": "^6.34.0",
     "opentui-spinner": "^0.0.6",
     "solid-js": "^1.9.12",
