@@ -20,23 +20,11 @@ export interface DefaultPolicyInput {
 }
 
 export function defaultPolicy(input: DefaultPolicyInput = {}): NetworkPolicy {
-  const env = input.env ?? process.env;
   const allowed = new Set<string>(input.localServiceNames ?? []);
-  const langfuse = hostnameOf(env["LANGFUSE_HOST"]);
-  if (langfuse) allowed.add(langfuse);
   return {
     allowedDomains: [...allowed],
     deniedDomains: [],
   };
-}
-
-function hostnameOf(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

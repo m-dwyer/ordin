@@ -8,6 +8,8 @@ Diagram-source doc for ordin's v1 sandboxing architecture. Structured so it can 
 
 For design rationale see [`decisions/sandboxing.md`](./decisions/sandboxing.md). For the implementation plan see [`sandboxing-implementation.md`](./sandboxing-implementation.md).
 
+> **Step-1 addendum (L3a credential isolation, shipped):** the inner now reaches Langfuse through a parent-side `Broker` (`src/broker/`) wired as srt's `parentProxy`. Inner emits OTLP to `http://otel/...` via `HTTP_PROXY`; srt's allowlist gates first, then forwards approved egress to the broker on a localhost TCP port; the broker maps `otel` → `127.0.0.1:3000` and stamps `Authorization: Basic <pk:sk>` from credentials it holds parent-side. `LANGFUSE_*` is stripped from the inner's spawn env. The base diagram below describes the kernel-sandbox + srt baseline; the broker sits in the outer process between srt's HTTP proxy and the upstream Langfuse / LiteLLM containers. See [`sandboxing-implementation.md`](./sandboxing-implementation.md) for the L3a roadmap and [`sandboxing-findings.md`](./sandboxing-findings.md) for why we chose `parentProxy` over `mitmProxy`.
+
 ## Mermaid (in-repo preview)
 
 ```mermaid

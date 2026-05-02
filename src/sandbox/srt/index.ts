@@ -36,10 +36,25 @@ import { defaultPolicy, type NetworkPolicy } from "./policy";
 const ALREADY_INSIDE_ENV = "SANDBOX_RUNTIME";
 const SANDBOX_EXEC_BIN = "/usr/bin/sandbox-exec";
 
+/**
+ * Env vars stripped from the inner ordin's environment. Each is a
+ * credential the broker injects on the inner's behalf, so the inner
+ * has no need (and no business) seeing it. Add new entries here when
+ * a new broker-mediated service is introduced.
+ *
+ * LITELLM_MASTER_KEY stays in the inner for now — the AI SDK runtime
+ * still talks to `http://localhost:4000` directly. Step 1.5 will move
+ * it through the broker (`http://llm-gateway/`) and add it here.
+ */
+const INNER_ENV_DENYLIST = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"] as const;
+
 export interface SrtSandboxDeps {
   readonly policy?: NetworkPolicy;
-  /** Broker that fronts local services via srt's mitmProxy hook. Owned
-   * by the harness; SrtSandbox starts/stops it around the wrapped spawn. */
+  /** Broker that fronts local services as srt's parentProxy. Owned by
+   * the harness; SrtSandbox starts/stops it around the wrapped spawn.
+   * srt's allowlist filters first; approved requests are forwarded to
+   * the broker's localhost TCP port for upstream-routing + auth
+   * injection (and, in future, gate decisions / audit logging). */
   readonly broker?: Broker;
   /** Inject for test seams. Defaults to the singleton from srt. */
   readonly manager?: typeof DefaultSandboxManager;
@@ -57,7 +72,7 @@ export interface SrtSandboxDeps {
    * Inject for test seams. Defaults to spawning `/bin/sh -c <wrapped>`
    * with stdio inherited and resolving with the child's exit code.
    */
-  readonly runWrapped?: (wrapped: string) => Promise<number>;
+  readonly runWrapped?: (wrapped: string, env: NodeJS.ProcessEnv) => Promise<number>;
   /** Inject for test seams. Defaults to `process.exit`. */
   readonly exit?: (code: number) => never;
 }
@@ -73,12 +88,14 @@ export class SrtSandbox implements Sandbox {
   private readonly hasFile: (path: string) => boolean;
   private readonly env: () => NodeJS.ProcessEnv;
   private readonly argv: () => readonly string[];
-  private readonly runWrapped: (wrapped: string) => Promise<number>;
+  private readonly runWrapped: (wrapped: string, env: NodeJS.ProcessEnv) => Promise<number>;
   private readonly exit: (code: number) => never;
 
   constructor(deps: SrtSandboxDeps = {}) {
     this.broker = deps.broker;
-    this.policy = deps.policy ?? defaultPolicy({ localServiceNames: this.broker?.domains() ?? [] });
+    this.policy =
+      deps.policy ??
+      defaultPolicy({ localServiceNames: this.broker?.services.map((s) => s.name) ?? [] });
     this.manager = deps.manager ?? DefaultSandboxManager;
     this.platform = deps.platform ?? platform;
     this.homeDir = deps.homeDir ?? homedir;
@@ -98,15 +115,45 @@ export class SrtSandbox implements Sandbox {
     // has no listener, hangs ~2s, then ECONNREFUSED. ipv4first
     // matches the typical local-services bind shape.
     setDefaultResultOrder("ipv4first");
+    // Broker must start BEFORE buildConfig — we need its bound port
+    // to wire as srt's parentProxy in the runtime config.
     if (this.broker) await this.broker.start();
     const config = this.buildConfig(params);
     await this.manager.initialize(config);
     await this.manager.waitForNetworkInitialization();
     const command = argvToShellCommand(this.argv());
     const wrapped = await this.manager.wrapWithSandbox(command);
-    const code = await this.runWrapped(wrapped);
+    const innerEnv = this.buildInnerEnv();
+    const code = await this.runWrapped(wrapped, innerEnv);
     if (this.broker) await this.broker.stop();
     this.exit(code);
+  }
+
+  /**
+   * Compute the env the inner ordin sees. Strips parent-only secrets
+   * (telemetry creds, gateway tokens — anything the broker injects on
+   * the inner's behalf) and sets ORDIN_TRACING_ENABLED iff the broker
+   * has an authenticated `otel` service. Everything else is inherited
+   * from the parent so PATH, HOME, terminal vars, NODE_*, etc. flow
+   * through unchanged.
+   *
+   * Stripping is by deny-list. An allowlist would be cleaner but breaks
+   * tooling that legitimately needs broad parent env (mise shims, user
+   * locale, etc.). Move to allowlist when we have a clearer picture of
+   * what the inner actually requires.
+   */
+  private buildInnerEnv(): NodeJS.ProcessEnv {
+    const env = { ...this.env() };
+    for (const key of INNER_ENV_DENYLIST) {
+      delete env[key];
+    }
+    const otel = this.broker?.services.find((s) => s.name === "otel");
+    if (otel?.authHeader) {
+      env["ORDIN_TRACING_ENABLED"] = "1";
+    } else {
+      delete env["ORDIN_TRACING_ENABLED"];
+    }
+    return env;
   }
 
   async readiness(): Promise<SandboxReadiness> {
@@ -130,9 +177,7 @@ export class SrtSandbox implements Sandbox {
       params,
       policy: this.policy,
       homeDir: this.homeDir(),
-      ...(this.broker
-        ? { mitmProxy: { socketPath: this.broker.socketPath, domains: this.broker.domains() } }
-        : {}),
+      ...(this.broker ? { parentProxy: this.broker.proxyUrl() } : {}),
     });
   }
 
@@ -141,11 +186,12 @@ export class SrtSandbox implements Sandbox {
   }
 }
 
-function defaultRunWrapped(wrapped: string): Promise<number> {
+function defaultRunWrapped(wrapped: string, env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise((resolve, reject) => {
     const child: ChildProcess = spawn(wrapped, {
       shell: true,
       stdio: "inherit",
+      env,
     });
     child.on("error", reject);
     child.on("exit", (code, signal) => {

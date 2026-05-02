@@ -9,9 +9,12 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
  * `@opentelemetry/sdk-node` — every other module uses the public API
  * tracer (`trace.getTracer("ordin")`).
  *
- * Wiring is opt-in via env vars. With no `LANGFUSE_*` set, no exporter
- * is registered and the global tracer stays the no-op proxy: spans
- * cost effectively nothing.
+ * Wiring is gated by `ORDIN_TRACING_ENABLED=1`, which the parent sets
+ * in the inner's spawn env iff the broker has an `otel` local service
+ * configured. The inner has no Langfuse credentials of its own —
+ * spans go to `http://otel/api/public/otel/v1/traces` (a broker
+ * hostname), the broker injects the Basic-auth header on the way out,
+ * and Langfuse never sees the inner directly.
  *
  * Tracing is supplementary — never load-bearing. SDK init, exporter
  * errors, and transport rejections are caught here so a Langfuse
@@ -25,15 +28,12 @@ let shutdownPromise: Promise<void> | undefined;
 let rejectionGuardInstalled = false;
 
 const SERVICE_VERSION = "0.1.0";
+const OTEL_BROKER_URL = "http://otel/api/public/otel/v1/traces";
 
 export function startTracing(): void {
   if (sdk) return;
   if (process.env["ORDIN_TRACING_DISABLED"] === "1") return;
-
-  const host = process.env["LANGFUSE_HOST"];
-  const publicKey = process.env["LANGFUSE_PUBLIC_KEY"];
-  const secretKey = process.env["LANGFUSE_SECRET_KEY"];
-  if (!host || !publicKey || !secretKey) return;
+  if (process.env["ORDIN_TRACING_ENABLED"] !== "1") return;
 
   installRejectionGuard();
   diag.setLogger(
@@ -47,17 +47,20 @@ export function startTracing(): void {
     DiagLogLevel.WARN,
   );
 
-  const auth = Buffer.from(`${publicKey}:${secretKey}`).toString("base64");
-  const proxyUrl = process.env["HTTPS_PROXY"];
-  // Diagnostic: Bun's http polyfill may natively honor NO_PROXY,
-  // bypassing our agent for localhost. Clearing it forces traffic
-  // through whatever agent we configure. Remove if this turns out
-  // not to be the cause.
-  process.env["NO_PROXY"] = "";
-  process.env["no_proxy"] = "";
+  // OTel HTTP exporter routes via HTTP_PROXY (set by srt). srt's filter
+  // approves `otel` (in allowedDomains) and forwards to the broker as
+  // parentProxy; the broker maps `otel` → Langfuse and injects the
+  // Basic-auth header. The exporter itself sends plain HTTP with no
+  // auth header and no awareness of the upstream.
+  //
+  // We supply httpAgentOptions as a factory so the OTel SDK uses an
+  // HttpProxyAgent for the HTTP_PROXY env var. The OTel base accepts a
+  // function value here: `typeof === "function"` is treated as the
+  // agent factory directly (see otlp-exporter-base/.../convert-legacy-
+  // node-http-options.js).
+  const proxyUrl = process.env["HTTPS_PROXY"] ?? process.env["HTTP_PROXY"];
   const exporter = new OTLPTraceExporter({
-    url: `${host.replace(/\/$/, "")}/api/public/otel/v1/traces`,
-    headers: { Authorization: `Basic ${auth}` },
+    url: OTEL_BROKER_URL,
     ...(proxyUrl ? { httpAgentOptions: proxyAgentFactory(proxyUrl) } : {}),
   });
 

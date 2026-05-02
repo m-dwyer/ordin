@@ -320,8 +320,14 @@ export class HarnessRuntime {
   private resolveSandbox(state: LoadedState): Sandbox {
     if (this.sandboxOverride) return this.sandboxOverride;
     const mode = this.sandboxModeOverride ?? state.config.sandboxMode();
+    // The broker only exists in the outer (parent) process. The inner
+    // is wrapped by srt and reaches the broker through srt's parentProxy
+    // forwarder — it doesn't construct or own a broker. Skipping
+    // construction here also avoids failing the auth-env check in the
+    // inner, where LANGFUSE_* have been stripped from env.
+    const inInner = process.env["SANDBOX_RUNTIME"] === "1";
     const services = state.config.localServices();
-    const broker = Object.keys(services).length > 0 ? new Broker(services) : undefined;
+    const broker = !inInner && Object.keys(services).length > 0 ? new Broker(services) : undefined;
     return selectSandbox(mode, broker ? { broker } : {});
   }
 

@@ -16,6 +16,19 @@ export function prepareInnerProcess(env: NodeJS.ProcessEnv = process.env): void 
   if (env["SANDBOX_RUNTIME"] !== "1") return;
   delete env["NO_PROXY"];
   delete env["no_proxy"];
+  // The outer process sets ipv4first for its broker / proxy lookups, but
+  // that's per-process state — the inner inherits nothing. srt's HTTP
+  // proxy binds IPv4 only; without this, `localhost:NNNN` resolves to
+  // `::1:NNNN` here, hangs ~2s, then ECONNREFUSED. Mirror the outer's
+  // setting so HTTP_PROXY env actually reaches the proxy.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const dns = require("node:dns") as typeof import("node:dns");
+  dns.setDefaultResultOrder("ipv4first");
+  // Bun's `.env.local` autoload re-introduces secrets the parent stripped
+  // from the spawn env. Re-strip here so the inner truly never sees them.
+  for (const key of ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"]) {
+    delete env[key];
+  }
 }
 
 export { PassthroughSandbox } from "./passthrough";

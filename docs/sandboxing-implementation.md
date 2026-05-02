@@ -4,16 +4,18 @@ Forward-looking plan for ordin's sandbox boundary. Past decisions live in [`deci
 
 ## Where we are
 
-**Level 4 + broker.** Whole inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Broker (`src/broker/`) runs in the parent and fronts declared local services through srt's mitmProxy hook. Network egress denied by default; allowlist gated per-host. Local services declared in `ordin.config.yaml`'s `sandbox.local_services` map; broker forwards by name. macOS only; Linux comes for free via srt.
+**Level 4 + broker, with credential isolation for telemetry (L3a step 1 shipped).** Whole inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Broker (`src/broker/`) runs in the parent as srt's `parentProxy`: srt enforces the hostname allowlist first, then forwards approved egress to the broker, which dispatches by hostname to mapped local services and stamps an `Authorization` header from credentials it holds parent-side. Network egress denied by default; allowlist gated per-host. Local services declared in `ordin.config.yaml`'s `sandbox.local_services` map. macOS only; Linux comes for free via srt.
 
 Shipped:
 - B-process self-spawn via srt (`SrtSandbox` in `src/sandbox/srt/`)
-- Broker module (`src/broker/`) consuming srt's `mitmProxy` socket
-- Per-host + per-port granularity for local services
-- IPv4-first DNS in parent (Docker IPv4 binding compat)
-- `NO_PROXY` cleared in inner (Bun polyfill bypass closed)
-- Tracing through proxy via OTel `httpAgentOptions`
+- Broker as srt's `parentProxy` — TCP localhost listener with hostname-routed dispatch + per-service auth injection (Basic / Bearer)
+- Telemetry credentials (`LANGFUSE_*`) stripped from inner spawn env; broker is the sole party that authenticates to Langfuse
+- Inner uses `http://otel/...` via `HTTP_PROXY`; srt allowlist passes; broker maps `otel` → 127.0.0.1:3000 + `Authorization: Basic <pk:sk>`
+- IPv4-first DNS in inner and outer (Docker IPv4 binding compat)
+- `NO_PROXY` cleared in inner; `LANGFUSE_*` re-stripped post-Bun-`.env.local`-autoload
 - `network-validation` and `sandbox-validation` workflows (deterministic regression tests)
+
+Switched from `mitmProxy` (Unix socket) to `parentProxy` (TCP localhost) during step 1 because Bun ≤1.3.13 ignores `http.Agent({ socketPath })` paired with an absolute-URL `path` — exactly the shape srt's mitmProxy forwarder uses. See [`sandboxing-findings.md`](./sandboxing-findings.md) for the diagnosis. parentProxy is also the better fit for L3a's "broker as central policy point" direction: every approved egress now flows through the broker, so audit (step 2), gates (step 3), and OOB approvals (later) are route additions rather than new mechanisms.
 
 ## Threat model in scope
 
@@ -70,13 +72,21 @@ The kernel sandbox is the load-bearing security primitive. Each level moves wher
 - Strip secrets (Langfuse keys, future API tokens) from worker spawn env.
 - `Sandbox` interface gains `spawnWorker(args): WorkerHandle`. Default impl in `PassthroughSandbox` is plain `Bun.spawn`.
 
-### L3a — secret + audit isolation (alternate path, skips IPC complexity)
+### L3a — secret + audit isolation (chosen path, skips IPC complexity)
 **Trigger:** want L3's credential-isolation + audit-integrity wins without committing to the worker split.
-**Why:** ~80% of L3's security delta in a fraction of the change. Keeps B-process; just moves what the agent can see/touch in-process.
-**Work:**
-- Strip secrets from inner spawn env in `SrtSandbox.enterIfNeeded`.
-- RunStore writes mediated by the broker (broker writes; inner emits write events over a Unix socket; broker validates and persists).
-- Gate-decision state moved out of the inner process.
+**Why:** ~80% of L3's security delta in a fraction of the change. Keeps B-process; just moves what the agent can see/touch in-process. Treats the broker as the trusted holder of everything the agent shouldn't see, do, or tamper with.
+
+**Sequencing — small bites, each independently shippable:**
+
+1. ✅ **Telemetry off the inner.** OTel exporter → `http://otel/...` → broker (parentProxy) → Langfuse with broker-injected Basic auth. `LANGFUSE_*` stripped from inner. Validates the broker-as-Hono-on-TCP pattern with the simplest possible message type. **(Shipped.)**
+2. **Audit log behind the broker.** New endpoint, hash-chained, append-only. Inner emits run events as HTTP. Audit integrity becomes real for the first time.
+3. **Gate state behind the broker.** Inner asks via HTTP, broker decides, broker replies. Decisions become unfakeable by the inner. The `sandboxAskCallback` srt exposes (orthogonal to mitmProxy/parentProxy — fires inside `filterNetworkRequest`) becomes the natural seam for "host not in static allowlist → ask broker → prompt user → cache decision per session".
+4. **OOB channel.** Add Signal / Telegram / push as the broker's notification surface. The TUI prompter remains as a fallback. Decision policy: deny-novel-without-OOB-approval for sensitive runs.
+5. **`--auto-approve` flag** with three-layer policy (static / auto-with-audit / hard-manual). Per-run flag, never persistent in config. Post-run summary lists decisions for promotion to durable policy.
+
+Steps 4 and 5 are deferred until 1–3 land.
+
+**LiteLLM (step 1.5):** mirror the telemetry move for the AI SDK runtime (`base_url: http://llm-gateway/`, drop `api_key_env`, add `LITELLM_MASTER_KEY` to the inner spawn-env denylist; broker injects `Authorization: Bearer ...` on forward to LiteLLM). Wiring already in place (`local_services.llm-gateway` is configured in `ordin.config.yaml`); blocked on validating that the OpenAI SDK routes through `HTTP_PROXY` for the broker hostname before flipping the runtime config.
 
 **Trade-off:** doesn't dissolve Finding 8 (TUI coupling), doesn't unblock server-mode sandboxing or Docker/microVM impls. If those triggers don't fire, L3a is enough.
 

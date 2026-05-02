@@ -4,11 +4,6 @@ import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxParams } from "../types";
 import type { NetworkPolicy } from "./policy";
 
-export interface MitmProxyConfig {
-  readonly socketPath: string;
-  readonly domains: readonly string[];
-}
-
 /**
  * Build the `SandboxRuntimeConfig` srt expects from harness-level
  * `SandboxParams` + a `NetworkPolicy`. Pure function — no I/O beyond
@@ -24,8 +19,15 @@ export interface MitmProxyConfig {
 export interface BuildSrtConfigInput {
   readonly params: SandboxParams;
   readonly policy: NetworkPolicy;
-  /** Routes listed domains through our broker's Unix socket. */
-  readonly mitmProxy?: MitmProxyConfig;
+  /**
+   * Parent-proxy URL (typically the ordin broker on a localhost TCP
+   * port). srt forwards approved egress through this proxy after its
+   * own allowlist check. Was `mitmProxy` over a Unix socket originally;
+   * switched to parentProxy because Bun ≤1.3.13 mishandles
+   * `http.Agent({ socketPath })` paired with absolute-URL `path`,
+   * which is the shape srt's mitmProxy hook uses.
+   */
+  readonly parentProxy?: string;
   /** Inject for tests. Defaults to `os.homedir()`. */
   readonly homeDir?: string;
 }
@@ -61,14 +63,7 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
     network: {
       allowedDomains: [...input.policy.allowedDomains],
       deniedDomains: [...input.policy.deniedDomains],
-      ...(input.mitmProxy
-        ? {
-            mitmProxy: {
-              socketPath: input.mitmProxy.socketPath,
-              domains: [...input.mitmProxy.domains],
-            },
-          }
-        : {}),
+      ...(input.parentProxy ? { parentProxy: { http: input.parentProxy } } : {}),
     },
     // Required for any TUI inside the sandbox: OpenTUI's setRawMode
     // calls TIOCSETA on /dev/ttysNN, and srt's default ioctl allow-list

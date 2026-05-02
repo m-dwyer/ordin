@@ -388,3 +388,30 @@ Fix: use `child_process.spawn` (or `Bun.spawn`) and `await` the exit. The spike 
 Phase 9c plan stands. Phase B builds an `SrtSandbox` adapter; Phase C restructures to parent/worker (parent runs the JS event loop hosting srt's proxies; worker is the sandboxed child). The async-spawn requirement is naturally satisfied by Phase C's design — the worker is spawned, never run in-process, and the parent's event loop stays free for the proxies to service the worker's traffic.
 
 The spike script `scripts/spike/srt-bun.ts` and the dep added to `package.json` / `bun.lock` are reverted before merge — Phase B re-introduces the dep with a real adapter.
+
+## Finding 17 — Bun ≤1.3.13 ignores `http.Agent({ socketPath })` when `path` is an absolute URL
+
+**Symptom:** Step 1 of L3a (telemetry off the inner via the broker) failed end-to-end. srt's debug log showed `Allowed by config rule: otel:80`, then `Routing HTTP POST otel:80 through MITM proxy at <socket>`, then `Proxy request failed: ECONNREFUSED`. The broker logged `started` but never logged a connection accept — srt's forward to the Unix socket was failing before any HTTP parsing happened.
+
+**Diagnosis:** srt's mitmProxy forwarder uses this exact request shape (`node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/http-proxy.js:145`):
+
+```ts
+const agent = new http.Agent({ socketPath: mitmSocketPath });
+http.request({ agent, path: "http://otel/api/...", method: "POST", headers: { ... } });
+```
+
+Confirmed via three-pattern probe:
+
+```
+✓ http.request({ socketPath, path: "/api/foo" })                            // works
+✓ http.request({ agent: new Agent({ socketPath }), path: "/api/foo" })      // works
+✗ http.request({ agent: new Agent({ socketPath }), path: "http://h/foo" })  // ECONNREFUSED
+```
+
+When `path` is an absolute URL **and** the agent has `socketPath`, Bun's `http.request` ignores the agent's `socketPath` and tries to dial the URL's host directly. Since `otel` is not a real DNS name, the connection fails. Bun also doesn't dispatch through `Agent.prototype.addRequest` / `createConnection` / `getName` — patching all three from outside fired none of them, so we can't fix this via prototype monkey-patching either.
+
+**Fix:** switch from srt's `mitmProxy` (Unix socket, hits the buggy shape) to `parentProxy` (TCP HTTP proxy, uses normal request shape). The broker now binds on `127.0.0.1:0`, exposes its port via `proxyUrl()`, and `buildSrtConfig` wires `parentProxy: { http: <broker proxy URL> }`. srt's allowlist still gates first; approved requests are forwarded to the broker over plain TCP — no `Agent({ socketPath })` shape involved.
+
+**Why it matters for the architecture:** parentProxy is also the better fit for L3a's "broker as central policy point" direction. With mitmProxy, only specifically-mapped hostnames flow through the broker; with parentProxy, *every* approved egress flows through it. Future endpoints (audit log, gate state, OOB approval) become route additions in the broker rather than new mechanisms. The `sandboxAskCallback` srt exposes is orthogonal to forwarding — it fires inside `filterNetworkRequest` regardless of mitmProxy/parentProxy — so the gate-prompt loop (callback → broker → TUI → user → broker → callback returns) plugs in cleanly when we ship step 3.
+
+**Related cleanup:** Bun's automatic `.env.local` autoload re-introduces `LANGFUSE_*` into the inner's env even after `SrtSandbox` strips them at spawn. `prepareInnerProcess` (called at the top of `HarnessRuntime`) re-strips them post-load. Same function now also calls `setDefaultResultOrder("ipv4first")` in the inner — the outer sets it but it's per-process and doesn't propagate.
