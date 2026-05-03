@@ -11,6 +11,7 @@ import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
+import { PhaseRunner } from "../../src/orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
   AgentRuntime,
@@ -122,6 +123,8 @@ async function runWithMastra(
 ): Promise<RunMeta> {
   const engine = new MastraEngine();
   const program = engine.compile(harness.workflow);
+  const services = makeServices(harness, runtime);
+  const runner = new PhaseRunner();
   return engine.run(
     program,
     {
@@ -130,9 +133,16 @@ async function runWithMastra(
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
       tier: input.tier ?? "M",
       onGateRequested,
+      dispatchPhase: (req) =>
+        runner.run({
+          preview: req.preview,
+          runtime: services.runtimes.get(req.runtimeName) as AgentRuntime,
+          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+          emit: req.emit,
+        }),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
     },
-    makeServices(harness, runtime),
+    services,
   );
 }
 

@@ -23,6 +23,15 @@ describe("PassthroughSandbox", () => {
     const sandbox = new PassthroughSandbox();
     await expect(sandbox.readiness()).resolves.toEqual({ ok: true, reasons: [] });
   });
+
+  it("spawnWorker runs the argv and resolves with the exit code", async () => {
+    const sandbox = new PassthroughSandbox();
+    const handle = sandbox.spawnWorker({
+      argv: ["/bin/sh", "-c", "exit 7"],
+      env: process.env,
+    });
+    await expect(handle.exit).resolves.toBe(7);
+  });
 });
 
 describe("selectSandbox", () => {

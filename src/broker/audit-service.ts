@@ -45,12 +45,21 @@ export interface AuditServiceOptions {
   readonly onWarn?: (message: string) => void;
   /** Inject for tests; defaults to `() => new Date().toISOString()`. */
   readonly now?: () => string;
+  /**
+   * Fires once per audit event after the chain write succeeds. The
+   * harness wires this to its `StartRunInput.onEvent` so worker-emitted
+   * RunEvents (delivered here as audit POSTs) flow into the parent's
+   * TUI. Errors thrown by the callback are logged via `onWarn` and
+   * never propagate — audit is supplementary.
+   */
+  readonly onEvent?: (event: AuditEvent) => void;
 }
 
 export class AuditService {
   private readonly runStoreDir: string;
   private readonly onWarn: (message: string) => void;
   private readonly now: () => string;
+  private readonly onEvent?: (event: AuditEvent) => void;
   private readonly writers = new Map<string, Promise<AuditChainWriter>>();
   private currentRunId?: string;
 
@@ -58,6 +67,7 @@ export class AuditService {
     this.runStoreDir = opts.runStoreDir;
     this.onWarn = opts.onWarn ?? ((m) => console.warn(`[audit] ${m}`));
     this.now = opts.now ?? (() => new Date().toISOString());
+    if (opts.onEvent) this.onEvent = opts.onEvent;
   }
 
   /** Register on the broker as `{ kind: "internal", name: "audit", handler }`. */
@@ -160,6 +170,13 @@ export class AuditService {
   private async appendInternal(runId: string, kind: string, payload: unknown): Promise<void> {
     const writer = await this.writerFor(runId);
     await writer.append({ runId, kind, payload });
+    if (this.onEvent) {
+      try {
+        this.onEvent({ runId, kind, payload });
+      } catch (err) {
+        this.onWarn(`onEvent threw for ${kind}: ${errMessage(err)}`);
+      }
+    }
   }
 
   private writerFor(runId: string): Promise<AuditChainWriter> {

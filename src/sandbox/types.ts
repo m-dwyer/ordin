@@ -16,21 +16,49 @@ export interface Sandbox {
   readonly name: string;
 
   /**
-   * If the current process needs to be sandboxed but isn't yet, re-exec
-   * under the sandbox (B-process pattern). Otherwise no-op.
+   * Bring the sandbox up: validate readiness, start the broker (if any),
+   * initialise srt or equivalent and wait for the network stack. Resolves
+   * once the parent can call `spawnWorker`. Idempotent on repeated calls.
    *
-   * When re-exec actually happens, the call does not return — the
-   * current process is replaced. Callers should treat a resolved
-   * Promise as "you may proceed; you're either passthrough or already
-   * inside the sandbox."
+   * Under L2 the parent stays as the parent — `enterIfNeeded` no longer
+   * reexecs. Per-phase isolation comes from `spawnWorker` instead.
    */
   enterIfNeeded(params: SandboxParams): Promise<void>;
+
+  /**
+   * Spawn one sandboxed worker that the parent supervises. Each call
+   * produces a fresh process with the impl-specific isolation applied
+   * (passthrough = direct `Bun.spawn`; srt = wrapped via
+   * `manager.wrapWithSandbox`). The handle exposes the eventual exit
+   * code and a `kill` for abort propagation.
+   */
+  spawnWorker(plan: WorkerPlan): WorkerHandle;
+
+  /**
+   * Tear down the sandbox: stop the broker, release srt resources.
+   * Called by the harness once the run is finished.
+   */
+  shutdown(): Promise<void>;
 
   /**
    * Diagnostic — is this sandbox usable on the current host?
    * `ordin doctor` surfaces the result.
    */
   readiness(): Promise<SandboxReadiness>;
+}
+
+/** Plan a worker execution. Pure data — no live handles. */
+export interface WorkerPlan {
+  readonly argv: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd?: string;
+}
+
+export interface WorkerHandle {
+  /** Resolves with the child's exit code (or 128+signal on signalled exit). */
+  readonly exit: Promise<number>;
+  /** Optional abort — best-effort delivery of `signal` to the worker. */
+  kill(signal?: NodeJS.Signals): void;
 }
 
 export interface SandboxParams {

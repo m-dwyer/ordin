@@ -80,7 +80,6 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
         workflow: opts.workflow,
         ...(opts.sandbox ? { sandboxMode: opts.sandbox } : {}),
         ...(opts.script ? { scriptPath: opts.script } : {}),
-        runInput: input,
         header: {
           task: input.task,
           slug: input.slug,

@@ -37,6 +37,7 @@ import { RunApp } from "./run-app";
 import { PALETTE } from "./theme";
 import type {
   ControllerState,
+  EgressGateState,
   FeedRow,
   GateState,
   PhaseRow,
@@ -53,6 +54,7 @@ export class OpenTuiRunController {
   private readonly phasesStore = createStore<{ list: PhaseRow[] }>({ list: [] });
   private readonly sectionsStore = createStore<{ list: PhaseSection[] }>({ list: [] });
   private readonly gateSignal = createSignal<GateState | null>(null);
+  private readonly egressGateSignal = createSignal<EgressGateState | null>(null);
   private readonly hintSignal = createSignal("");
   private readonly toolMeta = new Map<
     string,
@@ -65,6 +67,7 @@ export class OpenTuiRunController {
 
   private renderer?: CliRenderer;
   private pendingGate: ((d: GateDecision) => void) | null = null;
+  private pendingEgressGate: ((approved: boolean) => void) | null = null;
   private pendingDismiss: (() => void) | null = null;
   private finished = false;
   private nextRowId = 1;
@@ -80,6 +83,7 @@ export class OpenTuiRunController {
     const [phases] = this.phasesStore;
     const [sections] = this.sectionsStore;
     const [gate] = this.gateSignal;
+    const [egressGate] = this.egressGateSignal;
     const [hint] = this.hintSignal;
     const [header] = this.headerSignal;
     const [paused] = this.pausedSignal;
@@ -90,11 +94,13 @@ export class OpenTuiRunController {
       phases: () => phases.list,
       sections: () => sections.list,
       gate,
+      egressGate,
       hint,
       paused,
       expanded,
       collapsedPhases,
       decideGate: (d) => this.decideGate(d),
+      decideEgressGate: (a) => this.decideEgressGate(a),
       dismiss: () => this.dismiss(),
       toggleExpanded: (id) => this.toggleExpanded(id),
       collapseAll: () => this.collapseAll(),
@@ -311,6 +317,21 @@ export class OpenTuiRunController {
   }
 
   /**
+   * Egress gate: surfaced when srt's askCallback (via the broker) wants
+   * the user's decision before allowing the inner to reach an
+   * unallowlisted host. Independent of phase gates — fires mid-phase
+   * during agent tool use. The promise resolves to true (allow + cache
+   * for this run) or false (deny).
+   */
+  requestEgressGate(host: string, port: number | undefined): Promise<boolean> {
+    const [, setEgress] = this.egressGateSignal;
+    setEgress({ host, port });
+    return new Promise<boolean>((resolve) => {
+      this.pendingEgressGate = resolve;
+    });
+  }
+
+  /**
    * Stash final summary state for later printing. `dispose()` exits
    * the alternate screen; then `printFinalSummary()` appends to the
    * user's normal terminal scrollback exactly once.
@@ -350,6 +371,7 @@ export class OpenTuiRunController {
     if (this.renderer && !this.renderer.isDestroyed) {
       this.hintSignal[1]("");
       this.gateSignal[1](null);
+      this.egressGateSignal[1](null);
       this.renderer.destroy();
     }
     this.renderer = undefined;
@@ -425,6 +447,14 @@ export class OpenTuiRunController {
       totalParts.length > 0 ? `  ${totalParts.join(" · ")}` : "  (no work recorded)";
     process.stdout.write(`${ansiStyled(totalsLine, PALETTE.hint)}\n`);
     process.stdout.write(`${ansiStyled(`  ${final.runId}`, PALETTE.hint)}\n`);
+  }
+
+  private decideEgressGate(approved: boolean): void {
+    const [, setEgress] = this.egressGateSignal;
+    setEgress(null);
+    const resolve = this.pendingEgressGate;
+    this.pendingEgressGate = null;
+    resolve?.(approved);
   }
 
   private decideGate(decision: GateDecision): void {

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Broker } from "../broker";
@@ -17,7 +17,6 @@ import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
 import { SkillLoader } from "../infrastructure/skill-loader";
 import { WorkflowLoader } from "../infrastructure/workflow-loader";
-import { AuditEmitter } from "../observability/audit-emitter";
 import { startTracing } from "../observability/tracing";
 import {
   type Engine,
@@ -25,18 +24,18 @@ import {
   type EngineRunInput,
   type EngineServices,
   type GateRequest,
+  type PhaseDispatchRequest,
   type PreviewInput,
   type PreviewServices,
   type WorkflowProgram,
 } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
+import { PhaseRunner, type PhaseRunResult } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
-import { AiSdkRuntime } from "../runtimes/ai-sdk";
-import { ClaudeCliRuntime } from "../runtimes/claude-cli";
-import { ScriptedRuntime } from "../runtimes/scripted";
+import { buildAllRuntimes } from "../runtimes/registry";
 import type { AgentRuntime } from "../runtimes/types";
-import { isInnerProcess, prepareInnerProcess, type SandboxMode, selectSandbox } from "../sandbox";
+import { type SandboxMode, selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
 
 export type { VerifyResult } from "../broker/audit-chain";
@@ -82,6 +81,19 @@ export interface HarnessRuntimeOptions {
    * flows always supply their own resolver explicitly.
    */
   readonly gateForKind?: (kind: Phase["gate"]) => Gate;
+  /**
+   * Resolve a yes/no decision when the agent attempts egress to a host
+   * that isn't in `local_services` and isn't in srt's `allowedDomains`.
+   * srt's `sandboxAskCallback` routes through `Broker.askApproval`,
+   * which calls this hook on cache miss. CLIs wire it to an interactive
+   * prompter (TUI gate card); headless callers leave it unset and the
+   * broker denies. The signature is intentionally minimal — the prompt
+   * UX has only the host/port to work with.
+   */
+  readonly egressGatePrompter?: (req: {
+    host: string;
+    port: number | undefined;
+  }) => Promise<boolean>;
   /**
    * Direct override — programmatic callers (tests, eval suite) inject
    * a `Sandbox` instance to bypass mode resolution. Highest priority.
@@ -140,19 +152,23 @@ export class HarnessRuntime {
   private readonly engineName: string;
   private readonly runtimesOverride?: ReadonlyMap<string, AgentRuntime>;
   private readonly gateResolver: (kind: Phase["gate"]) => Gate;
+  private readonly egressGatePrompter?: (req: {
+    host: string;
+    port: number | undefined;
+  }) => Promise<boolean>;
   private readonly engines: EngineRegistry;
   private readonly sandboxOverride?: Sandbox;
   private readonly sandboxModeOverride?: SandboxMode;
   private readonly scriptPathOverride?: string;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
-    prepareInnerProcess();
     startTracing();
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
     this.engineName = opts.engine ?? "mastra";
     this.runtimesOverride = opts.runtimes;
     this.gateResolver = opts.gateForKind ?? defaultGateResolver;
+    if (opts.egressGatePrompter) this.egressGatePrompter = opts.egressGatePrompter;
     this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
     this.sandboxOverride = opts.sandbox;
     this.sandboxModeOverride = opts.sandboxMode;
@@ -161,28 +177,101 @@ export class HarnessRuntime {
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
-    const sandbox = this.resolveSandbox(state);
-    await sandbox.enterIfNeeded({
+    const infra = this.buildInfra(state, input);
+    await infra.sandbox.enterIfNeeded({
       workspaceRoot,
       runStoreDir: state.config.runStoreDir(),
       harnessRoot: this.root,
     });
-    // AuditEmitter is a no-op in passthrough and when
-    // ORDIN_AUDIT_ENABLED is unset, so always wiring it is cheap.
-    const auditEmitter = new AuditEmitter();
-    const runInput: EngineRunInput = {
-      task: input.task,
-      slug,
-      workspaceRoot,
-      tier: input.tier ?? "M",
-      onGateRequested: (request) => this.handleGateRequest(request),
-      onEvent: (ev) => {
-        input.onEvent?.(ev);
-        auditEmitter.emit(ev);
-      },
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    try {
+      const onEvent = makeOnEvent(infra, input);
+      const runInput: EngineRunInput = {
+        task: input.task,
+        slug,
+        workspaceRoot,
+        tier: input.tier ?? "M",
+        onGateRequested: (request) => this.handleGateRequest(request),
+        onEvent,
+        dispatchPhase: this.makeDispatchPhase(infra, state),
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      };
+      return await engine.run(program, runInput, this.engineServices(state));
+    } finally {
+      if (infra.kind === "srt") await infra.audit.closeAll();
+      await infra.sandbox.shutdown();
+    }
+  }
+
+  /**
+   * Build the engine's `dispatchPhase` callback. srt mode spawns one
+   * sandboxed worker per phase; passthrough mode runs the phase in-
+   * process via `PhaseRunner` directly. Both paths return the same
+   * `PhaseRunResult`; the engine doesn't care which was used.
+   */
+  private makeDispatchPhase(
+    infra: RunInfra,
+    state: LoadedState,
+  ): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
+    if (infra.kind === "srt") {
+      const sandbox = infra.sandbox;
+      const harnessRoot = this.root;
+      const workflowName = this.workflowName;
+      const scriptPath = this.scriptPathOverride;
+      const configFile = this.paths().configFile;
+      return async (req) => {
+        const planPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.plan.json`);
+        const resultPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.result.json`);
+        const plan = {
+          configFile,
+          harnessRoot,
+          workflowName,
+          ...(scriptPath ? { scriptPath } : {}),
+          runId: req.runId,
+          runDir: req.runDir,
+          iteration: req.iteration,
+          phase: req.phase,
+          preview: req.preview,
+          runtimeName: req.runtimeName,
+          resultPath,
+        };
+        await writeFile(planPath, JSON.stringify(plan));
+        const handle = sandbox.spawnWorker({
+          argv: [process.execPath, workerEntryPath(harnessRoot), "--plan", planPath],
+          env: process.env,
+        });
+        if (req.abortSignal) {
+          const onAbort = () => handle.kill("SIGTERM");
+          req.abortSignal.addEventListener("abort", onAbort, { once: true });
+        }
+        const code = await handle.exit;
+        if (code !== 0) {
+          throw new Error(
+            `worker for phase "${req.phase.id}" iteration ${req.iteration} exited ${code}`,
+          );
+        }
+        const resultText = await readFile(resultPath, "utf8");
+        return JSON.parse(resultText) as PhaseRunResult;
+      };
+    }
+    // Passthrough: no sandbox boundary, no worker spawn. Run the phase
+    // in-process — same shape as before L2.
+    const runner = new PhaseRunner();
+    const runtimes = this.runtimesFor(state.config);
+    return async (req) => {
+      const runtime = runtimes.get(req.runtimeName);
+      if (!runtime) {
+        throw new Error(
+          `runtime "${req.runtimeName}" requested by phase "${req.phase.id}" not registered`,
+        );
+      }
+      return runner.run({
+        preview: req.preview,
+        runtime,
+        context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+        emit: req.emit,
+        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+      });
     };
-    return engine.run(program, runInput, this.engineServices(state));
   }
 
   /**
@@ -242,36 +331,6 @@ export class HarnessRuntime {
     if (this.sandboxModeOverride) return this.sandboxModeOverride;
     const { config } = await this.load();
     return config.sandboxMode();
-  }
-
-  /**
-   * Resolve workspace and enter the sandbox if needed. CLIs MUST call
-   * this *before* any terminal / UI initialisation — under `srt` the
-   * outer process spawns a wrapped child and waits for it; if the
-   * renderer has already initialised raw-mode / mouse tracking / alt-
-   * screen the inner process inherits a polluted terminal state.
-   *
-   * Cheap on the inner (post-spawn) invocation: srt sets
-   * `SANDBOX_RUNTIME=1` in the wrapped command's env, so subsequent
-   * `enterIfNeeded` calls return immediately. Cheap on passthrough:
-   * `enterIfNeeded` is a no-op. Only the outer-with-srt case actually
-   * spawns the wrapper (and that call never returns — the outer
-   * process exits with the child's status when the child exits).
-   *
-   * `startRun` calls `enterIfNeeded` again as a backstop so
-   * programmatic callers (tests, eval suite, RunService) that skip
-   * this method still get correct behaviour.
-   */
-  async prepareSandbox(input: StartRunInput): Promise<void> {
-    const state = await this.load();
-    requireSlug(input.slug);
-    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
-    const sandbox = this.resolveSandbox(state);
-    await sandbox.enterIfNeeded({
-      workspaceRoot,
-      runStoreDir: state.config.runStoreDir(),
-      harnessRoot: this.root,
-    });
   }
 
   /** Paths ordin knows about — useful for the CLI `doctor` command. */
@@ -337,34 +396,43 @@ export class HarnessRuntime {
   }
 
   /**
-   * Resolution order: explicit `Sandbox` instance > `sandboxMode`
+   * Build the per-run infra bundle: the `Sandbox`, plus (for srt mode)
+   * the `Broker` + `AuditService` it fronts. Wires the audit chain's
+   * `onEvent` to forward worker-emitted events into the harness's
+   * `StartRunInput.onEvent` so the parent's TUI sees them in real time.
+   *
+   * Resolution order: explicit `Sandbox` instance override > `sandboxMode`
    * override (typically the CLI flag) > config file's `sandbox:` field.
-   * Defer resolution until run time so config has been loaded.
    */
-  private resolveSandbox(state: LoadedState): Sandbox {
-    if (this.sandboxOverride) return this.sandboxOverride;
+  private buildInfra(state: LoadedState, input: StartRunInput): RunInfra {
+    if (this.sandboxOverride) {
+      return { kind: "override", sandbox: this.sandboxOverride };
+    }
     const mode = this.sandboxModeOverride ?? state.config.sandboxMode();
-    // Broker is only meaningful for srt mode in the outer process:
-    // srt wires it as parentProxy and forwards approved egress to it.
-    // - Passthrough mode: no sandbox, no proxy, broker would be unused.
-    // - Inner of an srt run: broker lives parent-side; the inner
-    //   reaches it via HTTP_PROXY. Constructing here would also fail
-    //   the auth-env check (LANGFUSE_* stripped from inner env).
-    if (mode !== "srt" || isInnerProcess()) return selectSandbox(mode);
+    if (mode === "passthrough") {
+      return { kind: "passthrough", sandbox: selectSandbox(mode) };
+    }
+    // srt: stand up audit + broker. AuditService is the single fan-out
+    // point — every appended event flows back to `input.onEvent`,
+    // covering both worker-emitted RunEvents (delivered as HTTP audit
+    // POSTs) and parent-emitted RunEvents (which startRun's onEvent
+    // funnels through audit.appendEvent). `broker.*` observations are
+    // chain-only and don't propagate to the TUI.
+    const audit = new AuditService({
+      runStoreDir: state.config.runStoreDir(),
+      onEvent: (ev) => {
+        if (ev.kind.startsWith("broker.")) return;
+        input.onEvent?.(ev.payload as RunEvent);
+      },
+    });
     const services = state.config.localServices();
-    // Audit service is always registered alongside the broker. It's
-    // the seam for the hash-chained run-event chain + non-HTTP egress
-    // visibility (broker.connect events from srt-via-CONNECT
-    // tunneling). Cheap to include even when no local_services are
-    // configured — the broker exists for the audit endpoint alone in
-    // that case.
-    const audit = new AuditService({ runStoreDir: state.config.runStoreDir() });
     const broker = new Broker(services, {
       proxyAuth: randomBytes(32).toString("hex"),
       internalServices: [audit.asInternalService()],
       onEgress: audit.egressSink(),
+      ...(this.egressGatePrompter ? { onEgressGate: this.egressGatePrompter } : {}),
     });
-    return selectSandbox(mode, { broker });
+    return { kind: "srt", sandbox: selectSandbox(mode, { broker }), broker, audit };
   }
 
   private engineServices(state: LoadedState): EngineServices {
@@ -396,33 +464,11 @@ export class HarnessRuntime {
   private runtimesFor(config: HarnessConfig): ReadonlyMap<string, AgentRuntime> {
     return (
       this.runtimesOverride ??
-      new Map<string, AgentRuntime>([
-        [
-          "ai-sdk",
-          AiSdkRuntime.fromConfig(config.runtimeConfig("ai-sdk"), {
-            runsDir: config.runStoreDir(),
-          }),
-        ],
-        [
-          "claude-cli",
-          ClaudeCliRuntime.fromConfig(config.runtimeConfig("claude-cli"), {
-            // The ordin repo itself is a Claude Code plugin
-            // (.claude-plugin/plugin.json + top-level skills/). Loading it
-            // per-invocation means zero pollution of ~/.claude/.
-            pluginDirs: [this.root],
-            runsDirFallback: config.runStoreDir(),
-          }),
-        ],
-        [
-          "scripted",
-          ScriptedRuntime.fromConfig(config.runtimeConfig("scripted"), {
-            workflowName: this.workflowName,
-            harnessRoot: this.root,
-            runsDirFallback: config.runStoreDir(),
-            ...(this.scriptPathOverride ? { scriptPath: this.scriptPathOverride } : {}),
-          }),
-        ],
-      ])
+      buildAllRuntimes(config, {
+        harnessRoot: this.root,
+        workflowName: this.workflowName,
+        ...(this.scriptPathOverride ? { scriptPath: this.scriptPathOverride } : {}),
+      })
     );
   }
 }
@@ -472,4 +518,44 @@ function requireSlug(slug: string): string {
 function defaultRoot(): string {
   // Walk up from this file: src/runtime/harness.ts → src/runtime → src → root.
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+/**
+ * Per-run infra bundle returned by `buildInfra`. The `kind` discriminator
+ * keeps callers from reaching for `audit`/`broker` in modes that don't
+ * have them.
+ */
+type RunInfra =
+  | { readonly kind: "passthrough"; readonly sandbox: Sandbox }
+  | { readonly kind: "override"; readonly sandbox: Sandbox }
+  | {
+      readonly kind: "srt";
+      readonly sandbox: Sandbox;
+      readonly broker: Broker;
+      readonly audit: AuditService;
+    };
+
+/**
+ * Pick the right per-event funnel for the resolved infra. srt routes
+ * everything through `audit.appendEvent` so the chain + the TUI fan-out
+ * share a single path; passthrough has no audit so it forwards directly.
+ */
+function makeOnEvent(infra: RunInfra, input: StartRunInput): (event: RunEvent) => void {
+  if (infra.kind === "srt") {
+    const audit = infra.audit;
+    return (ev) => {
+      audit.appendEvent({ runId: ev.runId, kind: ev.type, payload: ev }).catch((err: unknown) => {
+        console.warn(`[harness] audit append failed: ${errMessage(err)}`);
+      });
+    };
+  }
+  return (ev) => input.onEvent?.(ev);
+}
+
+function workerEntryPath(harnessRoot: string): string {
+  return join(harnessRoot, "src", "runtime", "worker", "entry.ts");
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

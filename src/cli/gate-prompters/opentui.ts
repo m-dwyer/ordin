@@ -28,3 +28,15 @@ export function openTuiGateResolver(
 ): (kind: Phase["gate"]) => Gate {
   return gateResolverFor(new OpenTuiGatePrompter(controller));
 }
+
+/**
+ * `HarnessRuntimeOptions.egressGatePrompter` — wired into the broker
+ * via the harness so srt's askCallback (broker.askApproval) surfaces
+ * the unallowlisted host as a card in the run TUI. Returns true when
+ * the user presses `a`; false on `r`.
+ */
+export function openTuiEgressGatePrompter(
+  controller: OpenTuiRunController,
+): (req: { host: string; port: number | undefined }) => Promise<boolean> {
+  return ({ host, port }) => controller.requestEgressGate(host, port);
+}

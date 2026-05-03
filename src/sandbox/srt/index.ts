@@ -7,7 +7,7 @@ import {
   type SandboxRuntimeConfig,
 } from "@anthropic-ai/sandbox-runtime";
 import type { Broker } from "../../broker";
-import type { Sandbox, SandboxParams, SandboxReadiness } from "../types";
+import type { Sandbox, SandboxParams, SandboxReadiness, WorkerHandle, WorkerPlan } from "../types";
 import { buildSrtConfig } from "./config";
 import { defaultPolicy, type NetworkPolicy } from "./policy";
 
@@ -15,30 +15,23 @@ import { defaultPolicy, type NetworkPolicy } from "./policy";
  * Sandbox impl backed by `@anthropic-ai/sandbox-runtime` ("srt"). srt
  * generates a kernel-level Seatbelt profile (or bwrap/seccomp on Linux)
  * and stands up an HTTP+SOCKS proxy stack on the parent's event loop;
- * the wrapped child can only reach hosts in the allowlist. Replaces our
- * v1 hand-built profile + reexec (Phase 9c).
+ * each wrapped child can only reach hosts in the allowlist (and via
+ * the parent broker for everything else).
  *
- * B-process semantics are preserved: the outer ordin process calls
- * `enterIfNeeded`, srt wraps `process.argv`, the wrapped command is
- * spawned, and the outer process waits for the child and exits with
- * its status. The TUI runs in the inner (post-spawn) process.
+ * Under L2 the parent stays as the parent. `enterIfNeeded` brings up
+ * the broker + srt; `spawnWorker` produces one wrapped child per phase.
  *
  * **Async spawn is non-negotiable.** srt's HTTP+SOCKS proxies live on
  * the parent's JS event loop. `child_process.spawnSync` blocks that
  * loop, the child opens connections to the proxy ports, the proxy
  * cannot service them, every outbound HTTP times out. Use `spawn` and
  * resolve on `exit`. (Phase 9c spike findings, sandboxing-findings.md.)
- *
- * Loop guard: srt sets `SANDBOX_RUNTIME=1` in the wrapped command's
- * env. We use that as the "already inside" marker — no separate env
- * var needed.
  */
-const ALREADY_INSIDE_ENV = "SANDBOX_RUNTIME";
 const SANDBOX_EXEC_BIN = "/usr/bin/sandbox-exec";
 
 /**
- * Env vars stripped from the inner ordin's environment. Each is a
- * credential the broker injects on the inner's behalf, so the inner
+ * Env vars stripped from each worker's environment. Each is a
+ * credential the broker injects on the worker's behalf, so the worker
  * has no need (and no business) seeing it. Add new entries here when
  * a new broker-mediated service is introduced.
  */
@@ -52,10 +45,10 @@ const INNER_ENV_DENYLIST = [
 export interface SrtSandboxDeps {
   readonly policy?: NetworkPolicy;
   /** Broker that fronts local services as srt's parentProxy. Owned by
-   * the harness; SrtSandbox starts/stops it around the wrapped spawn.
-   * srt's allowlist filters first; approved requests are forwarded to
-   * the broker's localhost TCP port for upstream-routing + auth
-   * injection (and, in future, gate decisions / audit logging). */
+   * the harness; SrtSandbox starts it on `enterIfNeeded` and stops it
+   * on `shutdown`. srt's allowlist filters first; approved requests
+   * are forwarded to the broker's localhost TCP port for upstream-
+   * routing + auth injection + audit. */
   readonly broker?: Broker;
   /** Inject for test seams. Defaults to the singleton from srt. */
   readonly manager?: typeof DefaultSandboxManager;
@@ -67,15 +60,22 @@ export interface SrtSandboxDeps {
   readonly hasFile?: (path: string) => boolean;
   /** Inject for test seams. Defaults to `process.env`. */
   readonly env?: () => NodeJS.ProcessEnv;
-  /** Inject for test seams. Defaults to `process.argv`. */
-  readonly argv?: () => readonly string[];
   /**
    * Inject for test seams. Defaults to spawning `/bin/sh -c <wrapped>`
    * with stdio inherited and resolving with the child's exit code.
    */
-  readonly runWrapped?: (wrapped: string, opts: RunWrappedOpts) => Promise<number>;
-  /** Inject for test seams. Defaults to `process.exit`. */
-  readonly exit?: (code: number) => never;
+  readonly spawnWrapped?: (wrapped: string, opts: SpawnWrappedOpts) => SpawnedChild;
+}
+
+export interface SpawnWrappedOpts {
+  readonly env: NodeJS.ProcessEnv;
+  /** Override the worker's cwd. Omit to inherit from the parent. */
+  readonly cwd?: string;
+}
+
+export interface SpawnedChild {
+  readonly exit: Promise<number>;
+  kill(signal?: NodeJS.Signals): void;
 }
 
 export class SrtSandbox implements Sandbox {
@@ -88,9 +88,8 @@ export class SrtSandbox implements Sandbox {
   private readonly homeDir: () => string;
   private readonly hasFile: (path: string) => boolean;
   private readonly env: () => NodeJS.ProcessEnv;
-  private readonly argv: () => readonly string[];
-  private readonly runWrapped: (wrapped: string, opts: RunWrappedOpts) => Promise<number>;
-  private readonly exit: (code: number) => never;
+  private readonly spawnWrapped: (wrapped: string, opts: SpawnWrappedOpts) => SpawnedChild;
+  private initialized = false;
 
   constructor(deps: SrtSandboxDeps = {}) {
     this.broker = deps.broker;
@@ -102,13 +101,11 @@ export class SrtSandbox implements Sandbox {
     this.homeDir = deps.homeDir ?? homedir;
     this.hasFile = deps.hasFile ?? existsSync;
     this.env = deps.env ?? (() => process.env);
-    this.argv = deps.argv ?? (() => process.argv);
-    this.runWrapped = deps.runWrapped ?? defaultRunWrapped;
-    this.exit = deps.exit ?? ((code: number) => process.exit(code));
+    this.spawnWrapped = deps.spawnWrapped ?? defaultSpawnWrapped;
   }
 
   async enterIfNeeded(params: SandboxParams): Promise<void> {
-    if (this.alreadyInside()) return;
+    if (this.initialized) return;
     // srt's HTTP proxy and our broker (both in this parent process)
     // dial outbound by hostname. Default getaddrinfo prefers IPv6 on
     // recent Node/Bun, but Docker Desktop binds host ports to IPv4
@@ -116,34 +113,57 @@ export class SrtSandbox implements Sandbox {
     // has no listener, hangs ~2s, then ECONNREFUSED. ipv4first
     // matches the typical local-services bind shape.
     setDefaultResultOrder("ipv4first");
-    // Broker must start BEFORE buildConfig — we need its bound port
-    // to wire as srt's parentProxy in the runtime config.
     if (this.broker) await this.broker.start();
     const config = this.buildConfig(params);
-    await this.manager.initialize(config);
+    // srt's askCallback fires for hosts that fall through
+    // allowedDomains/deniedDomains. Routed through the broker so
+    // approvals are cached and audit-emitted in one place; the broker's
+    // own request/CONNECT path also consults the cache to passthrough
+    // approved external hosts. Without a broker (defensive — current
+    // wiring always provides one for srt mode), srt falls back to its
+    // built-in "no callback = deny" behaviour.
+    const askCallback = this.broker
+      ? (params: { host: string; port: number | undefined }) =>
+          this.broker?.askApproval(params.host, params.port) ?? Promise.resolve(false)
+      : undefined;
+    await this.manager.initialize(config, askCallback);
     await this.manager.waitForNetworkInitialization();
-    const command = argvToShellCommand(this.argv());
-    const wrapped = await this.manager.wrapWithSandbox(command);
-    const code = await this.runWrapped(wrapped, { env: this.buildInnerEnv() });
+    this.initialized = true;
+  }
+
+  async shutdown(): Promise<void> {
     if (this.broker) await this.broker.stop();
-    this.exit(code);
+    this.initialized = false;
+  }
+
+  spawnWorker(plan: WorkerPlan): WorkerHandle {
+    if (!this.initialized) {
+      throw new Error("SrtSandbox.spawnWorker called before enterIfNeeded");
+    }
+    const command = argvToShellCommand(plan.argv);
+    const wrappedPromise = this.manager.wrapWithSandbox(command);
+    const env = this.applyEnvDenylist(plan.env);
+    let killed: SpawnedChild | undefined;
+    const exit = wrappedPromise.then((wrapped) => {
+      const opts: SpawnWrappedOpts = { env, ...(plan.cwd ? { cwd: plan.cwd } : {}) };
+      killed = this.spawnWrapped(wrapped, opts);
+      return killed.exit;
+    });
+    return {
+      exit,
+      kill: (signal?: NodeJS.Signals) => killed?.kill(signal),
+    };
   }
 
   /**
-   * Compute the env the inner ordin sees. Strips parent-only secrets
-   * (telemetry creds, gateway tokens — anything the broker injects on
-   * the inner's behalf) and sets ORDIN_TRACING_ENABLED iff the broker
-   * has an authenticated `otel` service. Everything else is inherited
-   * from the parent so PATH, HOME, terminal vars, NODE_*, etc. flow
-   * through unchanged.
-   *
-   * Stripping is by deny-list. An allowlist would be cleaner but breaks
-   * tooling that legitimately needs broad parent env (mise shims, user
-   * locale, etc.). Move to allowlist when we have a clearer picture of
-   * what the inner actually requires.
+   * Strip parent-only secrets (telemetry creds, gateway tokens —
+   * anything the broker injects on the worker's behalf) and set
+   * ORDIN_TRACING_ENABLED / ORDIN_AUDIT_ENABLED based on the broker's
+   * registered services. Workers inherit PATH, HOME, terminal vars,
+   * etc. from `plan.env` unmodified.
    */
-  private buildInnerEnv(): NodeJS.ProcessEnv {
-    const env = { ...this.env() };
+  private applyEnvDenylist(planEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    const env = { ...planEnv };
     for (const key of INNER_ENV_DENYLIST) {
       delete env[key];
     }
@@ -186,26 +206,20 @@ export class SrtSandbox implements Sandbox {
       ...(this.broker ? { parentProxy: this.broker.proxyUrl() } : {}),
     });
   }
-
-  private alreadyInside(): boolean {
-    return this.env()[ALREADY_INSIDE_ENV] === "1";
-  }
 }
 
-export interface RunWrappedOpts {
-  readonly env: NodeJS.ProcessEnv;
-  /** Override the inner's cwd. Omit to inherit from the outer process. */
-  readonly cwd?: string;
-}
-
-function defaultRunWrapped(wrapped: string, opts: RunWrappedOpts): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child: ChildProcess = spawn(wrapped, {
-      shell: true,
-      stdio: "inherit",
-      env: opts.env,
-      ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    });
+function defaultSpawnWrapped(wrapped: string, opts: SpawnWrappedOpts): SpawnedChild {
+  const child: ChildProcess = spawn(wrapped, {
+    shell: true,
+    stdio: ["inherit", "pipe", "pipe"],
+    env: opts.env,
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+  });
+  // Pipe worker output to the parent's stderr — keeps it visible
+  // alongside the TUI's stderr but out of stdout (the TUI owns that).
+  child.stdout?.pipe(process.stderr);
+  child.stderr?.pipe(process.stderr);
+  const exit = new Promise<number>((resolve, reject) => {
     child.on("error", reject);
     child.on("exit", (code, signal) => {
       if (typeof code === "number") return resolve(code);
@@ -213,13 +227,15 @@ function defaultRunWrapped(wrapped: string, opts: RunWrappedOpts): Promise<numbe
       resolve(1);
     });
   });
+  return {
+    exit,
+    kill: (signal?: NodeJS.Signals) => {
+      if (!child.killed) child.kill(signal ?? "SIGTERM");
+    },
+  };
 }
 
 function signalToNumber(signal: NodeJS.Signals): number {
-  // Conventional shell exit code is 128 + signal number. Best-effort —
-  // node doesn't expose the numeric mapping, but we only care about a
-  // non-zero exit code; the exact value matters less than "the parent
-  // exits non-zero when the child was killed".
   switch (signal) {
     case "SIGINT":
       return 2;
@@ -244,6 +260,5 @@ function argvToShellCommand(argv: readonly string[]): string {
 }
 
 function shellSingleQuote(s: string): string {
-  // Replace each single quote with: ' "'" '
   return `'${s.replace(/'/g, `'"'"'`)}'`;
 }

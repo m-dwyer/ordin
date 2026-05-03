@@ -130,24 +130,8 @@ describe("SrtSandbox.readiness", () => {
   });
 });
 
-describe("SrtSandbox.enterIfNeeded", () => {
-  it("no-ops when SANDBOX_RUNTIME=1 (already inside)", async () => {
-    let initCalled = false;
-    const fakeManager = {
-      initialize: async () => {
-        initCalled = true;
-      },
-      // biome-ignore lint/suspicious/noExplicitAny: test stub for unused methods
-    } as any;
-    const s = new SrtSandbox({
-      env: () => ({ SANDBOX_RUNTIME: "1" }),
-      manager: fakeManager,
-    });
-    await s.enterIfNeeded(params);
-    expect(initCalled).toBe(false);
-  });
-
-  it("initializes srt, wraps argv, runs wrapped, exits with child code", async () => {
+describe("SrtSandbox lifecycle", () => {
+  it("enterIfNeeded brings up srt; spawnWorker wraps argv and resolves with the exit code", async () => {
     const calls: string[] = [];
     let receivedConfig: unknown;
     const fakeManager = {
@@ -166,45 +150,123 @@ describe("SrtSandbox.enterIfNeeded", () => {
       // biome-ignore lint/suspicious/noExplicitAny: test stub
     } as any;
 
-    let runWrappedArg: string | undefined;
-    let runWrappedCwd: string | undefined;
-    let exitCode: number | undefined;
+    let spawnedWrapped: string | undefined;
     const s = new SrtSandbox({
       policy: defaultPolicy({ env: {} }),
       manager: fakeManager,
       env: () => ({}),
-      argv: () => ["/bin/bun", "src/cli/index.ts", "run", "verify"],
-      runWrapped: async (w, opts) => {
-        runWrappedArg = w;
-        runWrappedCwd = opts.cwd;
-        calls.push("runWrapped");
-        return 42;
+      spawnWrapped: (w) => {
+        spawnedWrapped = w;
+        calls.push("spawnWrapped");
+        return { exit: Promise.resolve(42), kill: () => {} };
       },
-      exit: ((code: number) => {
-        exitCode = code;
-        calls.push("exit");
-        // Don't actually exit in tests — throw the marker that
-        // production callers won't see.
-        throw new Error("__test_exit__");
-      }) as never,
     });
 
-    await expect(s.enterIfNeeded(params)).rejects.toThrow("__test_exit__");
+    await s.enterIfNeeded(params);
+    const handle = s.spawnWorker({
+      argv: ["/bin/bun", "src/runtime/worker/entry.ts", "--plan", "/tmp/p.json"],
+      env: {},
+    });
+    await expect(handle.exit).resolves.toBe(42);
+
     expect(calls).toEqual([
       "initialize",
       "waitForNetworkInitialization",
       "wrapWithSandbox",
-      "runWrapped",
-      "exit",
+      "spawnWrapped",
     ]);
-    expect(runWrappedArg).toMatch(/^WRAPPED\(/);
-    expect(runWrappedArg).toContain("'/bin/bun'");
-    expect(runWrappedArg).toContain("'src/cli/index.ts'");
-    expect(runWrappedArg).toContain("'verify'");
-    expect(runWrappedCwd).toBeUndefined();
-    expect(exitCode).toBe(42);
-    expect(receivedConfig).toMatchObject({
-      network: { allowedDomains: [] },
+    expect(spawnedWrapped).toMatch(/^WRAPPED\(/);
+    expect(spawnedWrapped).toContain("'/bin/bun'");
+    expect(spawnedWrapped).toContain("'src/runtime/worker/entry.ts'");
+    expect(spawnedWrapped).toContain("'/tmp/p.json'");
+    expect(receivedConfig).toMatchObject({ network: { allowedDomains: [] } });
+  });
+
+  it("spawnWorker throws if called before enterIfNeeded", () => {
+    const s = new SrtSandbox({
+      manager: {
+        initialize: async () => {},
+        waitForNetworkInitialization: async () => true,
+        wrapWithSandbox: async (cmd: string) => cmd,
+        // biome-ignore lint/suspicious/noExplicitAny: test stub
+      } as any,
+      env: () => ({}),
+      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {} }),
     });
+    expect(() => s.spawnWorker({ argv: ["true"], env: {} })).toThrow(/before enterIfNeeded/);
+  });
+
+  it("enterIfNeeded passes a sandboxAskCallback that delegates to broker.askApproval", async () => {
+    let receivedCallback:
+      | ((p: { host: string; port: number | undefined }) => Promise<boolean>)
+      | undefined;
+    const fakeManager = {
+      initialize: async (
+        _cfg: unknown,
+        cb?: (p: { host: string; port: number | undefined }) => Promise<boolean>,
+      ) => {
+        receivedCallback = cb;
+      },
+      waitForNetworkInitialization: async () => true,
+      wrapWithSandbox: async (cmd: string) => cmd,
+      // biome-ignore lint/suspicious/noExplicitAny: test stub
+    } as any;
+
+    let askedHost: string | undefined;
+    const fakeBroker = {
+      services: [],
+      proxyUrl: () => "http://ordin:secret@127.0.0.1:0",
+      start: async () => {},
+      stop: async () => {},
+      askApproval: async (host: string) => {
+        askedHost = host;
+        return true;
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Broker stub
+    } as any;
+
+    const s = new SrtSandbox({
+      policy: defaultPolicy({ env: {} }),
+      manager: fakeManager,
+      broker: fakeBroker,
+      env: () => ({}),
+      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {} }),
+    });
+
+    await s.enterIfNeeded(params);
+    expect(receivedCallback).toBeDefined();
+    const allowed = await receivedCallback?.({ host: "example.com", port: 443 });
+    expect(allowed).toBe(true);
+    expect(askedHost).toBe("example.com");
+  });
+
+  it("shutdown stops the broker", async () => {
+    const calls: string[] = [];
+    const fakeBroker = {
+      services: [],
+      proxyUrl: () => "http://ordin:secret@127.0.0.1:0",
+      start: async () => {
+        calls.push("start");
+      },
+      stop: async () => {
+        calls.push("stop");
+      },
+      askApproval: async () => false,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Broker stub
+    } as any;
+    const s = new SrtSandbox({
+      manager: {
+        initialize: async () => {},
+        waitForNetworkInitialization: async () => true,
+        wrapWithSandbox: async (cmd: string) => cmd,
+        // biome-ignore lint/suspicious/noExplicitAny: test stub
+      } as any,
+      broker: fakeBroker,
+      env: () => ({}),
+      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {} }),
+    });
+    await s.enterIfNeeded(params);
+    await s.shutdown();
+    expect(calls).toEqual(["start", "stop"]);
   });
 });

@@ -107,8 +107,17 @@ export interface BrokerEgressEvent {
     | "broker.forward"
     | "broker.forward.denied"
     | "broker.connect"
-    | "broker.connect.denied";
+    | "broker.connect.denied"
+    | "broker.gate.requested"
+    | "broker.gate.decided";
   readonly payload: Record<string, unknown>;
+}
+
+/** What srt asks the broker about whenever the inner attempts an
+ *  egress that doesn't match the static `allowedDomains` policy. */
+export interface EgressGateRequest {
+  readonly host: string;
+  readonly port: number | undefined;
 }
 
 export interface BrokerOptions {
@@ -128,6 +137,14 @@ export interface BrokerOptions {
   readonly internalServices?: readonly InternalService[];
   /** Called for every egress event the broker observes. */
   readonly onEgress?: (event: BrokerEgressEvent) => void;
+  /**
+   * Decision hook for hosts that aren't in the static `local_services`
+   * map. srt's `sandboxAskCallback` routes through `askApproval`, which
+   * caches the answer for the broker's lifetime and consults this hook
+   * on cache miss. The harness wires this to the CLI's egress gate
+   * prompter; headless callers leave it unset and the broker denies.
+   */
+  readonly onEgressGate?: (req: EgressGateRequest) => Promise<boolean>;
 }
 
 const PROXY_AUTH_USER = "ordin";
@@ -139,8 +156,21 @@ export class Broker {
   private readonly bindHost: string;
   private bindPort: number;
   private readonly onEgress?: (event: BrokerEgressEvent) => void;
+  private readonly onEgressGate?: (req: EgressGateRequest) => Promise<boolean>;
   private readonly proxyAuth: string;
   private readonly expectedAuth: string;
+  /**
+   * Hosts the user has approved this run. Lookup key is "host:port" so
+   * an approval for `example.com:443` doesn't auto-approve port 80
+   * (different surface). The user's mental model is closer to "service
+   * endpoint" than "hostname"; pairing with port matches that.
+   *
+   * In-flight gates are tracked by the same key so two concurrent
+   * requests for the same endpoint share a single prompt instead of
+   * stacking duplicates.
+   */
+  private readonly approvedHosts = new Set<string>();
+  private readonly inFlightGates = new Map<string, Promise<boolean>>();
 
   constructor(servicesConfig: LocalServicesConfig, options: BrokerOptions) {
     if (!options.proxyAuth) throw new Error("Broker: proxyAuth required");
@@ -152,6 +182,7 @@ export class Broker {
     this.bindHost = options.host ?? "127.0.0.1";
     this.bindPort = options.port ?? 0;
     this.onEgress = options.onEgress;
+    this.onEgressGate = options.onEgressGate;
     this.proxyAuth = options.proxyAuth;
     this.expectedAuth = `Basic ${Buffer.from(`${PROXY_AUTH_USER}:${options.proxyAuth}`).toString(
       "base64",
@@ -197,6 +228,43 @@ export class Broker {
     await new Promise<void>((resolve) => this.forwardServer.close(() => resolve()));
   }
 
+  /**
+   * srt's `sandboxAskCallback` entry point. Returns true iff the
+   * request should be allowed through srt's filter (and therefore
+   * forwarded to us via parentProxy). Cache hit → answer immediately;
+   * cache miss → emit gate.requested, ask the harness's hook, cache,
+   * emit gate.decided. Local-service names (in `this.map`) are
+   * auto-approved without prompting — they're explicit policy in
+   * `local_services` config.
+   */
+  async askApproval(host: string, port: number | undefined): Promise<boolean> {
+    if (this.map.has(host)) return true;
+    const key = approvalKey(host, port);
+    if (this.approvedHosts.has(key)) return true;
+    const inFlight = this.inFlightGates.get(key);
+    if (inFlight) return inFlight;
+    if (!this.onEgressGate) {
+      this.emit({ kind: "broker.gate.decided", payload: { host, port, approved: false } });
+      return false;
+    }
+    this.emit({ kind: "broker.gate.requested", payload: { host, port } });
+    const decision = (async () => {
+      try {
+        const approved = await this.onEgressGate?.({ host, port });
+        if (approved) this.approvedHosts.add(key);
+        this.emit({
+          kind: "broker.gate.decided",
+          payload: { host, port, approved: !!approved },
+        });
+        return !!approved;
+      } finally {
+        this.inFlightGates.delete(key);
+      }
+    })();
+    this.inFlightGates.set(key, decision);
+    return decision;
+  }
+
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
     if (req.headers["proxy-authorization"] !== this.expectedAuth) {
       res.writeHead(407, {
@@ -215,11 +283,30 @@ export class Broker {
     // req.url is path-only.
     const url = req.url ? resolveRequestUrl(req.url, req.headers.host) : undefined;
     const hostname = url?.hostname;
-    const target = hostname ? this.map.get(hostname) : undefined;
-    if (!target || !url) {
+    if (!url || !hostname) {
       this.emit({
         kind: "broker.forward.denied",
-        payload: { hostname: hostname ?? null, reason: "no mapping" },
+        payload: { hostname: hostname ?? null, reason: "malformed" },
+      });
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("ordin-broker: malformed request");
+      return;
+    }
+    const target = this.map.get(hostname);
+    if (!target) {
+      // No static mapping. The host may still be approved this run via
+      // the egress gate (srt's askCallback → broker.askApproval). When
+      // so, passthrough-forward to the original host on the URL's port
+      // (defaulting to 80 for plain HTTP). External hosts don't get
+      // auth injection — that's reserved for explicit local_services.
+      const port = url.port ? Number.parseInt(url.port, 10) : 80;
+      if (this.approvedHosts.has(approvalKey(hostname, port))) {
+        this.passthroughForward(req, res, hostname, port, url);
+        return;
+      }
+      this.emit({
+        kind: "broker.forward.denied",
+        payload: { hostname, reason: "no mapping" },
       });
       res.writeHead(403, { "Content-Type": "text/plain" });
       res.end("ordin-broker: no mapping");
@@ -317,6 +404,57 @@ export class Broker {
     client.on("close", () => upstream.destroy());
   }
 
+  /**
+   * Forward a request to the original (host, port) without auth
+   * injection or Host rewrite. Used for hosts approved via the egress
+   * gate that have no static `local_services` mapping (external sites
+   * like github.com). Auth is the inner's responsibility; the broker
+   * exists here only for visibility (audit) and as the post-srt fan-in
+   * point.
+   */
+  private passthroughForward(
+    req: IncomingMessage,
+    res: ServerResponse,
+    host: string,
+    port: number,
+    url: URL,
+  ): void {
+    this.emit({
+      kind: "broker.forward",
+      payload: {
+        service: "passthrough",
+        host,
+        port,
+        method: req.method ?? "",
+        path: `${url.pathname}${url.search}`,
+      },
+    });
+    const headers: NodeJS.Dict<string | string[]> = {
+      ...req.headers,
+      host: url.port ? `${host}:${port}` : host,
+    };
+    delete headers["proxy-authorization"];
+    const upstream = request({
+      host,
+      port,
+      method: req.method,
+      path: `${url.pathname}${url.search}`,
+      headers,
+    });
+    req.pipe(upstream);
+    upstream.on("response", (up) => {
+      res.writeHead(up.statusCode ?? 502, up.headers);
+      up.pipe(res);
+    });
+    upstream.on("error", (err) => {
+      console.warn(`[broker] passthrough upstream error ${host}:${port}: ${err.message}`);
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "text/plain" });
+        res.end("ordin-broker: upstream error");
+      }
+    });
+  }
+
   private emit(event: BrokerEgressEvent): void {
     if (!this.onEgress) return;
     try {
@@ -399,6 +537,10 @@ function resolveRequestUrl(reqUrl: string, hostHeader?: string): URL | undefined
     return new URL(reqUrl, `http://${hostHeader}`);
   }
   return undefined;
+}
+
+function approvalKey(host: string, port: number | undefined): string {
+  return `${host}:${port ?? ""}`;
 }
 
 function errMessage(err: unknown): string {

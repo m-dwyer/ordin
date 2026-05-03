@@ -41,6 +41,7 @@ import { PALETTE } from "./theme";
 import type {
   ControllerState,
   EditDiff,
+  EgressGateState,
   FeedRow,
   GateState,
   PausedState,
@@ -120,6 +121,14 @@ export function RunApp(props: RunAppProps) {
   };
 
   useKeyboard((key) => {
+    // Egress gate — fires mid-phase, blocks an in-flight HTTP request.
+    // Takes precedence over phase gates because it's the more time-
+    // sensitive prompt (the inner is waiting for srt to answer).
+    if (state.egressGate()) {
+      if (key.name === "a") state.decideEgressGate(true);
+      else if (key.name === "r") state.decideEgressGate(false);
+      return;
+    }
     // Gate prompt — single-key approve/reject takes priority.
     if (state.gate()) {
       if (key.name === "a") state.decideGate({ status: "approved" });
@@ -198,10 +207,14 @@ export function RunApp(props: RunAppProps) {
         collapsedPhases={state.collapsedPhases()}
         togglePhaseCollapsed={state.togglePhaseCollapsed}
       />
+      <Show when={state.egressGate()} keyed>
+        {(eg: EgressGateState) => <EgressGateCard egress={eg} />}
+      </Show>
       <Footer
         phases={phases()}
         active={activePhase()}
         gate={state.gate()}
+        egressGate={state.egressGate()}
         paused={state.paused()}
         hint={state.hint()}
         cols={cols()}
@@ -862,6 +875,48 @@ function GateCard(props: { ctx: GateContext; repoPath?: string }) {
   );
 }
 
+/**
+ * Egress gate card — surfaced when srt's askCallback (via the broker)
+ * pauses an in-flight request to a host that isn't in `local_services`
+ * and hasn't been approved this run. The inner is unaware: it just
+ * sees an HTTP request that's still pending. Sits between the
+ * scrollback and the footer so the user can see it without the
+ * scrollback shifting.
+ */
+function EgressGateCard(props: { egress: EgressGateState }) {
+  const target = () =>
+    props.egress.port !== undefined
+      ? `${props.egress.host}:${props.egress.port}`
+      : props.egress.host;
+  return (
+    <box
+      width="100%"
+      flexDirection="column"
+      border
+      borderStyle="rounded"
+      borderColor={PALETTE.gateGlow}
+      title=" egress request "
+      titleAlignment="left"
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+      marginTop={1}
+    >
+      <box width="100%">
+        <text fg={PALETTE.text} wrapMode="word" content={`agent wants to reach ${target()}`} />
+      </box>
+      <box width="100%">
+        <text
+          fg={PALETTE.hint}
+          wrapMode="word"
+          content="approve to allow (sticky for this run) or reject to deny"
+        />
+      </box>
+    </box>
+  );
+}
+
 function Chip(props: { label: string; bg: string; fg: string }) {
   return (
     <text
@@ -881,6 +936,7 @@ function Footer(props: {
   phases: readonly PhaseRow[];
   active: PhaseRow | null;
   gate: GateState | null;
+  egressGate: EgressGateState | null;
   paused: PausedState | null;
   hint: string;
   cols: number;
@@ -915,7 +971,7 @@ function Footer(props: {
       </Show>
       <FooterBottomRow
         phases={props.phases}
-        gate={!!props.gate}
+        gate={!!props.gate || !!props.egressGate}
         paused={props.paused}
         hint={props.hint}
         showRight={showRight()}

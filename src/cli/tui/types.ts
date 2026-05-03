@@ -37,6 +37,11 @@ export interface GateState {
   ctx: GateContext;
 }
 
+export interface EgressGateState {
+  host: string;
+  port: number | undefined;
+}
+
 export type FeedRowKind = "tool" | "result" | "note" | "error" | "edit";
 
 export interface EditDiff {
@@ -96,6 +101,7 @@ export interface ControllerState {
   phases: () => readonly PhaseRow[];
   sections: () => readonly PhaseSection[];
   gate: Accessor<GateState | null>;
+  egressGate: Accessor<EgressGateState | null>;
   hint: Accessor<string>;
   paused: Accessor<PausedState | null>;
   /** Set of row ids (or group keys) currently expanded. Anything not
@@ -105,6 +111,7 @@ export interface ControllerState {
    * sections are expanded; user click on a phase header collapses. */
   collapsedPhases: Accessor<ReadonlySet<string>>;
   decideGate: (decision: GateDecision) => void;
+  decideEgressGate: (approved: boolean) => void;
   dismiss: () => void;
   toggleExpanded: (id: number) => void;
   collapseAll: () => void;

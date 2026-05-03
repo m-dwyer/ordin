@@ -1,10 +1,11 @@
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
-import type { GateKind, WorkflowManifest } from "../domain/workflow";
+import type { GateKind, Phase, WorkflowManifest } from "../domain/workflow";
 import type { GateArtefact, GateDecision } from "../gates/types";
 import type { AgentRuntime } from "../runtimes/types";
 import type { RunEvent } from "./events";
+import type { PhaseRunResult } from "./phase-runner";
 import type { RunMeta, RunStore } from "./run-store";
 import type { ExecutionPlan } from "./workflow-plan";
 
@@ -70,6 +71,29 @@ export interface EngineRunInput {
   readonly tier: "S" | "M" | "L";
   readonly onEvent?: (event: RunEvent) => void;
   readonly onGateRequested: (request: GateRequest) => Promise<GateDecision>;
+  /**
+   * How a single phase invocation runs. Engine-neutral: the engine
+   * decides *when* to invoke a phase (DAG order, loops, retries); the
+   * dispatcher decides *where* (in-process, sandboxed worker, remote
+   * runner). HarnessRuntime supplies this per-run.
+   */
+  readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
+  readonly abortSignal?: AbortSignal;
+}
+
+/**
+ * One unit of phase execution the engine asks the harness to perform.
+ * The preview is fully composed parent-side; the dispatcher just needs
+ * to invoke the named runtime against it and return the result.
+ */
+export interface PhaseDispatchRequest {
+  readonly runId: string;
+  readonly runDir: string;
+  readonly iteration: number;
+  readonly phase: Phase;
+  readonly preview: PhasePreview;
+  readonly runtimeName: string;
+  readonly emit: (event: RunEvent) => void;
   readonly abortSignal?: AbortSignal;
 }
 
