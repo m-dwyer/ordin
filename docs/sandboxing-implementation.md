@@ -4,7 +4,7 @@ Forward-looking plan for ordin's sandbox boundary. Past decisions live in [`deci
 
 ## Where we are
 
-**Level 4 + broker, with credential isolation + tamper-evident audit (L3a steps 1 + 2 shipped).** Whole inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Broker (`src/broker/`) runs in the parent as srt's `parentProxy`: srt enforces the hostname allowlist first, then forwards approved egress to the broker. Broker dispatches by hostname to either *forward* services (proxy to mapped upstream + auth injection) or *internal* services (handled in-broker; today: `audit`). Per-run hash-chained audit log at `~/.ordin/runs/<runId>/audit.jsonl`. Every request requires `Proxy-Authorization` (per-run secret); srt forwards via parentProxy URL userinfo. Network egress denied by default; allowlist gated per-host. macOS only; Linux comes for free via srt.
+**Level 4 + broker, with credential isolation + tamper-evident audit (L3a steps 1, 1.5, 2 shipped).** Whole inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Broker (`src/broker/`) runs in the parent as srt's `parentProxy`: srt enforces the hostname allowlist first, then forwards approved egress to the broker. Broker dispatches by hostname to either *forward* services (proxy to mapped upstream + auth injection) or *internal* services (handled in-broker; today: `audit`). Per-run hash-chained audit log at `~/.ordin/runs/<runId>/audit.jsonl`. Every request requires `Proxy-Authorization` (per-run secret); srt forwards via parentProxy URL userinfo. Network egress denied by default; allowlist gated per-host. macOS only; Linux comes for free via srt.
 
 Shipped:
 - B-process self-spawn via srt (`SrtSandbox` in `src/sandbox/srt/`)
@@ -86,7 +86,7 @@ The kernel sandbox is the load-bearing security primitive. Each level moves wher
 
 Steps 4 and 5 are deferred until 1–3 land.
 
-**LiteLLM (step 1.5):** mirror the telemetry move for the AI SDK runtime (`base_url: http://llm-gateway/`, drop `api_key_env`, add `LITELLM_MASTER_KEY` to the inner spawn-env denylist; broker injects `Authorization: Bearer ...` on forward to LiteLLM). Wiring already in place (`local_services.llm-gateway` is configured in `ordin.config.yaml`); blocked on validating that the OpenAI SDK routes through `HTTP_PROXY` for the broker hostname before flipping the runtime config.
+**✅ LiteLLM (step 1.5, shipped):** AI SDK runtime sends to `http://llm-gateway/`; srt forwards through the broker; broker maps to LiteLLM and stamps `Authorization: Bearer <LITELLM_MASTER_KEY>` from parent-side env. The inner has no api_key. This was needed urgently (not optional) because `allowLocalBinding=false` blocks direct dial to `localhost:4000` — without step 1.5, AiSdkRuntime under srt simply doesn't work. See Finding 19 for the empirical verification.
 
 **Trade-off:** doesn't dissolve Finding 8 (TUI coupling), doesn't unblock server-mode sandboxing or Docker/microVM impls. If those triggers don't fire, L3a is enough.
 
@@ -98,6 +98,7 @@ Steps 4 and 5 are deferred until 1–3 land.
 - **Pre-flight documentation** (ADR-007). README sections on macOS Full Disk Access, choosing sandbox mode, configuring `local_services`.
 - **Out-of-band gate approval channels** (ADR-013). Broker extension: Signal/SMS/push-notification path so the agent literally cannot perceive or fake a gate decision.
 - **Hash-chained audit log** (ADR-005 v3 follow-on). Tamper-evident `audit.jsonl` for the egress + capability decision streams.
+- **Bundle the inner** (`bun build` or `bun build --compile`). Today the inner runs harness TypeScript source directly, which forces the kernel sandbox to allow `node_modules` / tsconfig / source reads from the harness root, and forces dev-mode-specific kernel denies for `<harnessRoot>/.env.local` (Bun's cwd-only autoload would otherwise re-introduce stripped secrets). A bundled or compiled inner has zero runtime dependency on the harness directory: cwd is irrelevant, no `.env.local` autoload concern, no JSX/TS transpile, and the sandbox surface shrinks dramatically. Doubles as the distribution story.
 
 ## Order-of-operations decisions
 
@@ -110,7 +111,6 @@ When in doubt, do the cheap and reversible thing first. Don't build for hypothet
 
 ## What this plan deliberately does not cover
 
-- **Compiled-binary distribution** (`bun build --compile`). Distribution work, not sandboxing.
 - **Per-MCP-server sandbox isolation.** Today MCP servers spawned from inside the harness inherit the harness's sandbox. v3 alternative: each MCP server gets its own sandbox profile. Requires worker-per-MCP plumbing; defer until concrete need.
 - **Skill signing** (Ed25519 manifest authentication). Supply-chain protection; activates if/when ordin ships a skill registry.
 - **Pre-execution command pattern scanner** (ADR-012). Inner fence catching destructive commands the kernel sandbox allows because they're inside permitted zones. Defense-in-depth; orthogonal to the level ladder.
