@@ -167,14 +167,16 @@ describe("SrtSandbox.enterIfNeeded", () => {
     } as any;
 
     let runWrappedArg: string | undefined;
+    let runWrappedCwd: string | undefined;
     let exitCode: number | undefined;
     const s = new SrtSandbox({
       policy: defaultPolicy({ env: {} }),
       manager: fakeManager,
       env: () => ({}),
       argv: () => ["/bin/bun", "src/cli/index.ts", "run", "verify"],
-      runWrapped: async (w) => {
+      runWrapped: async (w, opts) => {
         runWrappedArg = w;
+        runWrappedCwd = opts.cwd;
         calls.push("runWrapped");
         return 42;
       },
@@ -199,6 +201,7 @@ describe("SrtSandbox.enterIfNeeded", () => {
     expect(runWrappedArg).toContain("'/bin/bun'");
     expect(runWrappedArg).toContain("'src/cli/index.ts'");
     expect(runWrappedArg).toContain("'verify'");
+    expect(runWrappedCwd).toBeUndefined();
     expect(exitCode).toBe(42);
     expect(receivedConfig).toMatchObject({
       network: { allowedDomains: [] },

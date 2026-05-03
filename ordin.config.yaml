@@ -37,20 +37,21 @@ sandbox:
         password_env: LANGFUSE_SECRET_KEY
     llm-gateway:
       target: 127.0.0.1:4000 # LiteLLM (OpenAI-compatible)
-      # No auth here yet — the AI SDK runtime still talks directly to
-      # localhost:4000 with LITELLM_MASTER_KEY. Step 1.5 will switch to
-      # broker routing and add `auth: { type: bearer, token_env: ... }`.
+      auth:
+        type: bearer
+        token_env: LITELLM_MASTER_KEY
 
 # Per-runtime configs. Keys here match the `runtime:` field in
 # workflows/<name>.yaml phases. Schemas validated by each runtime.
 runtimes:
   ai-sdk:
-    # Local OpenAI-compatible provider. The default repo setup points at
-    # LiteLLM, whose config routes these aliases to Ollama models. Step
-    # 1.5 will switch this to `http://llm-gateway/` once we've validated
-    # the OpenAI SDK actually routes through HTTP_PROXY for that URL.
-    base_url: http://localhost:4000
-    api_key_env: LITELLM_MASTER_KEY
+    # OpenAI-compatible provider, routed via the broker. Inner sends to
+    # `http://llm-gateway/...`; srt approves the hostname (it's in
+    # local_services) and forwards to the broker, which maps llm-gateway
+    # → 127.0.0.1:4000 (LiteLLM) and stamps `Authorization: Bearer
+    # <LITELLM_MASTER_KEY>` from parent-side env. The inner has no
+    # api_key — `LITELLM_MASTER_KEY` is in the inner-env denylist.
+    base_url: http://llm-gateway/
     max_steps: 40
 
   claude-cli:

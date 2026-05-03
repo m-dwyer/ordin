@@ -45,6 +45,11 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
   // Credential / private dirs the agent must not read. srt's read
   // model is deny-then-allow (default broadly allowed) so this list
   // is the gate that actually blocks reads.
+  //
+  // The harness `.env.local` / `.env` entries kill Bun's cwd-only
+  // dotenv autoload inside the inner — the outer's broker has already
+  // extracted the secrets, and the spawn env strips them; without this
+  // deny, Bun would re-introduce them on inner startup.
   const sensitiveDenies: readonly string[] = [
     `${home}/.ssh`,
     `${home}/.aws`,
@@ -57,6 +62,8 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
     `${home}/.git-credentials`,
     `${home}/.npmrc`,
     `${home}/.pypirc`,
+    `${harnessRoot}/.env.local`,
+    `${harnessRoot}/.env`,
   ];
 
   return {

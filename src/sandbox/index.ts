@@ -35,11 +35,6 @@ export function prepareInnerProcess(env: NodeJS.ProcessEnv = process.env): void 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const dns = require("node:dns") as typeof import("node:dns");
   dns.setDefaultResultOrder("ipv4first");
-  // Bun's `.env.local` autoload re-introduces secrets the parent stripped
-  // from the spawn env. Re-strip here so the inner truly never sees them.
-  for (const key of ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"]) {
-    delete env[key];
-  }
 }
 
 export { PassthroughSandbox } from "./passthrough";

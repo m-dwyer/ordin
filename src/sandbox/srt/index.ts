@@ -41,12 +41,13 @@ const SANDBOX_EXEC_BIN = "/usr/bin/sandbox-exec";
  * credential the broker injects on the inner's behalf, so the inner
  * has no need (and no business) seeing it. Add new entries here when
  * a new broker-mediated service is introduced.
- *
- * LITELLM_MASTER_KEY stays in the inner for now — the AI SDK runtime
- * still talks to `http://localhost:4000` directly. Step 1.5 will move
- * it through the broker (`http://llm-gateway/`) and add it here.
  */
-const INNER_ENV_DENYLIST = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"] as const;
+const INNER_ENV_DENYLIST = [
+  "LANGFUSE_PUBLIC_KEY",
+  "LANGFUSE_SECRET_KEY",
+  "LANGFUSE_HOST",
+  "LITELLM_MASTER_KEY",
+] as const;
 
 export interface SrtSandboxDeps {
   readonly policy?: NetworkPolicy;
@@ -72,7 +73,7 @@ export interface SrtSandboxDeps {
    * Inject for test seams. Defaults to spawning `/bin/sh -c <wrapped>`
    * with stdio inherited and resolving with the child's exit code.
    */
-  readonly runWrapped?: (wrapped: string, env: NodeJS.ProcessEnv) => Promise<number>;
+  readonly runWrapped?: (wrapped: string, opts: RunWrappedOpts) => Promise<number>;
   /** Inject for test seams. Defaults to `process.exit`. */
   readonly exit?: (code: number) => never;
 }
@@ -88,7 +89,7 @@ export class SrtSandbox implements Sandbox {
   private readonly hasFile: (path: string) => boolean;
   private readonly env: () => NodeJS.ProcessEnv;
   private readonly argv: () => readonly string[];
-  private readonly runWrapped: (wrapped: string, env: NodeJS.ProcessEnv) => Promise<number>;
+  private readonly runWrapped: (wrapped: string, opts: RunWrappedOpts) => Promise<number>;
   private readonly exit: (code: number) => never;
 
   constructor(deps: SrtSandboxDeps = {}) {
@@ -123,8 +124,7 @@ export class SrtSandbox implements Sandbox {
     await this.manager.waitForNetworkInitialization();
     const command = argvToShellCommand(this.argv());
     const wrapped = await this.manager.wrapWithSandbox(command);
-    const innerEnv = this.buildInnerEnv();
-    const code = await this.runWrapped(wrapped, innerEnv);
+    const code = await this.runWrapped(wrapped, { env: this.buildInnerEnv() });
     if (this.broker) await this.broker.stop();
     this.exit(code);
   }
@@ -192,12 +192,19 @@ export class SrtSandbox implements Sandbox {
   }
 }
 
-function defaultRunWrapped(wrapped: string, env: NodeJS.ProcessEnv): Promise<number> {
+export interface RunWrappedOpts {
+  readonly env: NodeJS.ProcessEnv;
+  /** Override the inner's cwd. Omit to inherit from the outer process. */
+  readonly cwd?: string;
+}
+
+function defaultRunWrapped(wrapped: string, opts: RunWrappedOpts): Promise<number> {
   return new Promise((resolve, reject) => {
     const child: ChildProcess = spawn(wrapped, {
       shell: true,
       stdio: "inherit",
-      env,
+      env: opts.env,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
     });
     child.on("error", reject);
     child.on("exit", (code, signal) => {
