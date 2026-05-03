@@ -415,3 +415,71 @@ When `path` is an absolute URL **and** the agent has `socketPath`, Bun's `http.r
 **Why it matters for the architecture:** parentProxy is also the better fit for L3a's "broker as central policy point" direction. With mitmProxy, only specifically-mapped hostnames flow through the broker; with parentProxy, *every* approved egress flows through it. Future endpoints (audit log, gate state, OOB approval) become route additions in the broker rather than new mechanisms. The `sandboxAskCallback` srt exposes is orthogonal to forwarding — it fires inside `filterNetworkRequest` regardless of mitmProxy/parentProxy — so the gate-prompt loop (callback → broker → TUI → user → broker → callback returns) plugs in cleanly when we ship step 3.
 
 **Related cleanup:** Bun's automatic `.env.local` autoload re-introduces `LANGFUSE_*` into the inner's env even after `SrtSandbox` strips them at spawn. `prepareInnerProcess` (called at the top of `HarnessRuntime`) re-strips them post-load. Same function now also calls `setDefaultResultOrder("ipv4first")` in the inner — the outer sets it but it's per-process and doesn't propagate.
+
+## Finding 18 — srt SOCKS tunnels through `parentProxy.http` via HTTP CONNECT under Bun
+
+**Symptom needed answering:** does srt actually funnel SOCKS-aware traffic (raw TCP via `ALL_PROXY=socks5h://`, ssh-via-`GIT_SSH_COMMAND`) through our broker, or only HTTP?
+
+**Diagnosis:** srt's `ParentProxyConfig` schema is `{ http?, https?, noProxy? }` — no `socks` field. But `socks-proxy.ts` accepts the resolved `parentProxy` and (per its docstring) "tunnels SOCKS CONNECT requests through the parent's HTTP CONNECT instead of dialing directly." `sandbox-manager.js` does pass `parentProxy` into `createSocksProxyServer`. Verified empirically with `scripts/spike/srt-socks-via-broker.ts` (since deleted): SOCKS HTTP, SOCKS HTTPS, and HTTP_PROXY HTTPS all arrived at the broker's `onConnect` as `CONNECT host:port`.
+
+**Why it matters:** the broker's `onConnect` is a single chokepoint for *every* TCP egress srt approves — HTTPS, SOCKS-tunnelled raw TCP, ssh-for-git. Audit visibility for "non-HTTP" traffic is just a `broker.connect` emit on the existing CONNECT path — no separate SOCKS listener needed. Step 2 relies on this; the chain captures non-HTTP egress via the same handler that forwards HTTPS.
+
+## Finding 19 — kernel blocks inner-direct dial of broker port (`allowLocalBinding` default false)
+
+**Symptom we worried about:** if the kernel sandbox lets the inner dial arbitrary localhost ports, it could bypass srt's allowlist by reaching the broker port directly — forging audit events or tunnelling via the broker's passthrough CONNECT.
+
+**Diagnosis:** read srt's `macos-sandbox-utils.js`. The general `(allow network-outbound (local ip "*:*"))` rule is gated by `allowLocalBinding` (default false). Without it, the kernel only allows outbound TCP to `localhost:<httpProxyPort>` and `localhost:<socksProxyPort>` (srt's own proxy ports). The broker is on a separate ephemeral port — the kernel rule does not cover it, so the inner cannot dial it directly even if it discovered the port.
+
+**Why it matters:** corrects the open question from the Phase 9c spike about LiteLLM at localhost:4000. With `allowLocalBinding=false`, direct dial to localhost:4000 from the inner *should* fail too. The proxy auth added in step 2 (Finding 21) is defense-in-depth on top of this kernel posture — necessary if `allowLocalBinding` is ever flipped on, or for future Linux/bwrap backends that may not have the same port-granular kernel filtering. **Open follow-up:** verify what happens with the AiSdkRuntime's direct dial to `localhost:4000` today — either it's failing silently, or there's an unaccounted-for kernel rule, or LiteLLM traffic is actually going through srt's proxy.
+
+## Finding 20 — async lazy-cache races: cache the Promise, not the value
+
+**Symptom:** `AuditService` per-run `audit.jsonl` had two `seq=0` entries on the first real run — chain verification failed at line 2 with `seq mismatch: expected 1, got 0`.
+
+**Diagnosis:** the lazy "open writer if not cached" lookup looked like:
+
+```ts
+private async writerFor(runId): Promise<Writer> {
+  const existing = this.writers.get(runId);   // undefined first time
+  if (existing) return existing;
+  await mkdir(...);                            // <-- async yield
+  const w = new Writer(...); await w.open();   // <-- another yield
+  this.writers.set(runId, w);
+  return w;
+}
+```
+
+Two concurrent callers (audit emitter posting `run.started` while broker `egressSink` fires `broker.connect`) both saw `undefined`, both opened separate writers, both wrote `seq=0` to the same file in append mode.
+
+**Fix:** cache the *Promise*, set it synchronously before any await:
+
+```ts
+private writers = new Map<string, Promise<Writer>>();
+private writerFor(runId) {
+  const existing = this.writers.get(runId);
+  if (existing) return existing;
+  const p = (async () => { /* mkdir + new + open */ })();
+  this.writers.set(runId, p);   // <-- synchronous, before any await
+  return p;
+}
+```
+
+**Why it matters:** generalizable beyond this codebase. Any "lazy lookup of an async resource" pattern needs the *Promise* in the cache, not the resolved value. None of the existing tests caught this because they all opened the writer with an `await` before triggering concurrent calls; production fired both code paths in parallel from the start of the run.
+
+## Finding 21 — broker `Proxy-Authorization` via srt parentProxy URL userinfo
+
+**Symptom we wanted to harden:** even though Finding 19 means the kernel blocks inner-direct dial of the broker today, audit-log integrity shouldn't depend on a single layer of defense. If `allowLocalBinding` ever flips on, or the sandbox backend changes (Linux bwrap), the inner could forge audit events by dialing the broker directly.
+
+**Mechanism:** srt's `ParentProxyConfig` accepts only a URL string. The standard userinfo→`Proxy-Authorization: Basic` mechanism is the only auth seam srt exposes (no custom header / token / signature is reachable). Use it: generate a per-run random secret in the parent, pass `parentProxy: { http: "http://ordin:<secret>@127.0.0.1:port" }`, validate every `Proxy-Authorization` header at the top of the broker's `onRequest` and `onConnect`. Reject mismatches with 407. Strip `proxy-authorization` (hop-by-hop, RFC 7230 §6.1) before forwarding upstream.
+
+**Why it matters:** the secret never enters the inner's env (srt holds the parentProxy URL in its own process memory; the inner's `HTTP_PROXY` points at srt's port, not the broker's URL), so a sandbox-escaped agent dialing the broker port directly cannot authenticate. Audit forgery and broker-CONNECT bypass both close. We deliberately skip `crypto.timingSafeEqual` — for the in-process threat model the timing oracle requires nanosecond-precision measurement of a sibling process which the kernel sandbox already prevents.
+
+## Finding 22 — OTel batch flushes after `run.completed`; don't close audit writer on the lifecycle event
+
+**Symptom:** first end-to-end audit run produced zero `broker.forward` entries despite Langfuse being up + tracing enabled.
+
+**Diagnosis:** OTel's `BatchSpanProcessor` flushes batches every 5000ms (default) AND on shutdown. Short runs don't hit the periodic flush — spans only flush when `sdk.shutdown()` runs at process exit. By then the inner has already emitted `run.completed`, our audit handler has cleared `currentRunId` and closed the writer, and the trailing `broker.forward` from the OTel POST gets dropped with "no current run."
+
+**Fix:** stop closing the writer + clearing `currentRunId` on `run.completed`. Open writers stay alive until `closeAll()` (or process exit). Per-entry `fdatasync` makes data durable at write time, so the fd lifetime is just resource management, not correctness.
+
+**Why it matters:** trailing telemetry / shutdown-time egress is *exactly* the audit signal you want — it's when an exfiltrating implementation would try to slip data out. The chain's post-`run.completed` entries are semantically honest (those bytes really did leave the sandbox during shutdown). General lesson: don't couple resource lifecycle to logical-event lifecycle when async flushes can outlive the event.

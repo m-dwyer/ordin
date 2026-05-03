@@ -4,7 +4,7 @@ Forward-looking plan for ordin's sandbox boundary. Past decisions live in [`deci
 
 ## Where we are
 
-**Level 4 + broker, with credential isolation for telemetry (L3a step 1 shipped).** Whole inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Broker (`src/broker/`) runs in the parent as srt's `parentProxy`: srt enforces the hostname allowlist first, then forwards approved egress to the broker, which dispatches by hostname to mapped local services and stamps an `Authorization` header from credentials it holds parent-side. Network egress denied by default; allowlist gated per-host. Local services declared in `ordin.config.yaml`'s `sandbox.local_services` map. macOS only; Linux comes for free via srt.
+**Level 4 + broker, with credential isolation + tamper-evident audit (L3a steps 1 + 2 shipped).** Whole inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Broker (`src/broker/`) runs in the parent as srt's `parentProxy`: srt enforces the hostname allowlist first, then forwards approved egress to the broker. Broker dispatches by hostname to either *forward* services (proxy to mapped upstream + auth injection) or *internal* services (handled in-broker; today: `audit`). Per-run hash-chained audit log at `~/.ordin/runs/<runId>/audit.jsonl`. Every request requires `Proxy-Authorization` (per-run secret); srt forwards via parentProxy URL userinfo. Network egress denied by default; allowlist gated per-host. macOS only; Linux comes for free via srt.
 
 Shipped:
 - B-process self-spawn via srt (`SrtSandbox` in `src/sandbox/srt/`)
@@ -79,7 +79,7 @@ The kernel sandbox is the load-bearing security primitive. Each level moves wher
 **Sequencing — small bites, each independently shippable:**
 
 1. ✅ **Telemetry off the inner.** OTel exporter → `http://otel/...` → broker (parentProxy) → Langfuse with broker-injected Basic auth. `LANGFUSE_*` stripped from inner. Validates the broker-as-Hono-on-TCP pattern with the simplest possible message type. **(Shipped.)**
-2. **Audit log behind the broker.** New endpoint, hash-chained, append-only. Inner emits run events as HTTP. Audit integrity becomes real for the first time.
+2. ✅ **Audit log behind the broker.** Sha256 hash chain, append + fdatasync per entry, per-run JSONL file. Inner posts every `RunEvent` to `http://audit/events`; broker also records its own `broker.forward` / `broker.connect` observations into the same chain (egress visibility for non-HTTP traffic via srt's SOCKS-through-CONNECT path). Required `Proxy-Authorization` (per-run random secret in srt's `parentProxy` URL userinfo) prevents inner-direct forgery. Verifier: `ordin audit verify <runId>`. **(Shipped.)**
 3. **Gate state behind the broker.** Inner asks via HTTP, broker decides, broker replies. Decisions become unfakeable by the inner. The `sandboxAskCallback` srt exposes (orthogonal to mitmProxy/parentProxy — fires inside `filterNetworkRequest`) becomes the natural seam for "host not in static allowlist → ask broker → prompt user → cache decision per session".
 4. **OOB channel.** Add Signal / Telegram / push as the broker's notification surface. The TUI prompter remains as a fallback. Decision policy: deny-novel-without-OOB-approval for sensitive runs.
 5. **`--auto-approve` flag** with three-layer policy (static / auto-with-audit / hard-manual). Per-run flag, never persistent in config. Post-run summary lists decisions for promotion to durable policy.

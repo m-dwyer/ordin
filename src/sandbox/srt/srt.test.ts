@@ -30,6 +30,14 @@ describe("defaultPolicy", () => {
     expect(p.allowedDomains).toEqual([]);
     expect(p.deniedDomains).toEqual([]);
   });
+
+  it("includes provided local-service names (forward + internal alike)", () => {
+    // Both forward services (otel, llm-gateway) and internal services
+    // (audit) must appear in allowedDomains so srt's filter approves
+    // inner traffic destined for the broker.
+    const p = defaultPolicy({ localServiceNames: ["otel", "llm-gateway", "audit"] });
+    expect(p.allowedDomains).toEqual(expect.arrayContaining(["otel", "llm-gateway", "audit"]));
+  });
 });
 
 describe("mergePolicy", () => {

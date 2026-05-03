@@ -148,10 +148,16 @@ export class SrtSandbox implements Sandbox {
       delete env[key];
     }
     const otel = this.broker?.services.find((s) => s.name === "otel");
-    if (otel?.authHeader) {
+    if (otel?.kind === "forward" && otel.authHeader) {
       env["ORDIN_TRACING_ENABLED"] = "1";
     } else {
       delete env["ORDIN_TRACING_ENABLED"];
+    }
+    const audit = this.broker?.services.find((s) => s.name === "audit");
+    if (audit?.kind === "internal") {
+      env["ORDIN_AUDIT_ENABLED"] = "1";
+    } else {
+      delete env["ORDIN_AUDIT_ENABLED"];
     }
     return env;
   }

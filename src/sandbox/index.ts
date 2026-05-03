@@ -12,8 +12,19 @@ import type { Sandbox } from "./types";
  * traffic. Clearing NO_PROXY forces Bun to use whatever proxy agent
  * each client wires.
  */
+/**
+ * True when this process is the sandboxed child (srt sets
+ * `SANDBOX_RUNTIME=1` in the wrapped command's env). False in the
+ * outer parent and in passthrough mode. The single source of truth
+ * for "are we past the sandbox boundary?" — call this rather than
+ * inlining the env check.
+ */
+export function isInnerProcess(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env["SANDBOX_RUNTIME"] === "1";
+}
+
 export function prepareInnerProcess(env: NodeJS.ProcessEnv = process.env): void {
-  if (env["SANDBOX_RUNTIME"] !== "1") return;
+  if (!isInnerProcess(env)) return;
   delete env["NO_PROXY"];
   delete env["no_proxy"];
   // The outer process sets ipv4first for its broker / proxy lookups, but

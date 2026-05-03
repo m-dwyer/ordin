@@ -1,6 +1,10 @@
+import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Broker } from "../broker";
+import { type VerifyResult, verifyChainText } from "../broker/audit-chain";
+import { AuditService } from "../broker/audit-service";
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
@@ -13,6 +17,7 @@ import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
 import { SkillLoader } from "../infrastructure/skill-loader";
 import { WorkflowLoader } from "../infrastructure/workflow-loader";
+import { AuditEmitter } from "../observability/audit-emitter";
 import { startTracing } from "../observability/tracing";
 import {
   type Engine,
@@ -31,9 +36,10 @@ import { AiSdkRuntime } from "../runtimes/ai-sdk";
 import { ClaudeCliRuntime } from "../runtimes/claude-cli";
 import { ScriptedRuntime } from "../runtimes/scripted";
 import type { AgentRuntime } from "../runtimes/types";
-import { prepareInnerProcess, type SandboxMode, selectSandbox } from "../sandbox";
+import { isInnerProcess, prepareInnerProcess, type SandboxMode, selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
 
+export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
 export type { PhasePreview } from "../domain/phase-preview";
 export type { RunEvent } from "../orchestrator/events";
@@ -161,13 +167,19 @@ export class HarnessRuntime {
       runStoreDir: state.config.runStoreDir(),
       harnessRoot: this.root,
     });
+    // AuditEmitter is a no-op in passthrough and when
+    // ORDIN_AUDIT_ENABLED is unset, so always wiring it is cheap.
+    const auditEmitter = new AuditEmitter();
     const runInput: EngineRunInput = {
       task: input.task,
       slug,
       workspaceRoot,
       tier: input.tier ?? "M",
       onGateRequested: (request) => this.handleGateRequest(request),
-      ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      onEvent: (ev) => {
+        input.onEvent?.(ev);
+        auditEmitter.emit(ev);
+      },
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     };
     return engine.run(program, runInput, this.engineServices(state));
@@ -202,6 +214,18 @@ export class HarnessRuntime {
   async getRun(runId: string): Promise<RunMeta> {
     const { runStore } = await this.load();
     return runStore.readMeta(runId);
+  }
+
+  /**
+   * Walk the per-run audit chain (`<runStoreDir>/<runId>/audit.jsonl`)
+   * and report tamper status. Returns the same VerifyResult shape the
+   * pure verifier produces; the CLI layer renders it.
+   */
+  async verifyAudit(runId: string): Promise<VerifyResult> {
+    const { runStore } = await this.load();
+    const path = join(runStore.runDir(runId), "audit.jsonl");
+    const text = await readFile(path, "utf8");
+    return verifyChainText(text);
   }
 
   async workflowDefinition(): Promise<WorkflowManifest> {
@@ -320,15 +344,27 @@ export class HarnessRuntime {
   private resolveSandbox(state: LoadedState): Sandbox {
     if (this.sandboxOverride) return this.sandboxOverride;
     const mode = this.sandboxModeOverride ?? state.config.sandboxMode();
-    // The broker only exists in the outer (parent) process. The inner
-    // is wrapped by srt and reaches the broker through srt's parentProxy
-    // forwarder — it doesn't construct or own a broker. Skipping
-    // construction here also avoids failing the auth-env check in the
-    // inner, where LANGFUSE_* have been stripped from env.
-    const inInner = process.env["SANDBOX_RUNTIME"] === "1";
+    // Broker is only meaningful for srt mode in the outer process:
+    // srt wires it as parentProxy and forwards approved egress to it.
+    // - Passthrough mode: no sandbox, no proxy, broker would be unused.
+    // - Inner of an srt run: broker lives parent-side; the inner
+    //   reaches it via HTTP_PROXY. Constructing here would also fail
+    //   the auth-env check (LANGFUSE_* stripped from inner env).
+    if (mode !== "srt" || isInnerProcess()) return selectSandbox(mode);
     const services = state.config.localServices();
-    const broker = !inInner && Object.keys(services).length > 0 ? new Broker(services) : undefined;
-    return selectSandbox(mode, broker ? { broker } : {});
+    // Audit service is always registered alongside the broker. It's
+    // the seam for the hash-chained run-event chain + non-HTTP egress
+    // visibility (broker.connect events from srt-via-CONNECT
+    // tunneling). Cheap to include even when no local_services are
+    // configured — the broker exists for the audit endpoint alone in
+    // that case.
+    const audit = new AuditService({ runStoreDir: state.config.runStoreDir() });
+    const broker = new Broker(services, {
+      proxyAuth: randomBytes(32).toString("hex"),
+      internalServices: [audit.asInternalService()],
+      onEgress: audit.egressSink(),
+    });
+    return selectSandbox(mode, { broker });
   }
 
   private engineServices(state: LoadedState): EngineServices {
