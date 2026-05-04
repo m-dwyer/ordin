@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { applySeedPlan, buildRunInput, resolveRunCommand } from "../../src/cli/run-command";
 import { WorkflowManifest } from "../../src/domain/workflow";
-import { applySeedPlan, buildRunInput, resolveRunCommand } from "../../src/run-service/run-command";
 import type { HarnessRuntime, RunMeta } from "../../src/runtime/harness";
 
 describe("run command resolution", () => {

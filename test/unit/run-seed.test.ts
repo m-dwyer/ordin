@@ -2,12 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { captureFixture, seedFromFixture, seedPhaseInputsFromRun } from "../../src/cli/run-seed";
 import { WorkflowManifest } from "../../src/domain/workflow";
-import {
-  captureFixture,
-  seedFromFixture,
-  seedPhaseInputsFromRun,
-} from "../../src/run-service/run-seed";
 
 describe("run seed helpers", () => {
   it("seeds a fixture with nested paths", async () => {

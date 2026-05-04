@@ -42,10 +42,10 @@ module.exports = {
       name: "cli-cannot-reach-past-harness-runtime",
       severity: "error",
       comment:
-        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ and src/cli/tui/ are CLI-side adapters that legitimately import gates/* (Gate/HumanGate/AutoGate + the Phase type) and the runtime's own RunEvent/RunMeta type re-exports.",
+        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ and src/cli/tui/ are CLI-side adapters that legitimately import gates/* (Gate/HumanGate/AutoGate + the Phase type) and the runtime's own RunEvent/RunMeta type re-exports. Also exempt: src/cli/run-command.ts and src/cli/run-seed.ts — CLI-flag-to-StartRunInput resolvers that need domain workflow/phase types to reconstruct prior runs (--again) and to seed/capture artefact fixtures by phase id.",
       from: {
         path: "^src/cli",
-        pathNot: "^src/cli/(gate-prompters|tui)/",
+        pathNot: "^src/cli/(gate-prompters|tui)/|^src/cli/run-(command|seed)\\.ts$",
       },
       to: { path: "^src/(domain|worker|orchestrator|gates|infrastructure)/" },
     },

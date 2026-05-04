@@ -1,10 +1,10 @@
 import type { Command } from "commander";
-import { applySeedPlan, type RunCommandOpts, resolveRunCommand } from "../run-service/run-command";
 import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
 import { ordin, ordinRunSession, parseSandboxMode, parseTier } from "./common";
+import { applySeedPlan, type RunCommandOpts, resolveRunCommand } from "./run-command";
 import { renderDryRun } from "./tui/dry-run";
 
-export { buildRunInput } from "../run-service/run-command";
+export { buildRunInput } from "./run-command";
 
 export interface RunCommandDeps {
   /**
