@@ -23,21 +23,20 @@ Out of scope: kernel-level sandbox-exec bugs (defended by microVM at L0; not pra
 
 L2 shipped. Worker today is ~1k LoC of harness code + the runtime adapter. Goal is to push the worker toward "the runtime adapter and nothing else" — every line of TS in the sandbox is attack surface that doesn't need to be there.
 
-**Phase A: folder reorg + isolation contract.**
+**Phase A (shipped): folder reorg + isolation contract.**
 
-- Move all worker-side modules under `src/worker/` (entry, runtimes, audit-emitter, tracing, phase-runner, events, prepare).
+- All worker-side modules under `src/worker/` (entry, runtimes, prepare, locator).
 - Dependency-cruiser rule: `src/worker/**` may import only from `src/worker/**`, externals, and `type`-only from elsewhere. Value-imports across the boundary are a build error.
-- Drop `HarnessConfigLoader` from the worker. Parent extracts the runtime's config slice and ships it in `plan.json`; worker calls `Runtime.fromConfig(slice, ctx)`. Eliminates Zod + YAML parser from the sandbox.
+- `HarnessConfigLoader` dropped from the worker. Parent extracts the runtime's config slice and ships it in `plan.json`; worker calls `Runtime.fromConfig(slice, ctx)`. No Zod + YAML parser in the sandbox.
 - Lazy `import()` per runtime in the registry so unused adapters don't ship.
 
-**Phase B: lift bookkeeping out of the worker.**
+**Phase B (shipped): lift bookkeeping out of the worker.**
 
-- `PhaseRunner` lifecycle event emission (`phase.started`, `phase.runtime.completed`) moves to the parent around the `dispatchPhase` call. Worker just calls `runtime.invoke()` and returns the `InvokeResult`.
-- `promoteRuntimeEvent` (runId/phaseId tagging) moves to the parent.
-- Replace HTTP audit emission with **stdout JSONL**. Parent reads child's stdout, parses lines, dispatches to audit + TUI. Drops `node:http`, broker proxy auth from the worker.
-- Tracing moves to the parent — parent opens spans across `dispatchPhase` calls; worker doesn't open its own.
+- `PhaseRunner` and `promoteRuntimeEvent` moved to `src/orchestrator/`. Parent emits `phase.started`/`phase.runtime.completed`/`phase.failed` and tags runtime events with run/phase identity.
+- Worker writes raw `RuntimeEvent`s as JSONL on stdout; parent reads via `readline` and dispatches. `AuditEmitter` (HTTP POSTs to broker) deleted; `AuditService.asInternalService()` and the broker's audit endpoint removed.
+- Tracing now parent-only. Worker no longer calls `startTracing()`. Worker-isolation deps rule tightened to drop the observability allowance.
 
-After Phase B the worker is roughly: `entry.ts` (~40 lines) + `prepare.ts` (5 lines) + one runtime adapter.
+Worker is now `entry.ts` (~70 lines) + `prepare.ts` (5 lines) + `locator.ts` + the runtime adapter. The next reductions live in Phase C/D.
 
 **Phase C: per-runtime sandboxing.**
 
