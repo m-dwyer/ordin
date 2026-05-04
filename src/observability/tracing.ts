@@ -9,12 +9,12 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
  * `@opentelemetry/sdk-node` — every other module uses the public API
  * tracer (`trace.getTracer("ordin")`).
  *
- * Wiring is gated by `ORDIN_TRACING_ENABLED=1`, which the parent sets
- * in the inner's spawn env iff the broker has an `otel` local service
- * configured. The inner has no Langfuse credentials of its own —
- * spans go to `http://otel/api/public/otel/v1/traces` (a broker
- * hostname), the broker injects the Basic-auth header on the way out,
- * and Langfuse never sees the inner directly.
+ * Parent-run wiring passes the broker proxy URL explicitly once the
+ * broker is listening. The worker has no Langfuse credentials or
+ * broker URL of its own — spans go from the parent to
+ * `http://otel/api/public/otel/v1/traces` (a broker hostname), the
+ * broker injects the Basic-auth header on the way out, and Langfuse
+ * never sees the worker directly.
  *
  * Tracing is supplementary — never load-bearing. SDK init, exporter
  * errors, and transport rejections are caught here so a Langfuse
@@ -26,14 +26,21 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
 let sdk: NodeSDK | undefined;
 let shutdownPromise: Promise<void> | undefined;
 let rejectionGuardInstalled = false;
+let shutdownHooksInstalled = false;
 
 const SERVICE_VERSION = "0.1.0";
 const OTEL_BROKER_URL = "http://otel/api/public/otel/v1/traces";
 
-export function startTracing(): void {
-  if (sdk) return;
-  if (process.env["ORDIN_TRACING_DISABLED"] === "1") return;
-  if (process.env["ORDIN_TRACING_ENABLED"] !== "1") return;
+export interface TracingOptions {
+  readonly enabled?: boolean;
+  readonly proxyUrl?: string;
+}
+
+export function startTracing(opts: TracingOptions = {}): boolean {
+  if (sdk) return true;
+  if (process.env["ORDIN_TRACING_DISABLED"] === "1") return false;
+  const enabled = opts.enabled ?? process.env["ORDIN_TRACING_ENABLED"] === "1";
+  if (!enabled) return false;
 
   installRejectionGuard();
   diag.setLogger(
@@ -47,18 +54,16 @@ export function startTracing(): void {
     DiagLogLevel.WARN,
   );
 
-  // OTel HTTP exporter routes via HTTP_PROXY (set by srt). srt's filter
-  // approves `otel` (in allowedDomains) and forwards to the broker as
-  // parentProxy; the broker maps `otel` → Langfuse and injects the
-  // Basic-auth header. The exporter itself sends plain HTTP with no
-  // auth header and no awareness of the upstream.
+  // OTel HTTP exporter routes via the broker proxy. In the parent-run
+  // path this is passed explicitly after the broker has bound; the env
+  // fallback is kept for standalone/dev invocations.
   //
-  // We supply httpAgentOptions as a factory so the OTel SDK uses an
-  // HttpProxyAgent for the HTTP_PROXY env var. The OTel base accepts a
-  // function value here: `typeof === "function"` is treated as the
-  // agent factory directly (see otlp-exporter-base/.../convert-legacy-
+  // We supply httpAgentOptions as a factory so the OTel SDK uses a
+  // ProxyAgent for the proxy URL. The OTel base accepts a function
+  // value here: `typeof === "function"` is treated as the agent
+  // factory directly (see otlp-exporter-base/.../convert-legacy-
   // node-http-options.js).
-  const proxyUrl = process.env["HTTPS_PROXY"] ?? process.env["HTTP_PROXY"];
+  const proxyUrl = opts.proxyUrl ?? process.env["HTTPS_PROXY"] ?? process.env["HTTP_PROXY"];
   const exporter = new OTLPTraceExporter({
     url: OTEL_BROKER_URL,
     ...(proxyUrl ? { httpAgentOptions: proxyAgentFactory(proxyUrl) } : {}),
@@ -71,6 +76,7 @@ export function startTracing(): void {
   });
 
   try {
+    shutdownPromise = undefined;
     sdk = new NodeSDK({ traceExporter: exporter, resource });
     sdk.start();
   } catch (err) {
@@ -78,15 +84,11 @@ export function startTracing(): void {
       `[tracing] disabled — SDK init failed: ${err instanceof Error ? err.message : String(err)}`,
     );
     sdk = undefined;
-    return;
+    return false;
   }
 
-  const flush = (): void => {
-    void shutdownTracing();
-  };
-  process.once("beforeExit", flush);
-  process.once("SIGTERM", flush);
-  process.once("SIGINT", flush);
+  installShutdownHooks();
+  return true;
 }
 
 /**
@@ -121,6 +123,7 @@ export async function shutdownTracing(): Promise<void> {
       })
       .finally(() => {
         sdk = undefined;
+        shutdownPromise = undefined;
       });
   }
   await shutdownPromise;
@@ -158,6 +161,17 @@ function installRejectionGuard(): void {
       throw reason;
     });
   });
+}
+
+function installShutdownHooks(): void {
+  if (shutdownHooksInstalled) return;
+  shutdownHooksInstalled = true;
+  const flush = (): void => {
+    void shutdownTracing();
+  };
+  process.once("beforeExit", flush);
+  process.once("SIGTERM", flush);
+  process.once("SIGINT", flush);
 }
 
 function isTelemetryError(reason: unknown): boolean {

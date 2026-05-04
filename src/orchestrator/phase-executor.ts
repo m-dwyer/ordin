@@ -1,3 +1,4 @@
+import { SpanStatusCode } from "@opentelemetry/api";
 import type { Feedback } from "../domain/composer";
 import type { PhasePreparer } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
@@ -6,6 +7,7 @@ import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
 import { formatMissing, PhaseArtefactVerifier } from "./phase-artefacts";
+import { diagnoseMissingOutputs } from "./phase-diagnostics";
 import { PhaseInvocationPlanner, PhaseInvoker } from "./phase-invocation";
 import { PhaseRecorder } from "./phase-recorder";
 import type { PhaseMeta, RunMeta } from "./run-store";
@@ -105,11 +107,11 @@ class PhaseTransaction {
       return await this.failBeforeRuntime(phase, iteration, invocation.error);
     }
 
-    const { meta: phaseMeta, invokeResult } = await this.invoker.invoke(
-      phase,
-      invocation.plan,
-      iteration,
-    );
+    const {
+      meta: phaseMeta,
+      invokeResult,
+      events,
+    } = await this.invoker.invoke(phase, invocation.plan, iteration);
     await this.recorder.recordRunResult(phaseMeta);
 
     if (phaseMeta.status === "failed") {
@@ -119,12 +121,9 @@ class PhaseTransaction {
 
     const missingOut = await this.artefacts.findMissing(outputs);
     if (missingOut.length > 0) {
-      return await this.failAfterRuntime(
-        phase,
-        phaseMeta,
-        iteration,
-        formatMissing("outputs that were not written", phase, missingOut),
-      );
+      const summary = formatMissing("outputs that were not written", phase, missingOut);
+      const diagnosis = diagnoseMissingOutputs(missingOut, events, phaseMeta.transcriptPath);
+      return await this.failAfterRuntime(phase, phaseMeta, iteration, `${summary}\n${diagnosis}`);
     }
 
     const gateDecision = await this.gateCoordinator.decide(phase, phaseMeta, invokeResult, outputs);
@@ -194,13 +193,32 @@ export async function executePhase(
     },
     async (span) => {
       const result = await new PhaseTransaction(ctx).execute(phase);
+      const failure = phaseFailure(ctx.meta, phase.id, iteration);
       span.setAttribute("ordin.approved", result.approved);
       if (ctx.outcome) span.setAttribute("ordin.outcome", ctx.outcome);
+      if (failure) {
+        span.setAttribute("ordin.error", failure);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: failure });
+      }
       span.setAttribute(
         "langfuse.observation.output",
-        ctx.outcome ? `outcome=${ctx.outcome}` : `approved=${result.approved}`,
+        phaseOutput(result.approved, ctx.outcome, failure),
       );
       return result;
     },
   );
+}
+
+function phaseFailure(meta: RunMeta, phaseId: string, iteration: number): string | undefined {
+  return meta.phases.find((p) => p.phaseId === phaseId && p.iteration === iteration)?.error;
+}
+
+function phaseOutput(
+  approved: boolean,
+  outcome: PhaseExecutorContext["outcome"],
+  failure: string | undefined,
+): string {
+  if (failure) return `outcome=${outcome ?? "failed"}\nerror=${failure}`;
+  if (outcome) return `outcome=${outcome}`;
+  return `approved=${approved}`;
 }

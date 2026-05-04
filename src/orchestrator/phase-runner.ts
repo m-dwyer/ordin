@@ -1,6 +1,11 @@
 import type { PhasePreview } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
-import type { AgentRuntime, InvokeRequest, InvokeResult } from "../worker/runtimes/types";
+import type {
+  AgentRuntime,
+  InvokeRequest,
+  InvokeResult,
+  RuntimeEvent,
+} from "../worker/runtimes/types";
 import type { RunEvent } from "./events";
 import type { PhaseMeta } from "./run-store";
 import { promoteRuntimeEvent } from "./runtime-events";
@@ -42,6 +47,7 @@ export interface PhaseExecutionRequest {
 export interface PhaseRunResult {
   readonly meta: PhaseMeta;
   readonly invokeResult: InvokeResult;
+  readonly events: readonly RuntimeEvent[];
 }
 
 export class PhaseRunner {
@@ -66,11 +72,15 @@ export class PhaseRunner {
       runtime: runtimeName,
     });
 
+    const events: RuntimeEvent[] = [];
     const invokeResult = await invoke({
       runId: context.runId,
       runDir: context.runDir,
       prompt: preview.prompt,
-      onEvent: (event) => emit(promoteRuntimeEvent(event, context.runId, preview.phase.id)),
+      onEvent: (event) => {
+        events.push(event);
+        emit(promoteRuntimeEvent(event, context.runId, preview.phase.id));
+      },
       ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
     });
 
@@ -86,7 +96,7 @@ export class PhaseRunner {
         iteration: context.iteration,
         error: phaseMeta.error,
       });
-      return { meta: phaseMeta, invokeResult };
+      return { meta: phaseMeta, invokeResult, events };
     }
 
     emit({
@@ -97,7 +107,7 @@ export class PhaseRunner {
       tokens: invokeResult.tokens,
       durationMs: invokeResult.durationMs,
     });
-    return { meta: phaseMeta, invokeResult };
+    return { meta: phaseMeta, invokeResult, events };
   }
 
   private applyInvokeResult(phaseMeta: PhaseMeta, invokeResult: InvokeResult): void {

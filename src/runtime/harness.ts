@@ -18,7 +18,7 @@ import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
 import { SkillLoader } from "../infrastructure/skill-loader";
 import { WorkflowLoader } from "../infrastructure/workflow-loader";
-import { startTracing } from "../observability/tracing";
+import { shutdownTracing, startTracing } from "../observability/tracing";
 import {
   type Engine,
   EngineRegistry,
@@ -165,7 +165,6 @@ export class HarnessRuntime {
   private readonly scriptPathOverride?: string;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
-    startTracing();
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
     this.engineName = opts.engine ?? "mastra";
@@ -181,16 +180,22 @@ export class HarnessRuntime {
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
     const infra = this.buildInfra(state, input);
-    // Broker must be listening before the sandbox initialises — srt
-    // needs the bound port for its parentProxy URL.
-    if (infra.kind === "managed") await infra.broker.start();
-    await infra.sandbox.enterIfNeeded({
-      workspaceRoot,
-      runStoreDir: state.config.runStoreDir(),
-      harnessRoot: this.root,
-      workerReadRoots: workerReadRoots(this.root),
-    });
+    let tracingStarted = false;
     try {
+      // Broker must be listening before the sandbox initialises — srt
+      // needs the bound port for its parentProxy URL. Parent-side
+      // tracing uses that same broker proxy, so start it after bind and
+      // flush before teardown.
+      if (infra.kind === "managed") {
+        await infra.broker.start();
+        tracingStarted = startParentTracing(infra);
+      }
+      await infra.sandbox.enterIfNeeded({
+        workspaceRoot,
+        runStoreDir: state.config.runStoreDir(),
+        harnessRoot: this.root,
+        workerReadRoots: workerReadRoots(this.root),
+      });
       const onEvent = makeOnEvent(infra, input);
       const runInput: EngineRunInput = {
         task: input.task,
@@ -208,6 +213,7 @@ export class HarnessRuntime {
       return await engine.run(program, runInput, this.engineServices(state));
     } finally {
       if (infra.kind === "managed") {
+        if (tracingStarted) await shutdownTracing();
         await infra.audit.closeAll();
         await infra.broker.stop();
       }
@@ -453,6 +459,7 @@ export class HarnessRuntime {
       sandbox: selectSandbox(mode, { broker }),
       broker,
       audit,
+      services,
     };
   }
 
@@ -543,6 +550,7 @@ type RunInfra =
       readonly sandbox: Sandbox;
       readonly broker: Broker;
       readonly audit: AuditService;
+      readonly services: Readonly<Record<string, unknown>>;
     };
 
 /**
@@ -562,6 +570,12 @@ function makeOnEvent(infra: RunInfra, input: StartRunInput): (event: RunEvent) =
     };
   }
   return (ev) => input.onEvent?.(ev);
+}
+
+function startParentTracing(infra: RunInfra): boolean {
+  if (infra.kind !== "managed") return false;
+  if (!Object.hasOwn(infra.services, "otel")) return false;
+  return startTracing({ enabled: true, proxyUrl: infra.broker.proxyUrl() });
 }
 
 function errMessage(err: unknown): string {
