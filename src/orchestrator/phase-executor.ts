@@ -1,15 +1,14 @@
 import { SpanStatusCode } from "@opentelemetry/api";
-import type { Feedback } from "../domain/composer";
-import type { PhasePreparer } from "../domain/phase-preview";
+import type { ArtefactPointer, Feedback } from "../domain/composer";
+import { type PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
+import { ArtefactManager } from "../infrastructure/artefact-manager";
 import { withSpan } from "../observability/spans";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
-import { formatMissing, PhaseArtefactVerifier } from "./phase-artefacts";
 import { diagnoseMissingOutputs } from "./phase-diagnostics";
-import { PhaseInvocationPlanner, PhaseInvoker } from "./phase-invocation";
-import { PhaseRecorder } from "./phase-recorder";
+import type { PhaseRunResult } from "./phase-runner";
 import type { PhaseMeta, RunMeta } from "./run-store";
 
 export type EngineOutcome = "halted" | "failed";
@@ -38,54 +37,55 @@ export interface PhaseExecutionOutcome {
   readonly approved: boolean;
 }
 
+interface PhaseInvocationPlan {
+  readonly preview: PhasePreview;
+  readonly runtimeName: string;
+}
+
+type PlanningResult =
+  | { readonly ok: true; readonly plan: PhaseInvocationPlan }
+  | { readonly ok: false; readonly error: string };
+
 /**
  * One phase, executed as a single transaction. Steps:
  *
  *   1. Bump iteration counter.
  *   2. Resolve declared input/output artefact contracts.
  *   3. Pre-flight: verify all declared inputs exist on disk.
- *   4. Prepare the phase (compose prompt, resolve runtime name).
- *   5. Invoke the runtime via PhaseRunner.
+ *   4. Plan the invocation (compose prompt, resolve runtime name).
+ *   5. Invoke the runtime via the engine-supplied dispatcher.
  *   6. Post-flight: verify all declared outputs exist on disk.
- *   7. Request a gate decision via the engine's `onGateRequested`.
+ *   7. Request a gate decision via `GateCoordinator`.
  *   8. Apply approval/rejection — set feedback/outcome for the engine
  *      to drive its next loop iteration or halt.
  *
- * Each step is a private method named after what it does. `execute()`
- * reads as a checklist.
+ * `execute()` reads as a checklist; the supporting logic (artefact
+ * resolution, invocation planning, runtime dispatch, run-meta
+ * recording) lives in private methods on this class — all are called
+ * from one place and have no second adapter, so they don't earn their
+ * own seam. `GateCoordinator` is the single external collaborator
+ * because its responsibility is genuinely distinct (status transitions,
+ * feedback synthesis, gate-event emission) and a future
+ * `LangGraphEngine` may want to swap it for an `interrupt()`-based
+ * variant.
  */
 class PhaseTransaction {
-  private readonly artefacts: PhaseArtefactVerifier;
-  private readonly invocationPlanner: PhaseInvocationPlanner;
-  private readonly invoker: PhaseInvoker;
-  private readonly gateCoordinator: GateCoordinator;
-  private readonly recorder: PhaseRecorder;
+  private readonly artefacts: ArtefactManager;
+  private readonly gate: GateCoordinator;
 
   constructor(private readonly ctx: PhaseExecutorContext) {
-    this.artefacts = new PhaseArtefactVerifier(ctx.input.workspaceRoot);
-    this.invocationPlanner = new PhaseInvocationPlanner(ctx.input, ctx.services, ctx.preparer);
-    this.invoker = new PhaseInvoker({
+    this.artefacts = new ArtefactManager(ctx.input.workspaceRoot);
+    this.gate = new GateCoordinator({
       runId: ctx.runId,
       input: ctx.input,
-      services: ctx.services,
-      emit: ctx.emit,
-    });
-    this.gateCoordinator = new GateCoordinator({
-      runId: ctx.runId,
-      input: ctx.input,
-      emit: ctx.emit,
-    });
-    this.recorder = new PhaseRecorder({
-      runId: ctx.runId,
-      meta: ctx.meta,
-      runStore: ctx.services.runStore,
       emit: ctx.emit,
     });
   }
 
   async execute(phase: Phase): Promise<PhaseExecutionOutcome> {
     const iteration = this.bumpIteration(phase);
-    const { inputs, outputs } = this.artefacts.resolve(phase, this.ctx.input.slug);
+    const inputs = resolveArtefacts(phase.inputs, this.ctx.input.slug);
+    const outputs = resolveArtefacts(phase.outputs, this.ctx.input.slug);
 
     const missingIn = await this.artefacts.findMissing(inputs);
     if (missingIn.length > 0) {
@@ -96,23 +96,17 @@ class PhaseTransaction {
       );
     }
 
-    const invocation = this.invocationPlanner.plan(
-      this.ctx.manifest,
-      phase,
-      inputs,
-      outputs,
-      this.ctx.feedback,
-    );
-    if (!invocation.ok) {
-      return await this.failBeforeRuntime(phase, iteration, invocation.error);
+    const planning = this.planInvocation(phase, inputs, outputs);
+    if (!planning.ok) {
+      return await this.failBeforeRuntime(phase, iteration, planning.error);
     }
 
     const {
       meta: phaseMeta,
       invokeResult,
       events,
-    } = await this.invoker.invoke(phase, invocation.plan, iteration);
-    await this.recorder.recordRunResult(phaseMeta);
+    } = await this.invoke(phase, planning.plan, iteration);
+    await this.recordRunResult(phaseMeta);
 
     if (phaseMeta.status === "failed") {
       this.ctx.outcome = "failed";
@@ -126,8 +120,8 @@ class PhaseTransaction {
       return await this.failAfterRuntime(phase, phaseMeta, iteration, `${summary}\n${diagnosis}`);
     }
 
-    const gateDecision = await this.gateCoordinator.decide(phase, phaseMeta, invokeResult, outputs);
-    await this.recorder.write();
+    const gateDecision = await this.gate.decide(phase, phaseMeta, invokeResult, outputs);
+    await this.writeMeta();
 
     this.ctx.feedback = gateDecision.feedback;
     this.ctx.outcome = gateDecision.outcome;
@@ -138,6 +132,69 @@ class PhaseTransaction {
     const n = (this.ctx.iterations.get(phase.id) ?? 0) + 1;
     this.ctx.iterations.set(phase.id, n);
     return n;
+  }
+
+  private planInvocation(
+    phase: Phase,
+    artefactInputs: readonly ArtefactPointer[],
+    artefactOutputs: readonly ArtefactPointer[],
+  ): PlanningResult {
+    const agent = this.ctx.services.agents.get(phase.agent);
+    if (!agent) {
+      return {
+        ok: false,
+        error: `Agent "${phase.agent}" declared by phase "${phase.id}" not loaded`,
+      };
+    }
+
+    const preview = this.ctx.preparer.prepare({
+      phase,
+      agent,
+      workflow: this.ctx.manifest,
+      config: this.ctx.services.config,
+      task: this.ctx.input.task,
+      cwd: this.ctx.input.workspaceRoot,
+      tier: this.ctx.input.tier,
+      artefactInputs,
+      artefactOutputs,
+      ...(this.ctx.feedback ? { feedback: this.ctx.feedback } : {}),
+    });
+
+    if (!this.ctx.services.runtimeNames.has(preview.runtimeName)) {
+      return {
+        ok: false,
+        error: `Runtime "${preview.runtimeName}" resolved for phase "${phase.id}" not registered`,
+      };
+    }
+
+    return { ok: true, plan: { preview, runtimeName: preview.runtimeName } };
+  }
+
+  private async invoke(
+    phase: Phase,
+    plan: PhaseInvocationPlan,
+    iteration: number,
+  ): Promise<PhaseRunResult> {
+    const runDir = await this.ctx.services.runStore.ensureRunDir(this.ctx.runId);
+    return this.ctx.input.dispatchPhase({
+      runId: this.ctx.runId,
+      runDir,
+      iteration,
+      phase,
+      preview: plan.preview,
+      runtimeName: plan.runtimeName,
+      emit: this.ctx.emit,
+      ...(this.ctx.input.abortSignal ? { abortSignal: this.ctx.input.abortSignal } : {}),
+    });
+  }
+
+  private async recordRunResult(phaseMeta: PhaseMeta): Promise<void> {
+    this.ctx.meta.phases.push(phaseMeta);
+    await this.writeMeta();
+  }
+
+  private writeMeta(): Promise<void> {
+    return this.ctx.services.runStore.writeMeta(this.ctx.meta);
   }
 
   /**
@@ -151,7 +208,17 @@ class PhaseTransaction {
     iteration: number,
     error: string,
   ): Promise<PhaseExecutionOutcome> {
-    await this.recorder.recordPreRuntimeFailure(phase, iteration, error);
+    const now = new Date().toISOString();
+    this.ctx.meta.phases.push({
+      phaseId: phase.id,
+      iteration,
+      startedAt: now,
+      completedAt: now,
+      status: "failed",
+      error,
+    });
+    await this.writeMeta();
+    this.emitFailure(phase, iteration, error);
     this.ctx.outcome = "failed";
     return { approved: false };
   }
@@ -167,10 +234,27 @@ class PhaseTransaction {
     iteration: number,
     error: string,
   ): Promise<PhaseExecutionOutcome> {
-    await this.recorder.recordPostRuntimeFailure(phase, phaseMeta, iteration, error);
+    phaseMeta.status = "failed";
+    phaseMeta.error = error;
+    await this.writeMeta();
+    this.emitFailure(phase, iteration, error);
     this.ctx.outcome = "failed";
     return { approved: false };
   }
+
+  private emitFailure(phase: Phase, iteration: number, error: string): void {
+    this.ctx.emit({
+      type: "phase.failed",
+      runId: this.ctx.runId,
+      phaseId: phase.id,
+      iteration,
+      error,
+    });
+  }
+}
+
+function formatMissing(suffix: string, phase: Phase, missing: readonly ArtefactPointer[]): string {
+  return `Phase "${phase.id}" declared ${suffix}: ${missing.map((m) => m.path).join(", ")}`;
 }
 
 /**
