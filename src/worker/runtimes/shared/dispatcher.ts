@@ -1,4 +1,4 @@
-import type { Skill } from "../../domain/skill";
+import type { Skill } from "../../../domain/skill";
 import {
   type BashInput,
   type EditInput,

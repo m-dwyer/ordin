@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { AiSdkRuntime } from "../../src/runtimes/ai-sdk";
+import { AiSdkRuntime } from "../../src/worker/runtimes/ai-sdk";
 
 describe("AiSdkRuntime.fromConfig", () => {
   afterEach(() => {

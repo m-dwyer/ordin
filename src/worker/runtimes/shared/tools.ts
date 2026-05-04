@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { glob as fsGlob, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { Skill } from "../../domain/skill";
+import type { Skill } from "../../../domain/skill";
 
 /**
  * Canonical agent tool surface. Pure async executors — no SDK coupling,

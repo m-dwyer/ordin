@@ -52,11 +52,11 @@ const PhaseOverrideSchema = z.object({
 
 export const ClaudeCliConfigSchema = z.object({
   /**
-   * Path to the `claude` binary. If unset, the runtime falls back to
-   * `CLAUDE_BIN` env then bare `"claude"` (PATH lookup). If relative,
-   * PATH is searched.
+   * Path to the `claude` binary. Required in the slice the worker
+   * receives — the parent resolves any env/PATH fallback before
+   * shipping the plan (see `src/cli/diagnostics/resolve-claude-bin.ts`).
    */
-  bin: z.string().min(1).optional(),
+  bin: z.string().min(1),
   /** Optional hard ceiling on wall-clock duration. Undefined = no timeout. */
   timeout_ms: z.number().int().positive().optional(),
   /** Per-phase Claude-specific knobs (fallback model, turn ceiling, …). */
@@ -77,26 +77,11 @@ const defaultSpawner: Spawner = (bin, args, opts) =>
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-/**
- * Resolve the `claude` binary, in priority order:
- *   1. Explicit `override` (constructor opt or YAML `runtimes.claude-cli.bin`)
- *   2. `CLAUDE_BIN` env var — the escape hatch for environments where
- *      `spawn`'s PATH disagrees with the user's shell PATH (mise/asdf
- *      shims, multiple installs of `claude`, etc.)
- *   3. Bare `"claude"` — let the OS resolve it from PATH
- *
- * Exported so the CLI's `doctor` command resolves identically to the
- * runtime — diagnosing one tells you the other.
- */
-export function resolveClaudeBin(override?: string): string {
-  if (override) return override;
-  const fromEnv = process.env["CLAUDE_BIN"];
-  if (fromEnv) return fromEnv;
-  return "claude";
-}
-
 export interface ClaudeCliRuntimeOptions {
-  readonly bin?: string;
+  /** Path to the claude binary. Resolved parent-side (see
+   *  `src/cli/diagnostics/resolve-claude-bin.ts`) and shipped in the
+   *  worker's plan; the worker doesn't peek at PATH or env. */
+  readonly bin: string;
   readonly timeoutMs?: number;
   readonly phaseOverrides?: Readonly<
     Record<string, { fallback_model?: string; max_turns?: number }>
@@ -131,8 +116,8 @@ export class ClaudeCliRuntime implements AgentRuntime {
   private readonly runsDirFallback: string;
   private readonly spawner: Spawner;
 
-  constructor(opts: ClaudeCliRuntimeOptions = {}) {
-    this.bin = resolveClaudeBin(opts.bin);
+  constructor(opts: ClaudeCliRuntimeOptions) {
+    this.bin = opts.bin;
     this.timeoutMs = opts.timeoutMs;
     this.phaseOverrides = opts.phaseOverrides ?? {};
     this.pluginDirs = opts.pluginDirs ?? [];
@@ -149,9 +134,9 @@ export class ClaudeCliRuntime implements AgentRuntime {
     raw: unknown,
     extras: Omit<ClaudeCliRuntimeOptions, "bin" | "timeoutMs" | "phaseOverrides"> = {},
   ): ClaudeCliRuntime {
-    const parsed = ClaudeCliConfigSchema.parse(raw ?? {});
+    const parsed = ClaudeCliConfigSchema.parse(raw);
     return new ClaudeCliRuntime({
-      ...(parsed.bin !== undefined ? { bin: parsed.bin } : {}),
+      bin: parsed.bin,
       ...(parsed.timeout_ms !== undefined ? { timeoutMs: parsed.timeout_ms } : {}),
       phaseOverrides: parsed.phases,
       ...extras,

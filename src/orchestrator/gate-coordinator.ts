@@ -1,10 +1,21 @@
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import type { Phase } from "../domain/workflow";
-import type { InvokeResult } from "../runtimes/types";
+import type { InvokeResult } from "../worker/runtimes/types";
 import type { EngineRunInput } from "./engine";
 import type { RunEvent } from "./events";
-import { summariseInvocation } from "./phase-runner";
 import type { PhaseMeta } from "./run-store";
+
+function summariseInvocation(result: InvokeResult): string {
+  const parts = [
+    `duration: ${(result.durationMs / 1000).toFixed(1)}s`,
+    `in: ${result.tokens.input.toLocaleString()} tok`,
+    `out: ${result.tokens.output.toLocaleString()} tok`,
+  ];
+  if (result.tokens.cacheReadInput > 0) {
+    parts.push(`cache-read: ${result.tokens.cacheReadInput.toLocaleString()} tok`);
+  }
+  return parts.join("  |  ");
+}
 
 export interface GateCoordinatorContext {
   readonly runId: string;

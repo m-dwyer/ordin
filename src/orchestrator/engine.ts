@@ -3,9 +3,8 @@ import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { GateKind, Phase, WorkflowManifest } from "../domain/workflow";
 import type { GateArtefact, GateDecision } from "../gates/types";
-import type { AgentRuntime } from "../runtimes/types";
+import type { PhaseRunResult } from "../worker/phase-runner";
 import type { RunEvent } from "./events";
-import type { PhaseRunResult } from "./phase-runner";
 import type { RunMeta, RunStore } from "./run-store";
 import type { ExecutionPlan } from "./workflow-plan";
 
@@ -44,7 +43,13 @@ export interface WorkflowProgram {
 export interface EngineServices {
   readonly config: HarnessConfig;
   readonly agents: ReadonlyMap<string, Agent>;
-  readonly runtimes: ReadonlyMap<string, AgentRuntime>;
+  /**
+   * Names of registered runtimes — used by the planner to validate
+   * that a phase's resolved runtime is known. Instances live in
+   * whichever process the dispatcher chose to invoke them in (under
+   * L2: the worker, not the parent).
+   */
+  readonly runtimeNames: ReadonlySet<string>;
   readonly runStore: RunStore;
 }
 

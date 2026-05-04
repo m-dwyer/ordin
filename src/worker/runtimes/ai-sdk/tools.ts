@@ -1,6 +1,6 @@
 import { type ToolSet, tool } from "ai";
 import { z } from "zod";
-import type { Skill } from "../../domain/skill";
+import type { Skill } from "../../../domain/skill";
 import {
   executeBash,
   executeEdit,

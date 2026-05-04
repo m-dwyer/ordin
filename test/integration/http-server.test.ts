@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createHttpApp } from "../../src/http/app";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { RunService } from "../../src/run-service/run-service";
-import { FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
 
 describe("HTTP app (in-process)", () => {
   it("serves a valid OpenAPI 3.0 document at /openapi.json", async () => {
@@ -154,7 +154,7 @@ async function makeApp(): Promise<{ app: ReturnType<typeof createHttpApp>; servi
   const root = await makeHarnessRoot();
   const service = new RunService({
     root,
-    runtimes: new Map([["ai-sdk", new FakeRuntime()]]),
+    dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
   });
   return { app: createHttpApp(service), service };
 }

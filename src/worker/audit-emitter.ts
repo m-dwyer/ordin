@@ -20,6 +20,7 @@ export class AuditEmitter {
   private readonly enabled: boolean;
   private readonly proxyHost?: string;
   private readonly proxyPort?: number;
+  private readonly proxyAuthHeader?: string;
   private readonly endpoint = "http://audit/events";
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
@@ -41,6 +42,15 @@ export class AuditEmitter {
     this.enabled = true;
     this.proxyHost = u.hostname;
     this.proxyPort = port;
+    // Include Proxy-Authorization when HTTP_PROXY carries userinfo.
+    // srt-mode requests reach the broker via srt's own proxy (which
+    // injects the header per its parentProxy URL); passthrough-mode
+    // requests come straight from us, so we set it ourselves.
+    if (u.username) {
+      const decodedPass = u.password ? decodeURIComponent(u.password) : "";
+      const encoded = Buffer.from(`${u.username}:${decodedPass}`).toString("base64");
+      this.proxyAuthHeader = `Basic ${encoded}`;
+    }
   }
 
   isEnabled(): boolean {
@@ -70,6 +80,7 @@ export class AuditEmitter {
         Host: "audit",
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(body).toString(),
+        ...(this.proxyAuthHeader ? { "Proxy-Authorization": this.proxyAuthHeader } : {}),
       },
     });
     req.on("error", (err) => {

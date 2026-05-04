@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createHttpApp } from "../../src/http/app";
 import { isLoopbackHost, tokenFromEnv } from "../../src/http/auth";
 import { RunService } from "../../src/run-service/run-service";
-import { FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
 
 describe("HTTP auth", () => {
   it("rejects API requests without a bearer token when token is configured", async () => {
@@ -97,7 +97,7 @@ async function makeApp(opts: { token?: string } = {}): Promise<ReturnType<typeof
   const root = await makeHarnessRoot();
   const service = new RunService({
     root,
-    runtimes: new Map([["ai-sdk", new FakeRuntime()]]),
+    dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
   });
   return createHttpApp(service, opts.token ? { auth: { token: opts.token } } : {});
 }

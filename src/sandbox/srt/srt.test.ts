@@ -239,34 +239,4 @@ describe("SrtSandbox lifecycle", () => {
     expect(allowed).toBe(true);
     expect(askedHost).toBe("example.com");
   });
-
-  it("shutdown stops the broker", async () => {
-    const calls: string[] = [];
-    const fakeBroker = {
-      services: [],
-      proxyUrl: () => "http://ordin:secret@127.0.0.1:0",
-      start: async () => {
-        calls.push("start");
-      },
-      stop: async () => {
-        calls.push("stop");
-      },
-      askApproval: async () => false,
-      // biome-ignore lint/suspicious/noExplicitAny: minimal Broker stub
-    } as any;
-    const s = new SrtSandbox({
-      manager: {
-        initialize: async () => {},
-        waitForNetworkInitialization: async () => true,
-        wrapWithSandbox: async (cmd: string) => cmd,
-        // biome-ignore lint/suspicious/noExplicitAny: test stub
-      } as any,
-      broker: fakeBroker,
-      env: () => ({}),
-      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {} }),
-    });
-    await s.enterIfNeeded(params);
-    await s.shutdown();
-    expect(calls).toEqual(["start", "stop"]);
-  });
 });

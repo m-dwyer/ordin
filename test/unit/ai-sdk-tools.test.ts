@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolCallOptions } from "ai";
 import { describe, expect, it } from "vitest";
-import { buildTools, parseToolSpec } from "../../src/runtimes/ai-sdk/tools";
+import { buildTools, parseToolSpec } from "../../src/worker/runtimes/ai-sdk/tools";
 
 /**
  * Narrow coverage for pure behaviour and the two tool contracts that

@@ -5,11 +5,11 @@
  * and reads `result.json` after the worker exits. One phase per
  * worker; worker exits when the phase invocation returns.
  *
- * Inside this process: load HarnessConfig from disk, instantiate the
- * one runtime named in the plan, run `PhaseRunner.run`, write the
- * result, exit. RunEvents emit through `AuditEmitter` (POST to the
- * broker via HTTP_PROXY); the parent's `AuditService.onEvent` hook
- * forwards them into the TUI.
+ * Inside this process: instantiate the one runtime named in the plan
+ * (using a parent-resolved config slice — no YAML parsing here),
+ * run `PhaseRunner.run`, write the result, exit. RunEvents emit
+ * through `AuditEmitter` (POST to the broker via HTTP_PROXY); the
+ * parent's `AuditService.onEvent` hook forwards them into the TUI.
  *
  * Trust: the plan file is parent-owned. We don't re-validate it — if
  * the parent wrote garbage, that's a harness bug, not a sandbox
@@ -17,26 +17,26 @@
  * process; it doesn't protect this process from the parent.
  */
 import { readFile, writeFile } from "node:fs/promises";
-import type { PhasePreview } from "../../domain/phase-preview";
-import type { Phase } from "../../domain/workflow";
-import { HarnessConfigLoader } from "../../infrastructure/config-loader";
-import { AuditEmitter } from "../../observability/audit-emitter";
-import { startTracing } from "../../observability/tracing";
-import { PhaseRunner } from "../../orchestrator/phase-runner";
-import { buildRuntime } from "../../runtimes/registry";
-import { prepareInnerProcess } from "../../sandbox";
+import type { PhasePreview } from "../domain/phase-preview";
+import type { Phase } from "../domain/workflow";
+import { startTracing } from "../observability/tracing";
+import { AuditEmitter } from "./audit-emitter";
+import { PhaseRunner } from "./phase-runner";
+import { prepareInnerProcess } from "./prepare";
+import { buildRuntime } from "./runtimes/registry";
 
 interface WorkerPlan {
-  readonly configFile: string;
   readonly harnessRoot: string;
   readonly workflowName: string;
   readonly scriptPath?: string;
+  readonly runsDir: string;
   readonly runId: string;
   readonly runDir: string;
   readonly iteration: number;
   readonly phase: Phase;
   readonly preview: PhasePreview;
   readonly runtimeName: string;
+  readonly runtimeConfig: unknown;
   readonly resultPath: string;
 }
 
@@ -45,10 +45,10 @@ async function main(): Promise<void> {
   startTracing();
   const planPath = parsePlanPath(process.argv);
   const plan: WorkerPlan = JSON.parse(await readFile(planPath, "utf8"));
-  const config = await new HarnessConfigLoader().load(plan.configFile);
-  const runtime = buildRuntime(plan.runtimeName, config, {
+  const runtime = await buildRuntime(plan.runtimeName, plan.runtimeConfig, {
     harnessRoot: plan.harnessRoot,
     workflowName: plan.workflowName,
+    runsDir: plan.runsDir,
     ...(plan.scriptPath ? { scriptPath: plan.scriptPath } : {}),
   });
   const auditEmitter = new AuditEmitter();

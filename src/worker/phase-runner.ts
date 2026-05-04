@@ -1,8 +1,9 @@
 import type { PhasePreview } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
-import type { AgentRuntime, InvokeResult } from "../runtimes/types";
-import { promoteRuntimeEvent, type RunEvent } from "./events";
-import type { PhaseMeta } from "./run-store";
+import type { RunEvent } from "../orchestrator/events";
+import type { PhaseMeta } from "../orchestrator/run-store";
+import { promoteRuntimeEvent } from "./events";
+import type { AgentRuntime, InvokeResult } from "./runtimes/types";
 
 /**
  * `PhaseRunner` invokes one prepared phase: takes a `PhasePreview`
@@ -101,18 +102,6 @@ export class PhaseRunner {
     phaseMeta.exitCode = invokeResult.exitCode;
     phaseMeta.transcriptPath = invokeResult.transcriptPath;
   }
-}
-
-export function summariseInvocation(result: InvokeResult): string {
-  const parts = [
-    `duration: ${(result.durationMs / 1000).toFixed(1)}s`,
-    `in: ${result.tokens.input.toLocaleString()} tok`,
-    `out: ${result.tokens.output.toLocaleString()} tok`,
-  ];
-  if (result.tokens.cacheReadInput > 0) {
-    parts.push(`cache-read: ${result.tokens.cacheReadInput.toLocaleString()} tok`);
-  }
-  return parts.join("  |  ");
 }
 
 // Re-exported for engines/executors that previously named these.

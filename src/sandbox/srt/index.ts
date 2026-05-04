@@ -113,7 +113,6 @@ export class SrtSandbox implements Sandbox {
     // has no listener, hangs ~2s, then ECONNREFUSED. ipv4first
     // matches the typical local-services bind shape.
     setDefaultResultOrder("ipv4first");
-    if (this.broker) await this.broker.start();
     const config = this.buildConfig(params);
     // srt's askCallback fires for hosts that fall through
     // allowedDomains/deniedDomains. Routed through the broker so
@@ -132,7 +131,6 @@ export class SrtSandbox implements Sandbox {
   }
 
   async shutdown(): Promise<void> {
-    if (this.broker) await this.broker.stop();
     this.initialized = false;
   }
 

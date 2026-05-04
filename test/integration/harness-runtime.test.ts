@@ -11,7 +11,8 @@ import type {
   InvokeRequest,
   InvokeResult,
   RuntimeCapabilities,
-} from "../../src/runtimes/types";
+} from "../../src/worker/runtimes/types";
+import { dispatchFromRuntime } from "../fixtures/harness-root";
 
 /**
  * Stand-in agent runtime. Records invocations and materialises any
@@ -96,7 +97,7 @@ describe("HarnessRuntime", () => {
     const runtime = new FakeRuntime();
     const harness = new HarnessRuntime({
       root,
-      runtimes: new Map([["ai-sdk", runtime]]),
+      dispatchPhase: dispatchFromRuntime(runtime),
       gateForKind: () => new AutoGate(),
     });
 
@@ -154,7 +155,7 @@ describe("HarnessRuntime", () => {
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-empty-repo-"));
     const harness = new HarnessRuntime({
       root,
-      runtimes: new Map([["ai-sdk", silentRuntime]]),
+      dispatchPhase: dispatchFromRuntime(silentRuntime),
       gateForKind: () => new AutoGate(),
     });
 
@@ -178,7 +179,7 @@ describe("HarnessRuntime", () => {
     const runtime = new FakeRuntime();
     const harness = new HarnessRuntime({
       root,
-      runtimes: new Map([["ai-sdk", runtime]]),
+      dispatchPhase: dispatchFromRuntime(runtime),
       gateForKind: () => new AutoGate(),
     });
 
@@ -223,7 +224,7 @@ describe("HarnessRuntime", () => {
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-empty-repo-"));
     const harness = new HarnessRuntime({
       root,
-      runtimes: new Map([["ai-sdk", tripwireRuntime]]),
+      dispatchPhase: dispatchFromRuntime(tripwireRuntime),
       gateForKind: () => new AutoGate(),
     });
 

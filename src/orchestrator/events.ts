@@ -1,4 +1,4 @@
-import type { RuntimeEvent, TokenUsage } from "../runtimes/types";
+import type { TokenUsage } from "../worker/runtimes/types";
 
 /**
  * Unified event stream the orchestrator emits for a run. Consumers get
@@ -106,28 +106,3 @@ export type RunEvent =
       readonly phaseId: string;
       readonly message: string;
     };
-
-/**
- * Promote a runtime-local event into a tagged RunEvent. The orchestrator
- * is the merging point — this function lives here, not in the runtimes
- * layer (which must stay unaware of runId/phaseId). Each case spreads
- * the runtime event and overrides the discriminator + adds the run/
- * phase tags; the RunEvent variants are deliberately a superset of the
- * RuntimeEvent shapes so this is just a tag rewrite.
- */
-export function promoteRuntimeEvent(event: RuntimeEvent, runId: string, phaseId: string): RunEvent {
-  switch (event.type) {
-    case "assistant.text":
-      return { ...event, type: "agent.text", runId, phaseId };
-    case "assistant.thinking":
-      return { ...event, type: "agent.thinking", runId, phaseId };
-    case "tool.use":
-      return { ...event, type: "agent.tool.use", runId, phaseId };
-    case "tool.result":
-      return { ...event, type: "agent.tool.result", runId, phaseId };
-    case "tokens":
-      return { ...event, type: "agent.tokens", runId, phaseId };
-    case "error":
-      return { ...event, type: "agent.error", runId, phaseId };
-  }
-}

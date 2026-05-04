@@ -1,4 +1,4 @@
-import type { ComposedPrompt } from "../domain/composer";
+import type { ComposedPrompt } from "../../domain/composer";
 
 /**
  * Runtime contract. Runtimes adapt a specific agent CLI or SDK to the

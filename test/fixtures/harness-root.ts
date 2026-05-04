@@ -1,12 +1,14 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
+import type { PhaseDispatchRequest } from "../../src/orchestrator/engine";
+import type { PhaseRunResult } from "../../src/worker/phase-runner";
 import type {
   AgentRuntime,
   InvokeRequest,
   InvokeResult,
   RuntimeCapabilities,
-} from "../../src/runtimes/types";
+} from "../../src/worker/runtimes/types";
 
 /**
  * Stand-in agent runtime used across HarnessRuntime / RunService /
@@ -36,6 +38,69 @@ export class FakeRuntime implements AgentRuntime {
       durationMs: 5,
     };
   }
+}
+
+/**
+ * Wraps a `FakeRuntime` (or any `AgentRuntime`) as a `dispatchPhase`
+ * callback. Tests pass this as `HarnessRuntimeOptions.dispatchPhase` to
+ * short-circuit the worker spawn — the fake's `invoke` is called
+ * directly in-process, and we shape the result into `PhaseRunResult`.
+ */
+export function dispatchFromRuntime(
+  runtime: AgentRuntime,
+): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
+  return async (req) => {
+    const startedAt = new Date().toISOString();
+    req.emit({
+      type: "phase.started",
+      runId: req.runId,
+      phaseId: req.phase.id,
+      iteration: req.iteration,
+      model: req.preview.prompt.model,
+      runtime: runtime.name,
+    });
+    const invokeResult = await runtime.invoke({
+      runId: req.runId,
+      prompt: req.preview.prompt,
+      runDir: req.runDir,
+      onEvent: () => {},
+    });
+    if (invokeResult.status === "failed") {
+      req.emit({
+        type: "phase.failed",
+        runId: req.runId,
+        phaseId: req.phase.id,
+        iteration: req.iteration,
+        error: invokeResult.error ?? `exit ${invokeResult.exitCode}`,
+      });
+    } else {
+      req.emit({
+        type: "phase.runtime.completed",
+        runId: req.runId,
+        phaseId: req.phase.id,
+        iteration: req.iteration,
+        tokens: invokeResult.tokens,
+        durationMs: invokeResult.durationMs,
+      });
+    }
+    return {
+      meta: {
+        phaseId: req.phase.id,
+        iteration: req.iteration,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        status: invokeResult.status === "ok" ? "running" : "failed",
+        runtime: runtime.name,
+        model: req.preview.prompt.model,
+        tokens: invokeResult.tokens,
+        durationMs: invokeResult.durationMs,
+        exitCode: invokeResult.exitCode,
+        transcriptPath: invokeResult.transcriptPath,
+        ...(invokeResult.error ? { error: invokeResult.error } : {}),
+      },
+      invokeResult,
+    };
+  };
 }
 
 export async function materializeDeclaredOutputs(userPrompt: string, cwd: string): Promise<void> {

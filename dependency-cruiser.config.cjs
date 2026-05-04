@@ -22,15 +22,7 @@ module.exports = {
       comment:
         "Domain must not import from runtimes; runtimes adapt to domain, not the reverse.",
       from: { path: "^src/domain" },
-      to: { path: "^src/runtimes" },
-    },
-    {
-      name: "runtimes-cannot-depend-on-orchestrator",
-      severity: "error",
-      comment:
-        "Runtimes implement AgentRuntime and must not reach into orchestrator or CLI.",
-      from: { path: "^src/runtimes" },
-      to: { path: "^src/(orchestrator|runtime|cli)/" },
+      to: { path: "^src/worker/runtimes" },
     },
     {
       name: "infrastructure-cannot-depend-on-application-layers",
@@ -38,14 +30,7 @@ module.exports = {
       comment:
         "Infrastructure adapts disk/YAML/frontmatter into domain objects; it must not depend on orchestrator, runtimes, gates, clients, or the harness runtime.",
       from: { path: "^src/infrastructure" },
-      to: { path: "^src/(orchestrator|runtime|runtimes|gates|cli)/" },
-    },
-    {
-      name: "runtimes-cannot-depend-on-gates",
-      severity: "error",
-      comment: "Gate logic belongs to the orchestrator, not to runtimes.",
-      from: { path: "^src/runtimes" },
-      to: { path: "^src/gates" },
+      to: { path: "^src/(orchestrator|runtime|worker|gates|cli)/" },
     },
     {
       name: "gates-cannot-depend-on-orchestrator",
@@ -62,7 +47,7 @@ module.exports = {
         path: "^src/cli",
         pathNot: "^src/cli/(gate-prompters|tui)/",
       },
-      to: { path: "^src/(domain|runtimes|orchestrator|gates|infrastructure)/" },
+      to: { path: "^src/(domain|worker|orchestrator|gates|infrastructure)/" },
     },
     {
       name: "cli-adapters-scoped",
@@ -70,7 +55,7 @@ module.exports = {
       comment:
         "CLI-side adapters (gate-prompters, tui) may import the gate layer + Phase type, but never the concrete runtimes or the orchestrator's internals. Event/Run types are accessed through runtime/harness re-exports.",
       from: { path: "^src/cli/(gate-prompters|tui)/" },
-      to: { path: "^src/(runtimes|orchestrator)/" },
+      to: { path: "^src/(worker|orchestrator)/" },
     },
     {
       name: "sandbox-is-leaf",
@@ -79,7 +64,37 @@ module.exports = {
         "Sandbox is a self-contained isolation primitive. It is consumed by the harness and CLI; it must not depend on other ordin layers.",
       from: { path: "^src/sandbox" },
       to: {
-        path: "^src/(domain|orchestrator|runtimes|gates|cli|infrastructure|runtime|run-service|observability)/",
+        path: "^src/(domain|orchestrator|worker|gates|cli|infrastructure|runtime|run-service|observability)/",
+      },
+    },
+    {
+      name: "worker-isolation",
+      severity: "error",
+      comment:
+        "src/worker/** is the sandboxed code path. It may only import from src/worker/**, externals, type-only edges anywhere, and src/observability/** (shared instrumentation). Tightens the trust boundary so worker code stays minimal — every value-import here is attack surface inside the sandbox.",
+      from: {
+        path: "^src/worker/",
+        pathNot: "\\.test\\.ts$",
+      },
+      to: {
+        path: "^src/",
+        pathNot: ["^src/worker/", "^src/observability/"],
+        dependencyTypesNot: ["type-only"],
+      },
+    },
+    {
+      name: "no-parent-value-imports-of-worker",
+      severity: "error",
+      comment:
+        "Parent code (anything outside src/worker/) must not value-import worker implementation modules. Two value-imports are legal: (1) src/worker/locator.ts — the argv prefix the parent uses to spawn the worker; (2) src/worker/runtimes/registry.ts — the KNOWN_RUNTIME_NAMES set the engine validates against. Both are contract surfaces, not implementation. Type-only imports of worker types (PhaseRunResult, AgentRuntime, etc.) are fine — erased at build.",
+      from: {
+        path: "^src/(?!worker/)",
+        pathNot: "^src/worker/",
+      },
+      to: {
+        path: "^src/worker/",
+        pathNot: ["^src/worker/locator\\.ts$", "^src/worker/runtimes/registry\\.ts$"],
+        dependencyTypesNot: ["type-only"],
       },
     },
     {

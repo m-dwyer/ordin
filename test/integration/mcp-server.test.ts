@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createMcpServer } from "../../src/mcp/server";
 import { RunService } from "../../src/run-service/run-service";
-import { FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
 
 /**
  * In-process MCP transport via `InMemoryTransport.createLinkedPair`.
@@ -94,7 +94,7 @@ async function makePair(): Promise<{ client: Client }> {
   const root = await makeHarnessRoot();
   const service = new RunService({
     root,
-    runtimes: new Map([["ai-sdk", new FakeRuntime()]]),
+    dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
   });
   const server = createMcpServer(service);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
