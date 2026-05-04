@@ -31,16 +31,26 @@ import { defaultPolicy, type NetworkPolicy } from "./policy";
 const SANDBOX_EXEC_BIN = "/usr/bin/sandbox-exec";
 
 /**
- * Env vars stripped from each worker's environment. Each is a
- * credential the broker injects on the worker's behalf, so the worker
- * has no need (and no business) seeing it. Add new entries here when
- * a new broker-mediated service is introduced.
+ * Defensive env strip for srt workers. The parent already builds a
+ * narrow allowlisted worker env; this backstop protects direct callers
+ * of `SrtSandbox.spawnWorker` and future refactors.
  */
 const INNER_ENV_DENYLIST = [
   "LANGFUSE_PUBLIC_KEY",
   "LANGFUSE_SECRET_KEY",
   "LANGFUSE_HOST",
   "LITELLM_MASTER_KEY",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "http_proxy",
+  "https_proxy",
 ] as const;
 
 export interface SrtSandboxDeps {
@@ -59,8 +69,6 @@ export interface SrtSandboxDeps {
   readonly homeDir?: () => string;
   /** Inject for test seams. Defaults to `fs.existsSync`. */
   readonly hasFile?: (path: string) => boolean;
-  /** Inject for test seams. Defaults to `process.env`. */
-  readonly env?: () => NodeJS.ProcessEnv;
   /**
    * Inject for test seams. Defaults to spawning `/bin/sh -c <wrapped>`
    * with stdio inherited and resolving with the child's exit code.
@@ -92,7 +100,6 @@ export class SrtSandbox implements Sandbox {
   private readonly platform: () => string;
   private readonly homeDir: () => string;
   private readonly hasFile: (path: string) => boolean;
-  private readonly env: () => NodeJS.ProcessEnv;
   private readonly spawnWrapped: (wrapped: string, opts: SpawnWrappedOpts) => SpawnedChild;
   private initialized = false;
 
@@ -105,7 +112,6 @@ export class SrtSandbox implements Sandbox {
     this.platform = deps.platform ?? platform;
     this.homeDir = deps.homeDir ?? homedir;
     this.hasFile = deps.hasFile ?? existsSync;
-    this.env = deps.env ?? (() => process.env);
     this.spawnWrapped = deps.spawnWrapped ?? defaultSpawnWrapped;
   }
 
@@ -147,12 +153,17 @@ export class SrtSandbox implements Sandbox {
     const wrappedPromise = this.manager.wrapWithSandbox(command);
     const env = this.applyEnvDenylist(plan.env);
     let child: SpawnedChild | undefined;
+    let cancelled = false;
     // wrapWithSandbox is async; surface stdout through a passthrough
     // stream that we connect to the child's stdout once it's been
     // spawned. Parent JSONL readers can subscribe immediately without
     // waiting for the wrap to resolve.
     const stdoutBridge = new PassThrough();
     const exit = wrappedPromise.then((wrapped) => {
+      if (cancelled) {
+        stdoutBridge.end();
+        return 143;
+      }
       const opts: SpawnWrappedOpts = { env, ...(plan.cwd ? { cwd: plan.cwd } : {}) };
       child = this.spawnWrapped(wrapped, opts);
       child.stdout.pipe(stdoutBridge);
@@ -161,14 +172,17 @@ export class SrtSandbox implements Sandbox {
     return {
       exit,
       stdout: stdoutBridge,
-      kill: (signal?: NodeJS.Signals) => child?.kill(signal),
+      kill: (signal?: NodeJS.Signals) => {
+        cancelled = true;
+        child?.kill(signal);
+      },
     };
   }
 
   /**
-   * Strip parent-only secrets (telemetry creds, gateway tokens —
-   * anything the broker injects on the worker's behalf). Workers
-   * inherit PATH, HOME, terminal vars, etc. from `plan.env` unmodified.
+   * Strip parent-only secrets and proxy settings. The parent normally
+   * sends an allowlisted env for srt workers; this is a defensive
+   * second layer for tests, programmatic callers, and future refactors.
    *
    * Tracing and audit flags used to be set here so the worker would
    * activate its own tracer/audit emitter; under L2 (Phase B) both

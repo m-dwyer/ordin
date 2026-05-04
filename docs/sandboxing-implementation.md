@@ -23,6 +23,8 @@ Out of scope: kernel-level sandbox-exec bugs (defended by microVM at L0; not pra
 
 L2 shipped. Worker today is ~1k LoC of harness code + the runtime adapter. Goal is to push the worker toward "the runtime adapter and nothing else" — every line of TS in the sandbox is attack surface that doesn't need to be there.
 
+Worker env is allowlisted in `srt` mode: `HOME`, `PATH`, `TERM`, temp vars, and locale vars only. The parent does not pass broker URLs, broker auth, telemetry credentials, model gateway tokens, or ambient API keys into the worker. The srt profile denies the home root by default and re-allows only required paths (`~/.claude`, harness root, workspace, run store, temp dir, and explicit worker interpreter read roots).
+
 **Phase A (shipped): folder reorg + isolation contract.**
 
 - All worker-side modules under `src/worker/` (entry, runtimes, prepare, locator).

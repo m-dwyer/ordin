@@ -40,6 +40,7 @@ import { workerArgv } from "../worker/locator";
 import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
 import type { InvokeRequest, InvokeResult, RuntimeEvent } from "../worker/runtimes/types";
 import { resolveClaudeBin } from "./resolve-claude-bin";
+import { buildWorkerEnv } from "./worker-env";
 
 export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
@@ -187,6 +188,7 @@ export class HarnessRuntime {
       workspaceRoot,
       runStoreDir: state.config.runStoreDir(),
       harnessRoot: this.root,
+      extraReadRoots: workerReadRoots(this.root),
     });
     try {
       const onEvent = makeOnEvent(infra, input);
@@ -239,14 +241,7 @@ export class HarnessRuntime {
     const workflowName = this.workflowName;
     const scriptPath = this.scriptPathOverride;
     const config = state.config;
-    // Worker reaches the broker for its forward services (otel, llm-
-    // gateway). srt also overrides HTTP_PROXY internally with its own
-    // proxy URL; in passthrough mode this is the only HTTP_PROXY the
-    // worker sees.
-    const workerEnv: NodeJS.ProcessEnv =
-      infra.kind === "managed"
-        ? { ...process.env, HTTP_PROXY: infra.broker.proxyUrl() }
-        : process.env;
+    const workerEnv = buildWorkerEnv(infra, process.env);
     return async (req) => {
       const planPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.plan.json`);
       const resultPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.result.json`);
@@ -569,6 +564,12 @@ function resolveRuntimeConfig(name: string, slice: unknown): unknown {
     return { ...cur, bin: resolveClaudeBin(cur.bin) };
   }
   return slice;
+}
+
+function workerReadRoots(harnessRoot: string): readonly string[] {
+  return workerArgv({ harnessRoot })
+    .filter((arg) => arg.startsWith("/"))
+    .map(dirname);
 }
 
 interface SpawnWorkerInvokeArgs {

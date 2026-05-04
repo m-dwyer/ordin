@@ -73,18 +73,31 @@ describe("buildSrtConfig", () => {
     expect(cfg.filesystem.allowWrite).toContain(params.tempDir);
   });
 
-  it("denies sensitive credential dirs", () => {
+  it("denies the home root and re-allows only required home paths", () => {
     const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
-    const denies = cfg.filesystem.denyRead;
-    expect(denies).toContain(`${homeDir}/.ssh`);
-    expect(denies).toContain(`${homeDir}/.aws`);
-    expect(denies).toContain(`${homeDir}/.gnupg`);
-    expect(denies).toContain(`${homeDir}/.netrc`);
+    expect(cfg.filesystem.denyRead).toContain(homeDir);
+    expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.claude`);
+    expect(cfg.filesystem.allowRead).not.toContain(`${homeDir}/.ssh`);
+    expect(cfg.filesystem.allowRead).not.toContain(`${homeDir}/.aws`);
   });
 
   it("allows ~/.claude read for ADR-006 Max-plan auth", () => {
     const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
     expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.claude`);
+  });
+
+  it("allows explicit extra read roots for the worker interpreter", () => {
+    const cfg = buildSrtConfig({
+      params: {
+        ...params,
+        extraReadRoots: ["/Users/test/.local/share/mise/installs/bun/1.3.13/bin"],
+      },
+      policy: defaultPolicy({ env: {} }),
+      homeDir,
+    });
+    expect(cfg.filesystem.allowRead).toContain(
+      "/Users/test/.local/share/mise/installs/bun/1.3.13/bin",
+    );
   });
 
   it("does not include harnessRoot in allowWrite (the allow-only model denies it by default)", () => {
@@ -159,7 +172,6 @@ describe("SrtSandbox lifecycle", () => {
     const s = new SrtSandbox({
       policy: defaultPolicy({ env: {} }),
       manager: fakeManager,
-      env: () => ({}),
       spawnWrapped: (w) => {
         spawnedWrapped = w;
         calls.push("spawnWrapped");
@@ -195,10 +207,78 @@ describe("SrtSandbox lifecycle", () => {
         wrapWithSandbox: async (cmd: string) => cmd,
         // biome-ignore lint/suspicious/noExplicitAny: test stub
       } as any,
-      env: () => ({}),
       spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {}, stdout: emptyStdout() }),
     });
     expect(() => s.spawnWorker({ argv: ["true"], env: {} })).toThrow(/before enterIfNeeded/);
+  });
+
+  it("strips credential and proxy env vars before spawning", async () => {
+    const fakeManager = {
+      initialize: async () => {},
+      waitForNetworkInitialization: async () => true,
+      wrapWithSandbox: async (cmd: string) => cmd,
+      // biome-ignore lint/suspicious/noExplicitAny: test stub
+    } as any;
+
+    let receivedEnv: NodeJS.ProcessEnv | undefined;
+    const s = new SrtSandbox({
+      policy: defaultPolicy({ env: {} }),
+      manager: fakeManager,
+      spawnWrapped: (_w, opts) => {
+        receivedEnv = opts.env;
+        return { exit: Promise.resolve(0), kill: () => {}, stdout: emptyStdout() };
+      },
+    });
+
+    await s.enterIfNeeded(params);
+    const handle = s.spawnWorker({
+      argv: ["true"],
+      env: {
+        PATH: "/usr/bin",
+        LANGFUSE_PUBLIC_KEY: "pk",
+        LANGFUSE_SECRET_KEY: "sk",
+        LITELLM_MASTER_KEY: "llm",
+        ANTHROPIC_API_KEY: "anthropic",
+        OPENAI_API_KEY: "openai",
+        GITHUB_TOKEN: "github",
+        HTTP_PROXY: "http://ordin:secret@127.0.0.1:1234",
+        HTTPS_PROXY: "http://ordin:secret@127.0.0.1:1234",
+      },
+    });
+    await handle.exit;
+
+    expect(receivedEnv).toEqual({ PATH: "/usr/bin" });
+  });
+
+  it("does not spawn if killed before wrapWithSandbox resolves", async () => {
+    let resolveWrap: ((wrapped: string) => void) | undefined;
+    const fakeManager = {
+      initialize: async () => {},
+      waitForNetworkInitialization: async () => true,
+      wrapWithSandbox: () =>
+        new Promise<string>((resolve) => {
+          resolveWrap = resolve;
+        }),
+      // biome-ignore lint/suspicious/noExplicitAny: test stub
+    } as any;
+
+    let spawned = false;
+    const s = new SrtSandbox({
+      policy: defaultPolicy({ env: {} }),
+      manager: fakeManager,
+      spawnWrapped: () => {
+        spawned = true;
+        return { exit: Promise.resolve(0), kill: () => {}, stdout: emptyStdout() };
+      },
+    });
+
+    await s.enterIfNeeded(params);
+    const handle = s.spawnWorker({ argv: ["true"], env: {} });
+    handle.kill("SIGTERM");
+    resolveWrap?.("wrapped true");
+
+    await expect(handle.exit).resolves.toBe(143);
+    expect(spawned).toBe(false);
   });
 
   it("enterIfNeeded passes a sandboxAskCallback that delegates to broker.askApproval", async () => {
@@ -234,7 +314,6 @@ describe("SrtSandbox lifecycle", () => {
       policy: defaultPolicy({ env: {} }),
       manager: fakeManager,
       broker: fakeBroker,
-      env: () => ({}),
       spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {}, stdout: emptyStdout() }),
     });
 

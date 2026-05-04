@@ -108,4 +108,15 @@ describe("Bash tool", () => {
   it("rejects with exit code on non-zero exit", async () => {
     await expect(bash({ command: "exit 7" }, NO_OPTS)).rejects.toThrow(/exit 7/);
   });
+
+  it("runs without shell startup files and disables git global config", async () => {
+    const out = await bash(
+      {
+        command:
+          'test -z "$BASH_ENV" && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1 && echo clean-env',
+      },
+      NO_OPTS,
+    );
+    expect(out).toContain("clean-env");
+  });
 });

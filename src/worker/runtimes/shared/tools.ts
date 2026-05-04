@@ -112,10 +112,10 @@ export async function executeGrep(cwd: string, input: GrepInput): Promise<string
 
 export async function executeBash(cwd: string, input: BashInput): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("bash", ["-lc", input.command], {
+    const child = spawn("bash", ["-c", input.command], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: bashToolEnv(process.env),
     });
     const out: string[] = [];
     const err: string[] = [];
@@ -132,6 +132,14 @@ export async function executeBash(cwd: string, input: BashInput): Promise<string
       }
     });
   });
+}
+
+function bashToolEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...parentEnv };
+  delete env["BASH_ENV"];
+  env["GIT_CONFIG_GLOBAL"] = "/dev/null";
+  env["GIT_CONFIG_NOSYSTEM"] = "1";
+  return env;
 }
 
 /**

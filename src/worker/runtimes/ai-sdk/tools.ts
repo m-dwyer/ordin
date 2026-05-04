@@ -100,7 +100,7 @@ function allTools(cwd: string): ToolSet {
 
     Bash: tool({
       inputSchema: z.object({
-        command: z.string().describe("Shell command run in CWD via `bash -lc`."),
+        command: z.string().describe("Shell command run in CWD via `bash -c`."),
       }),
       execute: async (input) => executeBash(cwd, input),
     }),

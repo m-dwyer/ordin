@@ -40,31 +40,13 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
   const runStoreDir = resolveSafe(params.runStoreDir);
   const harnessRoot = resolveSafe(params.harnessRoot);
   const tempDirResolved = resolveSafe(tempDir);
+  const extraReadRoots = [...(params.extraReadRoots ?? [])].map(resolveSafe);
   const claudeDir = `${home}/.claude`;
 
-  // Credential / private dirs the agent must not read. srt's read
-  // model is deny-then-allow (default broadly allowed) so this list
-  // is the gate that actually blocks reads.
-  //
-  // The harness `.env.local` / `.env` entries kill Bun's cwd-only
-  // dotenv autoload inside the inner — the outer's broker has already
-  // extracted the secrets, and the spawn env strips them; without this
-  // deny, Bun would re-introduce them on inner startup.
-  const sensitiveDenies: readonly string[] = [
-    `${home}/.ssh`,
-    `${home}/.aws`,
-    `${home}/.gnupg`,
-    `${home}/.docker`,
-    `${home}/.config/gh`,
-    `${home}/.config/op`,
-    `${home}/.config/1Password`,
-    `${home}/.netrc`,
-    `${home}/.git-credentials`,
-    `${home}/.npmrc`,
-    `${home}/.pypirc`,
-    `${harnessRoot}/.env.local`,
-    `${harnessRoot}/.env`,
-  ];
+  // srt reads are deny-then-allow. Denying the whole home directory
+  // and re-allowing only the paths ordin needs is easier to audit than
+  // chasing every possible credential/config dotfile.
+  const deniedReadRoots: readonly string[] = [home];
 
   return {
     network: {
@@ -80,17 +62,22 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
     // child going to mount a TUI" upfront is fragile.
     allowPty: true,
     filesystem: {
-      // Reads are deny-then-allow in srt: default broadly permitted,
-      // denyRead is the gate. allowRead re-permits inside denied zones
-      // (only matters for paths nested under a denyRead — empty here
-      // because none of our allows nest under any sensitiveDeny).
-      denyRead: [...sensitiveDenies],
-      allowRead: [claudeDir, harnessRoot, workspaceRoot, runStoreDir, tempDirResolved],
+      // Reads are deny-then-allow in srt: deny the user's home by
+      // default, then re-permit only the home paths ordin needs.
+      denyRead: [...deniedReadRoots],
+      allowRead: [
+        claudeDir,
+        harnessRoot,
+        workspaceRoot,
+        runStoreDir,
+        tempDirResolved,
+        ...extraReadRoots,
+      ],
       // Writes are allow-only in srt: anything not in allowWrite is
       // denied by default. We deliberately do NOT carve denies inside
       // allowWrite — denyWrite would only matter if it overlapped an
       // allow zone, and a previous attempt to add belt-and-braces
-      // denies for harnessRoot/claudeDir/sensitiveDenies actively
+      // denies for harnessRoot/claudeDir/credential dirs actively
       // broke the dev workflow (the fixture workspace
       // `.scratch/target-repo` lives under harnessRoot, so denying
       // harnessRoot also denied the workspace). The allow-only model

@@ -41,6 +41,33 @@ phases:
           input:
             command: "echo 'sandbox validation: shell write OK' > .sandbox-validation-marker && cat .sandbox-validation-marker"
 
+      # 5. Bash tool — verify the worker process cannot see broker
+      #    credentials or common parent-side secrets. srt may set
+      #    HTTP_PROXY to its own proxy, so this checks secret values and
+      #    broker URL userinfo rather than requiring proxy vars to be absent.
+      - tool:
+          name: Bash
+          input:
+            command: |
+              if env | grep -E 'ordin:|LANGFUSE_|LITELLM_MASTER_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN'; then
+                echo "forbidden env leaked"
+                exit 1
+              fi
+              echo "sandbox validation: worker env secret check OK"
+
+      # 6. Bash tool — verify the home root is not generally readable.
+      #    ~/.claude is a narrow read allow for Claude Max-plan auth; the
+      #    rest of $HOME should remain outside the worker's read surface.
+      - tool:
+          name: Bash
+          input:
+            command: |
+              if ls "$HOME" >/tmp/ordin-home-list 2>/tmp/ordin-home-err; then
+                echo "home root read unexpectedly succeeded"
+                exit 1
+              fi
+              echo "sandbox validation: home root read denied"
+
       - text: |
           Tool surface verified. Writing the validation report.
 
@@ -61,9 +88,11 @@ phases:
               - Glob: succeeded
               - Bash: succeeded (ls + pwd)
               - Bash: succeeded (shell-redirect write)
+              - Bash: succeeded (worker env secret check)
+              - Bash: succeeded (home root read denied)
               - Write: succeeded (this report)
 
               ## Outcome
-              All five probes succeeded under the active sandbox profile.
+              All seven probes succeeded under the active sandbox profile.
               The v1 sandbox correctly permits the documented tool surface
               while denying everything else by default (see ADR-014).
