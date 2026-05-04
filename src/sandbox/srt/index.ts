@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { setDefaultResultOrder } from "node:dns";
 import { existsSync } from "node:fs";
 import { homedir, platform } from "node:os";
+import { PassThrough } from "node:stream";
 import {
   SandboxManager as DefaultSandboxManager,
   type SandboxRuntimeConfig,
@@ -75,6 +76,10 @@ export interface SpawnWrappedOpts {
 
 export interface SpawnedChild {
   readonly exit: Promise<number>;
+  /** Stdout stream of the wrapped child (piped). Parent reads JSONL
+   *  `RuntimeEvent`s off this; the wrapped child must not write anything
+   *  else to stdout. */
+  readonly stdout: NodeJS.ReadableStream;
   kill(signal?: NodeJS.Signals): void;
 }
 
@@ -141,41 +146,39 @@ export class SrtSandbox implements Sandbox {
     const command = argvToShellCommand(plan.argv);
     const wrappedPromise = this.manager.wrapWithSandbox(command);
     const env = this.applyEnvDenylist(plan.env);
-    let killed: SpawnedChild | undefined;
+    let child: SpawnedChild | undefined;
+    // wrapWithSandbox is async; surface stdout through a passthrough
+    // stream that we connect to the child's stdout once it's been
+    // spawned. Parent JSONL readers can subscribe immediately without
+    // waiting for the wrap to resolve.
+    const stdoutBridge = new PassThrough();
     const exit = wrappedPromise.then((wrapped) => {
       const opts: SpawnWrappedOpts = { env, ...(plan.cwd ? { cwd: plan.cwd } : {}) };
-      killed = this.spawnWrapped(wrapped, opts);
-      return killed.exit;
+      child = this.spawnWrapped(wrapped, opts);
+      child.stdout.pipe(stdoutBridge);
+      return child.exit;
     });
     return {
       exit,
-      kill: (signal?: NodeJS.Signals) => killed?.kill(signal),
+      stdout: stdoutBridge,
+      kill: (signal?: NodeJS.Signals) => child?.kill(signal),
     };
   }
 
   /**
    * Strip parent-only secrets (telemetry creds, gateway tokens —
-   * anything the broker injects on the worker's behalf) and set
-   * ORDIN_TRACING_ENABLED / ORDIN_AUDIT_ENABLED based on the broker's
-   * registered services. Workers inherit PATH, HOME, terminal vars,
-   * etc. from `plan.env` unmodified.
+   * anything the broker injects on the worker's behalf). Workers
+   * inherit PATH, HOME, terminal vars, etc. from `plan.env` unmodified.
+   *
+   * Tracing and audit flags used to be set here so the worker would
+   * activate its own tracer/audit emitter; under L2 (Phase B) both
+   * concerns live parent-side, so the worker no longer needs the
+   * flags and we don't propagate them.
    */
   private applyEnvDenylist(planEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const env = { ...planEnv };
     for (const key of INNER_ENV_DENYLIST) {
       delete env[key];
-    }
-    const otel = this.broker?.services.find((s) => s.name === "otel");
-    if (otel?.kind === "forward" && otel.authHeader) {
-      env["ORDIN_TRACING_ENABLED"] = "1";
-    } else {
-      delete env["ORDIN_TRACING_ENABLED"];
-    }
-    const audit = this.broker?.services.find((s) => s.name === "audit");
-    if (audit?.kind === "internal") {
-      env["ORDIN_AUDIT_ENABLED"] = "1";
-    } else {
-      delete env["ORDIN_AUDIT_ENABLED"];
     }
     return env;
   }
@@ -213,9 +216,12 @@ function defaultSpawnWrapped(wrapped: string, opts: SpawnWrappedOpts): SpawnedCh
     env: opts.env,
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
   });
-  // Pipe worker output to the parent's stderr — keeps it visible
-  // alongside the TUI's stderr but out of stdout (the TUI owns that).
-  child.stdout?.pipe(process.stderr);
+  if (!child.stdout) {
+    throw new Error("SrtSandbox.spawnWrapped: child.stdout missing");
+  }
+  // Worker stderr → parent stderr so diagnostics surface alongside
+  // the parent's. Worker stdout is the JSONL channel — the parent
+  // owns it and reads it line-by-line.
   child.stderr?.pipe(process.stderr);
   const exit = new Promise<number>((resolve, reject) => {
     child.on("error", reject);
@@ -227,6 +233,7 @@ function defaultSpawnWrapped(wrapped: string, opts: SpawnWrappedOpts): SpawnedCh
   });
   return {
     exit,
+    stdout: child.stdout,
     kill: (signal?: NodeJS.Signals) => {
       if (!child.killed) child.kill(signal ?? "SIGTERM");
     },

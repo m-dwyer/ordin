@@ -23,9 +23,16 @@ export class PassthroughSandbox implements Sandbox {
     if (!bin) throw new Error("PassthroughSandbox.spawnWorker: argv[0] required");
     const child: ChildProcess = spawn(bin, args, {
       env: plan.env,
-      stdio: "inherit",
+      // stdin inherits (allow interactive runtimes to read tty if any);
+      // stdout is piped so the parent can stream JSONL events; stderr
+      // inherits so worker diagnostics show up alongside parent's.
+      stdio: ["inherit", "pipe", "inherit"],
       ...(plan.cwd ? { cwd: plan.cwd } : {}),
     });
+    if (!child.stdout) {
+      throw new Error("PassthroughSandbox.spawnWorker: child.stdout missing");
+    }
+    const stdout = child.stdout;
     const exit = new Promise<number>((resolve, reject) => {
       child.on("error", reject);
       child.on("exit", (code, signal) => {
@@ -36,6 +43,7 @@ export class PassthroughSandbox implements Sandbox {
     });
     return {
       exit,
+      stdout,
       kill: (signal?: NodeJS.Signals) => {
         if (!child.killed) child.kill(signal ?? "SIGTERM");
       },

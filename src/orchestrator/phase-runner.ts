@@ -1,24 +1,26 @@
 import type { PhasePreview } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
-import type { RunEvent } from "../orchestrator/events";
-import type { PhaseMeta } from "../orchestrator/run-store";
-import { promoteRuntimeEvent } from "./events";
-import type { AgentRuntime, InvokeResult } from "./runtimes/types";
+import type { AgentRuntime, InvokeRequest, InvokeResult } from "../worker/runtimes/types";
+import type { RunEvent } from "./events";
+import type { PhaseMeta } from "./run-store";
+import { promoteRuntimeEvent } from "./runtime-events";
 
 /**
- * `PhaseRunner` invokes one prepared phase: takes a `PhasePreview`
- * plus the chosen `AgentRuntime` plus per-run execution context,
- * dispatches the prompt to the runtime, and collects the result. It
- * emits `phase.started` / `phase.runtime.completed` / `phase.failed`
- * lifecycle events plus the runtime's observation stream, tagged with
- * runId + phaseId. The full `phase.completed` event is emitted by the
- * phase transaction after output verification and gate approval.
+ * Drives a single phase invocation parent-side: emits the phase
+ * lifecycle (`phase.started` / `phase.runtime.completed` / `phase.failed`),
+ * tags raw `RuntimeEvent`s with run + phase identity, and assembles the
+ * `PhaseMeta`. The actual `runtime.invoke()` call is supplied as a
+ * function so the same lifecycle code path covers two callers:
  *
- * Stateless on purpose. The runtime registry lives one layer up
- * (`PhaseTransaction` reads it from `EngineServices`) — `PhaseRunner`
- * just receives the chosen runtime per call. Composition is also not
- * this class's concern; that lives in `PhasePreparer` so dry-run and
- * real-run share one path. Gates live above the engine entirely.
+ *   - `HarnessRuntime.dispatchPhase` — invoke = "spawn the sandboxed
+ *     worker, stream JSONL events from its stdout, read the result file
+ *     it writes on exit".
+ *   - in-process tests / fixtures — invoke = "call `runtime.invoke()`
+ *     directly in this process".
+ *
+ * Phase B (sandboxing roadmap) moved this from `src/worker/` to here so
+ * lifecycle bookkeeping is parent-side and the worker stays as close as
+ * possible to "the runtime adapter and nothing else".
  */
 export interface PhaseExecutionContext {
   readonly runId: string;
@@ -26,9 +28,12 @@ export interface PhaseExecutionContext {
   readonly iteration: number;
 }
 
+export type RuntimeInvoke = (req: InvokeRequest) => Promise<InvokeResult>;
+
 export interface PhaseExecutionRequest {
   readonly preview: PhasePreview;
-  readonly runtime: AgentRuntime;
+  readonly runtimeName: string;
+  readonly invoke: RuntimeInvoke;
   readonly context: PhaseExecutionContext;
   readonly emit: (event: RunEvent) => void;
   readonly abortSignal?: AbortSignal;
@@ -41,14 +46,14 @@ export interface PhaseRunResult {
 
 export class PhaseRunner {
   async run(req: PhaseExecutionRequest): Promise<PhaseRunResult> {
-    const { preview, runtime, context, emit } = req;
+    const { preview, runtimeName, invoke, context, emit } = req;
 
     const phaseMeta: PhaseMeta = {
       phaseId: preview.phase.id,
       iteration: context.iteration,
       startedAt: new Date().toISOString(),
       status: "running",
-      runtime: runtime.name,
+      runtime: runtimeName,
       model: preview.prompt.model,
     };
 
@@ -58,10 +63,10 @@ export class PhaseRunner {
       phaseId: preview.phase.id,
       iteration: context.iteration,
       model: preview.prompt.model,
-      runtime: runtime.name,
+      runtime: runtimeName,
     });
 
-    const invokeResult = await runtime.invoke({
+    const invokeResult = await invoke({
       runId: context.runId,
       runDir: context.runDir,
       prompt: preview.prompt,
@@ -104,5 +109,12 @@ export class PhaseRunner {
   }
 }
 
-// Re-exported for engines/executors that previously named these.
+/**
+ * Convenience for in-process callers (tests, eval suite): wrap an
+ * `AgentRuntime` instance as the `invoke` callback the runner expects.
+ */
+export function invokeWithRuntime(runtime: AgentRuntime): RuntimeInvoke {
+  return (req) => runtime.invoke(req);
+}
+
 export type { Phase };

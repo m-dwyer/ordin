@@ -57,6 +57,14 @@ export interface WorkerPlan {
 export interface WorkerHandle {
   /** Resolves with the child's exit code (or 128+signal on signalled exit). */
   readonly exit: Promise<number>;
+  /**
+   * Worker stdout, piped so the parent can stream JSONL `RuntimeEvent`s
+   * off the channel. Workers must not write anything else to stdout —
+   * this is the parent→inner observation pipe under L2 (Phase B). Stderr
+   * is left to inherit so worker diagnostics surface alongside the
+   * parent's.
+   */
+  readonly stdout: NodeJS.ReadableStream;
   /** Optional abort — best-effort delivery of `signal` to the worker. */
   kill(signal?: NodeJS.Signals): void;
 }

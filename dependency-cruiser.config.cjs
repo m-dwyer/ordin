@@ -71,14 +71,14 @@ module.exports = {
       name: "worker-isolation",
       severity: "error",
       comment:
-        "src/worker/** is the sandboxed code path. It may only import from src/worker/**, externals, type-only edges anywhere, and src/observability/** (shared instrumentation). Tightens the trust boundary so worker code stays minimal — every value-import here is attack surface inside the sandbox.",
+        "src/worker/** is the sandboxed code path. It may only import from src/worker/**, externals, and type-only edges anywhere. Tightens the trust boundary so worker code stays minimal — every value-import here is attack surface inside the sandbox. Phase B (sandboxing roadmap) lifted lifecycle bookkeeping, audit emission, and tracing back to the parent, so worker code no longer needs src/observability/** or src/orchestrator/**.",
       from: {
         path: "^src/worker/",
         pathNot: "\\.test\\.ts$",
       },
       to: {
         path: "^src/",
-        pathNot: ["^src/worker/", "^src/observability/"],
+        pathNot: "^src/worker/",
         dependencyTypesNot: ["type-only"],
       },
     },

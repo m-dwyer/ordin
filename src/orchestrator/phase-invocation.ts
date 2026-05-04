@@ -1,9 +1,9 @@
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import type { PhasePreparer, PhasePreview } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
-import type { PhaseRunResult } from "../worker/phase-runner";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
+import type { PhaseRunResult } from "./phase-runner";
 
 /**
  * Result of composing a phase invocation: the prepared prompt + the

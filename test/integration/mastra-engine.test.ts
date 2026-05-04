@@ -11,8 +11,8 @@ import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
+import { invokeWithRuntime, PhaseRunner } from "../../src/orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
-import { PhaseRunner } from "../../src/worker/phase-runner";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -136,7 +136,8 @@ async function runWithMastra(
       dispatchPhase: (req) =>
         runner.run({
           preview: req.preview,
-          runtime,
+          runtimeName: runtime.name,
+          invoke: invokeWithRuntime(runtime),
           context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
           emit: req.emit,
         }),

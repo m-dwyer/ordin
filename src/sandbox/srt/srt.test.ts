@@ -1,8 +1,13 @@
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { SandboxParams } from "../types";
 import { buildSrtConfig } from "./config";
 import { SrtSandbox } from "./index";
 import { defaultPolicy, mergePolicy, NetworkPolicySchema } from "./policy";
+
+function emptyStdout(): NodeJS.ReadableStream {
+  return Readable.from([]);
+}
 
 const homeDir = "/Users/test";
 const params: SandboxParams = {
@@ -158,7 +163,7 @@ describe("SrtSandbox lifecycle", () => {
       spawnWrapped: (w) => {
         spawnedWrapped = w;
         calls.push("spawnWrapped");
-        return { exit: Promise.resolve(42), kill: () => {} };
+        return { exit: Promise.resolve(42), kill: () => {}, stdout: emptyStdout() };
       },
     });
 
@@ -191,7 +196,7 @@ describe("SrtSandbox lifecycle", () => {
         // biome-ignore lint/suspicious/noExplicitAny: test stub
       } as any,
       env: () => ({}),
-      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {} }),
+      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {}, stdout: emptyStdout() }),
     });
     expect(() => s.spawnWorker({ argv: ["true"], env: {} })).toThrow(/before enterIfNeeded/);
   });
@@ -230,7 +235,7 @@ describe("SrtSandbox lifecycle", () => {
       manager: fakeManager,
       broker: fakeBroker,
       env: () => ({}),
-      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {} }),
+      spawnWrapped: () => ({ exit: Promise.resolve(0), kill: () => {}, stdout: emptyStdout() }),
     });
 
     await s.enterIfNeeded(params);

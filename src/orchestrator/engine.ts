@@ -3,8 +3,8 @@ import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { GateKind, Phase, WorkflowManifest } from "../domain/workflow";
 import type { GateArtefact, GateDecision } from "../gates/types";
-import type { PhaseRunResult } from "../worker/phase-runner";
 import type { RunEvent } from "./events";
+import type { PhaseRunResult } from "./phase-runner";
 import type { RunMeta, RunStore } from "./run-store";
 import type { ExecutionPlan } from "./workflow-plan";
 

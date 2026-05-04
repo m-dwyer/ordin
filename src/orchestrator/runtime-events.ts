@@ -1,14 +1,13 @@
-import type { RunEvent } from "../orchestrator/events";
-import type { RuntimeEvent } from "./runtimes/types";
+import type { RuntimeEvent } from "../worker/runtimes/types";
+import type { RunEvent } from "./events";
 
 /**
- * Promote a runtime-local event into a tagged RunEvent. Lives worker-
- * side because only the worker emits these, but the produced shape
- * (RunEvent) is the orchestrator-owned union — the parent consumes the
- * type unchanged when it reads them off the audit/JSONL channel. Each
- * case spreads the runtime event and overrides the discriminator + adds
- * the run/phase tags; the RunEvent variants are deliberately a superset
- * of the RuntimeEvent shapes so this is just a tag rewrite.
+ * Promote a runtime-local event into a tagged RunEvent. Lives parent-
+ * side because runtime events arrive over the worker's stdout JSONL
+ * channel and the parent is what stamps run/phase identity onto each
+ * one before fanning out to TUI / audit. The RunEvent variants are a
+ * deliberate superset of the RuntimeEvent shapes so this is a tag
+ * rewrite, not a translation.
  */
 export function promoteRuntimeEvent(event: RuntimeEvent, runId: string, phaseId: string): RunEvent {
   switch (event.type) {
