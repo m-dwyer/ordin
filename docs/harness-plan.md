@@ -134,6 +134,7 @@ Each phase runs in fresh context with only declared artefact inputs. The phase's
 - Output: code changes, tests, conventional commits, `docs/rfcs/<slug>-build-notes.md`.
 - Gate: pre-commit hook (tests + lint) + human review of diff.
 - Full shell, edit, test tools.
+- Forward-looking work on the Build phase's structure (mechanical verification, per-milestone iteration, build-notes-as-ledger) lives in [`build-phase-roadmap.md`](./build-phase-roadmap.md).
 
 **Phase 3 — Review**
 - Purpose: independent evaluation against the RFC. Catches "works but isn't what we asked for."
@@ -787,7 +788,7 @@ The phases below are additive and only built when the named trigger fires. Don't
 
 ### Phase 11 — `LangGraphEngine` (or richer Mastra config)
 
-**Trigger.** XL-tier work needs parallel Build agents; or `ordin continue` (mid-process resume) becomes a real pain point; or `MastraEngine`'s topology constraints (single back-edge per workflow) bite.
+**Trigger.** XL-tier work needs parallel Build agents; or `ordin continue` (mid-process resume) becomes a real pain point; or `MastraEngine`'s topology constraints (single back-edge per workflow) bite. Concrete enumerated triggers live in [`build-phase-roadmap.md`](./build-phase-roadmap.md#langgraph-engine-swap) — none fire from build-phase needs alone (Mastra's `.foreach()` covers per-milestone iteration), so per-build-phase pressure isn't the trigger; workflow-shape pressure is.
 
 The `Engine` seam already exists. Two concrete paths once a trigger fires:
 

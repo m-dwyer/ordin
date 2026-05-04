@@ -24,7 +24,7 @@ Implement the approved RFC listed as an artefact input. Produce:
 3. Use `Grep`/`Glob`/`Read` to orient. Do not re-derive the design — the RFC is the source of truth.
 4. Make changes using `Edit` and `Write`, sticking to files the RFC names. After each logical step, **update `build-notes.md`**: convert planned entries to landed entries, capture deferrals as they emerge, note any scope shift. If the project already has a test command and the RFC's scope includes tests, run it via `Bash` between logical steps. If the RFC defers tests, skip test infrastructure entirely (see Constraints).
 5. Commit each step with a conventional commit message that references the RFC section being addressed.
-6. **Reconcile `build-notes.md` against the diff before declaring done.** Every "What changed" entry should match a real change. Every RFC milestone should resolve to either a landed entry or a Deferred entry — nothing dangling.
+6. **Reconcile `build-notes.md` against the disk before declaring done.** For every "What changed" entry marked Landed, verify it exists: run `ls` against declared output paths, `grep`/`Read` for symbols you claim to have added, or the project's build/test command if the RFC scopes it. Entries you can't verify get downgraded to Planned (with a short note on why). Every RFC milestone resolves to either a verified Landed entry or a Deferred entry — nothing dangling, nothing claimed without evidence.
 
 ## Constraints
 

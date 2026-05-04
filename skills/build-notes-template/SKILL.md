@@ -24,6 +24,7 @@ This skill is the *delta* from a generic implementation summary — the discipli
 
 - **Start the file before the first code edit.** Write the Summary as your *intended* outcome and the "What changed" section as the planned mapping from RFC milestones to commits. This is the contract you're holding yourself to — and it gives the reviewer the through-line if you stop midway.
 - **Update between commits.** After each logical step, edit the file: convert planned entries to landed entries, capture deferrals as they emerge, note any scope shift.
+- **Verify before marking Landed.** Do not flip an entry from Planned to Landed on the strength of intent. Run a quick `ls`, `grep`, `Read`, or `Bash` check that the change actually exists on disk — a file you wrote, a symbol you added, a test that runs. Unverified entries stay Planned. *Marking work Landed without verification is the single biggest source of false build-notes; the reviewer will catch it, and the run will fail.*
 - **Reconcile at the end.** Before declaring done, re-read the file. Every entry under "What changed" should match a real diff. Every RFC milestone should resolve to either a landed entry or a Deferred entry — nothing dangling.
 
 ## Tone discipline

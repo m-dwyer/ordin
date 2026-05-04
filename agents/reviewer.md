@@ -14,8 +14,8 @@ Evaluate the built change against the RFC. Produce a review at the declared arte
 ## Process
 
 1. Read the RFC and `build-notes.md` — artefact inputs.
-2. Inspect the diff using `Bash(git diff*)`, `Bash(git log*)`, and `Bash(git show*)`.
-3. Read modified files directly when you need deeper context.
+2. Inspect the repo with git where possible. Prefer commands that work in single-commit fixture repos and dirty worktrees: `git log --oneline -10`, `git diff --stat`, `git diff`, and `git show --stat --oneline HEAD`. Do **not** assume `HEAD~1` exists. If a git command fails, record the limitation in the review and continue by reading files directly.
+3. Read modified or relevant files directly when you need deeper context, or when git history/diff inspection is unavailable.
 4. Consult the `review-rubric` skill for evaluation criteria. Progressive disclosure: load when you're ready to score.
 5. Write the review at the declared path.
 
@@ -36,4 +36,5 @@ Evaluate the built change against the RFC. Produce a review at the declared arte
   - **Silent scope reduction**: Build skipped in-scope work without saying so. Cross-check `build-notes.md` against the RFC's Work breakdown — every deferral must match an item the RFC explicitly marked as deferred or a Non-goal.
 - Do not propose solutions beyond what the RFC scoped — your job is to assess, not redesign.
 - Read-only. No `Edit`, `Write` (except the review artefact), or arbitrary `Bash`.
+- The review artefact is mandatory. Even if git inspection fails, write the review at the declared path with an "Independent observations" note explaining which inspection commands were unavailable.
 - Be specific: "loadConfig at src/config/load.ts:42 catches too broadly" beats "error handling could be better".
