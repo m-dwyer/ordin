@@ -40,7 +40,7 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
   const runStoreDir = resolveSafe(params.runStoreDir);
   const harnessRoot = resolveSafe(params.harnessRoot);
   const tempDirResolved = resolveSafe(tempDir);
-  const extraReadRoots = [...(params.extraReadRoots ?? [])].map(resolveSafe);
+  const workerReadRoots = [...(params.workerReadRoots ?? [])].map(resolveSafe);
   const claudeDir = `${home}/.claude`;
 
   // srt reads are deny-then-allow. Denying the whole home directory
@@ -71,7 +71,7 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
         workspaceRoot,
         runStoreDir,
         tempDirResolved,
-        ...extraReadRoots,
+        ...workerReadRoots,
       ],
       // Writes are allow-only in srt: anything not in allowWrite is
       // denied by default. We deliberately do NOT carve denies inside

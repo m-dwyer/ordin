@@ -1,10 +1,12 @@
+import { dirname } from "node:path";
+import { workerArgv } from "../worker/locator";
+
 /**
- * Environment visible to worker processes. `srt` workers are the
- * untrusted side of the sandbox boundary, so they receive only the
- * process vars needed for ordinary execution. Passthrough preserves
- * historical ambient-env behavior.
+ * Policy for the worker process boundary. `srt` workers are the
+ * untrusted side of the sandbox, so they receive only the process vars
+ * and read roots needed for ordinary execution.
  */
-export type WorkerEnvInfra =
+export type WorkerPolicyInfra =
   | { readonly kind: "override" }
   | {
       readonly kind: "managed";
@@ -24,7 +26,7 @@ const EXACT_SRT_WORKER_ENV_ALLOWLIST = new Set([
 ]);
 
 export function buildWorkerEnv(
-  infra: WorkerEnvInfra,
+  infra: WorkerPolicyInfra,
   parentEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   if (infra.kind !== "managed") return parentEnv;
@@ -32,6 +34,12 @@ export function buildWorkerEnv(
     return { ...parentEnv, HTTP_PROXY: infra.broker.proxyUrl() };
   }
   return allowlistedSrtWorkerEnv(parentEnv);
+}
+
+export function workerReadRoots(harnessRoot: string): readonly string[] {
+  return workerArgv({ harnessRoot })
+    .filter((arg) => arg.startsWith("/"))
+    .map(dirname);
 }
 
 function allowlistedSrtWorkerEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

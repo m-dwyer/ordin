@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildWorkerEnv } from "./worker-env";
+import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
 
 const parentEnv: NodeJS.ProcessEnv = {
   HOME: "/Users/test",
@@ -56,5 +56,22 @@ describe("buildWorkerEnv", () => {
       LC_CTYPE: "UTF-8",
     });
     expect(JSON.stringify(env)).not.toContain("secret");
+  });
+});
+
+describe("workerReadRoots", () => {
+  it("returns directories for absolute worker argv entries", () => {
+    const prev = process.env["ORDIN_WORKER_ARGV"];
+    process.env["ORDIN_WORKER_ARGV"] = JSON.stringify([
+      "/Users/test/.local/bin/bun",
+      "/repo/src/worker/entry.ts",
+      "relative-arg",
+    ]);
+    try {
+      expect(workerReadRoots("/repo")).toEqual(["/Users/test/.local/bin", "/repo/src/worker"]);
+    } finally {
+      if (prev === undefined) delete process.env["ORDIN_WORKER_ARGV"];
+      else process.env["ORDIN_WORKER_ARGV"] = prev;
+    }
   });
 });

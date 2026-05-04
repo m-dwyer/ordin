@@ -36,11 +36,11 @@ import { PhaseRunner, type PhaseRunResult } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
 import { type SandboxMode, selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
+import { buildWorkerEnv, workerReadRoots } from "../sandbox/worker-policy";
 import { workerArgv } from "../worker/locator";
 import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
 import type { InvokeRequest, InvokeResult, RuntimeEvent } from "../worker/runtimes/types";
 import { resolveClaudeBin } from "./resolve-claude-bin";
-import { buildWorkerEnv } from "./worker-env";
 
 export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
@@ -188,7 +188,7 @@ export class HarnessRuntime {
       workspaceRoot,
       runStoreDir: state.config.runStoreDir(),
       harnessRoot: this.root,
-      extraReadRoots: workerReadRoots(this.root),
+      workerReadRoots: workerReadRoots(this.root),
     });
     try {
       const onEvent = makeOnEvent(infra, input);
@@ -564,12 +564,6 @@ function resolveRuntimeConfig(name: string, slice: unknown): unknown {
     return { ...cur, bin: resolveClaudeBin(cur.bin) };
   }
   return slice;
-}
-
-function workerReadRoots(harnessRoot: string): readonly string[] {
-  return workerArgv({ harnessRoot })
-    .filter((arg) => arg.startsWith("/"))
-    .map(dirname);
 }
 
 interface SpawnWorkerInvokeArgs {

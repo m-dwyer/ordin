@@ -88,8 +88,8 @@ export interface SandboxParams {
   readonly harnessRoot: string;
   /** Per-process temp dir; defaults to `os.tmpdir()` when unset. */
   readonly tempDir?: string;
-  /** Extra read roots needed to execute the worker binary/interpreter. */
-  readonly extraReadRoots?: readonly string[];
+  /** Read roots needed to execute the worker binary/interpreter. */
+  readonly workerReadRoots?: readonly string[];
 }
 
 export interface SandboxReadiness {

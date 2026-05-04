@@ -90,7 +90,7 @@ describe("buildSrtConfig", () => {
     const cfg = buildSrtConfig({
       params: {
         ...params,
-        extraReadRoots: ["/Users/test/.local/share/mise/installs/bun/1.3.13/bin"],
+        workerReadRoots: ["/Users/test/.local/share/mise/installs/bun/1.3.13/bin"],
       },
       policy: defaultPolicy({ env: {} }),
       homeDir,
