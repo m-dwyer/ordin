@@ -4,9 +4,9 @@ Forward-looking plan for ordin's sandbox boundary. Empirical findings live in [`
 
 ## Where we are
 
-Inner ordin process sandboxed via `@anthropic-ai/sandbox-runtime` (srt). Parent-side **broker** (`src/broker/`) is srt's `parentProxy`: it forwards approved egress to mapped local services (Langfuse, LiteLLM) with auth injection, hosts a hash-chained per-run audit log at `~/.ordin/runs/<runId>/audit.jsonl`, and authenticates every request via `Proxy-Authorization`. Telemetry credentials and `LITELLM_MASTER_KEY` never enter the inner. Network egress denied by default. macOS only today; Linux comes for free via srt.
+Parent owns the engine, phase loop, gate prompters, broker, audit chain, and TUI. Each phase runs in a fresh sandboxed worker (srt-wrapped via `Sandbox.spawnWorker`) that exits when its single `runtime.invoke()` completes. Egress is mediated by the broker: srt's `sandboxAskCallback` routes through `Broker.askApproval`, which surfaces unmapped hosts as a CLI gate card; decisions are sticky for the run. Telemetry credentials and `LITELLM_MASTER_KEY` never enter the worker. Network egress denied by default. macOS only today; Linux comes for free via srt.
 
-Current shape: **inner runs the engine + phase loop + agent**; broker handles credentials and audit. Verifier: `ordin audit verify <runId>`.
+Verifier: `ordin audit verify <runId>`.
 
 ## Threat model
 
@@ -19,41 +19,45 @@ The agent (LLM-driven, runtime-executed) is the untrusted code. Sandbox protects
 
 Out of scope: kernel-level sandbox-exec bugs (defended by microVM at L0; not practical on macOS).
 
-## Active work: L2 — worker-per-phase
+## Active work: shrink the worker
 
-**Goal:** parent owns the phase loop. Each phase runs in its own sandboxed worker; the worker exits between phases. Gate decisions are made inline in the parent — the inner literally cannot fabricate them because the inner's process is gone by the time the parent decides.
+L2 shipped. Worker today is ~1k LoC of harness code + the runtime adapter. Goal is to push the worker toward "the runtime adapter and nothing else" — every line of TS in the sandbox is attack surface that doesn't need to be there.
 
-**Why now:** the L3a sequence's remaining steps (gates / OOB / auto-approve) collapse into this — once the parent owns the loop, gates are just local function calls instead of HTTP-mediated decisions. Skipping ahead saves ~3 incremental steps' worth of design + plumbing.
+**Phase A: folder reorg + isolation contract.**
 
-**Constraints (load-bearing):**
+- Move all worker-side modules under `src/worker/` (entry, runtimes, audit-emitter, tracing, phase-runner, events, prepare).
+- Dependency-cruiser rule: `src/worker/**` may import only from `src/worker/**`, externals, and `type`-only from elsewhere. Value-imports across the boundary are a build error.
+- Drop `HarnessConfigLoader` from the worker. Parent extracts the runtime's config slice and ships it in `plan.json`; worker calls `Runtime.fromConfig(slice, ctx)`. Eliminates Zod + YAML parser from the sandbox.
+- Lazy `import()` per runtime in the registry so unused adapters don't ship.
 
-- **Sandbox-swappable.** New `Sandbox.spawnWorker(plan): WorkerHandle` method; impls handle their own profile/env/cwd. Future Docker / bwrap impls slot in without touching parent code.
-- **Engine-swappable.** Parent doesn't drive the phase DAG itself — it passes an `executePhase` hook to `Engine.run`, alongside today's `onGateRequested`. Engine retains DAG-traversal agency (loops, branches, parallel). Mastra refactors to use the hook; future LangGraph impl does the same.
+**Phase B: lift bookkeeping out of the worker.**
 
-**Concrete plan:**
+- `PhaseRunner` lifecycle event emission (`phase.started`, `phase.runtime.completed`) moves to the parent around the `dispatchPhase` call. Worker just calls `runtime.invoke()` and returns the `InvokeResult`.
+- `promoteRuntimeEvent` (runId/phaseId tagging) moves to the parent.
+- Replace HTTP audit emission with **stdout JSONL**. Parent reads child's stdout, parses lines, dispatches to audit + TUI. Drops `node:http`, broker proxy auth from the worker.
+- Tracing moves to the parent — parent opens spans across `dispatchPhase` calls; worker doesn't open its own.
 
-1. Add `Sandbox.spawnWorker(plan): WorkerHandle`. SrtSandbox spawns srt-wrapped child with the existing per-run profile; PassthroughSandbox uses `Bun.spawn`. WorkerHandle exposes an `exit` promise.
-2. Add `executePhase` hook to `Engine.run`. MastraEngine calls the hook instead of dispatching the runtime directly. Existing `onGateRequested` hook unchanged.
-3. Build worker entrypoint (`src/runtime/worker/entry.ts` or similar). Reads phase plan from argv/stdin, instantiates the runtime + tool dispatcher, runs **one** phase, emits events via the existing audit HTTP path, exits with status. No engine, no phase loop, no workflow loading.
-4. Wire `HarnessRuntime.startRun` to pass the spawn-worker hook; gate decisions move inline (parent already has the resolver + prompter).
-5. End-to-end smoke (sandbox-validation + software-delivery `--only plan`) + audit verify.
-6. Update docs (this file + architecture addendum + any new findings).
+After Phase B the worker is roughly: `entry.ts` (~40 lines) + `prepare.ts` (5 lines) + one runtime adapter.
 
-**What stays untouched:**
+**Phase C: per-runtime sandboxing.**
 
-- Broker, audit chain, proxy auth, internal-service dispatch.
-- HTTP_PROXY routing for tool egress (model HTTPS, telemetry, package fetches).
-- AuditEmitter on the inner side — workers still POST to the audit endpoint.
+The minimum sandboxable unit differs per runtime:
 
-**What goes away:**
+- **`ClaudeCliRuntime`**: the agent is the `claude` binary. Adapter is just a streaming-JSON parser around `spawn`. Parent could wrap `claude -p` directly under sandbox-exec and parse its stdout parent-side — *zero* TS in the sandbox for this runtime. Generalise `Sandbox.spawnWorker(plan)` to `Sandbox.spawnSandboxed(argv, env)` and let the adapter live parent-side.
+- **`AiSdkRuntime`**: the decision loop is the Vercel AI SDK in our process. Has to stay in a TS worker.
+- **`ScriptedRuntime`**: TS dispatch loop. Has to stay in a TS worker.
 
-- L3a step 3 (HTTP gates) — gates are inline parent-side.
-- ORDIN_GATES_ENABLED env flag — never built.
+Honest asymmetry: the sandbox boundary lives wherever "untrusted execution" actually starts. For claude-cli that's the `claude` binary itself; for the others it's the SDK loop.
 
-**Out of scope for L2 v1:**
+**Phase D: bundle + monorepo.**
 
-- **Per-phase profile narrowing** (different `allowedDomains` / `allowWrite` per phase based on `allowed_tools`). Real feature, but a separate task. v1 ships per-phase **spawn** with the existing per-run profile; per-phase **profile** comes after the architecture is validated.
-- **Phase-to-phase artefact handoff over IPC.** Workspace is shared between workers (it's a directory); declared outputs from phase N are visible to phase N+1 by reading the disk. No explicit handoff protocol needed.
+- `bun build --compile src/worker/entry.ts` produces a single binary. Tree-shakes everything unused; drops the `node_modules` and source-tree dependency at runtime; shrinks srt's filesystem `allowRead` set.
+- Promote `src/worker/` → `packages/ordin-worker/` (Bun workspace) when there's a distribution need (versioned releases, downstream pinning). Trivial directory move once the deps-cruiser rule is in place — the boundary is already enforced.
+
+**Out of scope (still):**
+
+- **Per-phase profile narrowing** (different `allowedDomains` / `allowWrite` per phase from `allowed_tools`). Real feature; needs Tools-as-domain. Separate work.
+- **Phase-to-phase artefact handoff over IPC.** Workspace is shared between workers (it's a directory); declared outputs from phase N are visible to phase N+1 by reading the disk.
 
 ## Sandbox levels (glossary)
 
@@ -63,12 +67,12 @@ Each level moves the process boundary closer to the agent loop.
 |---|---|---|---|
 | L4 | Everything (engine, runtime, agent, broker if any) | Nothing | Passthrough mode |
 | L3a | Engine, runtime, agent | Broker (credentials + audit) | Shipped (steps 1, 1.5, 2) |
-| L2 | Runtime, agent (one phase per worker) | **Engine, phase loop**, broker, gates | **Active** |
-| L3 | Engine, runtime, agent (one worker per run) | Broker, RunStore, gates over IPC | Skipped (collapses into L2) |
+| L2 | Runtime adapter + agent (one phase per worker) | Engine, phase loop, broker, gates, TUI | **Shipped** — see "shrink the worker" above |
+| L3 | Engine, runtime, agent (one worker per run) | Broker, RunStore, gates over IPC | Skipped (collapsed into L2) |
 | L1 | One tool call per worker | Tool dispatcher, everything else | Future opt-in (`--paranoid`) |
 | L0 | One tool call per microVM | Everything | Aspirational; needs Linux + Firecracker/gVisor |
 
-L2 is the destination for default operation. L1/L0 are opt-in modes for security-sensitive runs.
+L2 is the default. L1/L0 are opt-in modes for security-sensitive runs.
 
 ## Independent improvements (any order, any level)
 
