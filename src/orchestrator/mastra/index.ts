@@ -81,6 +81,15 @@ export class MastraEngine implements Engine {
           task: input.task,
           slug: input.slug,
           repo: input.workspaceRoot,
+          ...(input.sandboxMode ? { sandboxMode: input.sandboxMode } : {}),
+          ...(input.onlyPhases || input.startAt
+            ? {
+                phaseSlicing: {
+                  ...(input.onlyPhases ? { onlyPhases: [...input.onlyPhases] } : {}),
+                  ...(input.startAt ? { startAt: input.startAt } : {}),
+                },
+              }
+            : {}),
           startedAt: new Date().toISOString(),
           status: "running",
           phases: [],

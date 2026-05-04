@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { connect } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Broker, type BrokerEgressEvent } from "./index";
 
@@ -86,20 +87,11 @@ describe("Broker proxy auth", () => {
   });
 
   it("rejects CONNECT without auth (407, no audit emission)", async () => {
-    await new Promise<void>((resolve, reject) => {
-      const req = request({
-        host: "127.0.0.1",
-        port: broker.port,
-        method: "CONNECT",
-        path: "example.com:443",
-      });
-      req.on("connect", (res) => {
-        expect(res.statusCode).toBe(407);
-        resolve();
-      });
-      req.on("error", reject);
-      req.end();
-    });
+    const response = await rawConnect(
+      broker.port,
+      "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+    );
+    expect(response.startsWith("HTTP/1.1 407 Proxy Authentication Required")).toBe(true);
     // Auth check happens BEFORE the broker.connect emit, so the
     // unauthenticated CONNECT must not appear in the audit stream.
     expect(egressEvents.find((e) => e.kind === "broker.connect")).toBeUndefined();
@@ -109,6 +101,17 @@ describe("Broker proxy auth", () => {
     expect(broker.proxyUrl()).toMatch(new RegExp(`^http://ordin:${SECRET}@127\\.0\\.0\\.1:\\d+$`));
   });
 });
+
+function rawConnect(port: number, requestText: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: "127.0.0.1", port });
+    const chunks: Buffer[] = [];
+    socket.on("connect", () => socket.write(requestText));
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+    socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    socket.on("error", reject);
+  });
+}
 
 describe("Broker askApproval", () => {
   const SECRET = "test-secret-token";

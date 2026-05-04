@@ -18,6 +18,11 @@ export interface RunMeta {
   task: string;
   slug: string;
   repo: string;
+  sandboxMode?: "passthrough" | "srt";
+  phaseSlicing?: {
+    onlyPhases?: string[];
+    startAt?: string;
+  };
   startedAt: string;
   completedAt?: string;
   status: "running" | "completed" | "failed" | "halted";

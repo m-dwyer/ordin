@@ -153,11 +153,52 @@ A committed fixture target repo lets you smoke-test phases without aiming at rea
 
 ```bash
 bun run fixture:setup      # stages .scratch/target-repo/ and git-inits it
-bun run ordin plan "Add input validation to the calculator" --project fixture --tier S
-bun run ordin run  "Implement divide with zero-guard"        --project fixture --tier S
+ordin run "Add input validation to the calculator" --project fixture --tier S --only plan
+ordin run "Implement divide with zero-guard"        --project fixture --tier S
 ```
 
 The `fixture` project is registered in `projects.yaml` and points at `.scratch/target-repo/` (gitignored). Re-run `bun run fixture:setup` any time to reset the fixture to a clean state.
+
+## Workflow iteration loop
+
+When editing agents, skills, or workflow YAML, keep `ordin run` as the iteration surface and slice to the phase you are tuning.
+
+Preview the exact prompt for a phase:
+
+```bash
+ordin run "Implement divide with zero-guard" \
+  --project fixture --tier S --only build --dry-run
+```
+
+Rerun one phase from artefacts already present in the target repo:
+
+```bash
+ordin run "Implement divide with zero-guard" \
+  --project fixture --slug divide-with-zero-guard --only build
+```
+
+Capture a prior run's declared artefacts into a reusable fixture, then seed a fresh repo from it:
+
+```bash
+ordin run --capture-fixture divide-plan --from-run <run-id>
+bun run fixture:setup
+ordin run "Implement divide with zero-guard" \
+  --project fixture --slug divide-with-zero-guard --fixture divide-plan --only build
+```
+
+Repeat a previous run's task, workflow, repo, tier, slug, sandbox mode, and phase slicing, with explicit flags overriding reused values:
+
+```bash
+ordin run --again <run-id>
+ordin run --again <run-id> --tier S --only build
+```
+
+You can also seed directly from a prior run without creating a fixture:
+
+```bash
+ordin run "Implement divide with zero-guard" \
+  --project fixture --from-run <run-id> --only build
+```
 
 ## Eval loop (regression-gating prompt changes)
 

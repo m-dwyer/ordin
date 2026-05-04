@@ -33,7 +33,6 @@ import {
   formatDuration,
   summariseToolInput,
 } from "./format";
-import { RunApp } from "./run-app";
 import { PALETTE } from "./theme";
 import type {
   ControllerState,
@@ -139,6 +138,7 @@ export class OpenTuiRunController {
     // render() returns Promise<void>; the Solid tree's lifetime is tied
     // to the renderer — `renderer.destroy()` fires CliRenderEvents.DESTROY
     // which triggers each component's onCleanup.
+    const { RunApp } = await import("./run-app");
     await render(() => RunApp({ state: this.state() }), this.renderer);
   }
 

@@ -1,8 +1,10 @@
-import { basename } from "node:path";
 import type { Command } from "commander";
-import type { HarnessRuntime, PhasePreview, SandboxMode } from "../runtime/harness";
-import { ordin, ordinRunSession, parseSandboxMode, parseTier, slugify } from "./common";
+import { applySeedPlan, type RunCommandOpts, resolveRunCommand } from "../run-service/run-command";
+import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
+import { ordin, ordinRunSession, parseSandboxMode, parseTier } from "./common";
 import { renderDryRun } from "./tui/dry-run";
+
+export { buildRunInput } from "../run-service/run-command";
 
 export interface RunCommandDeps {
   /**
@@ -20,24 +22,13 @@ export interface RunCommandDeps {
   readonly createDryRunRuntime?: (opts: {
     workflow?: string;
   }) => Pick<HarnessRuntime, "previewRun">;
+  /** Override the runtime factory used for command resolution and live runs. Test seam. */
+  readonly createRuntime?: (opts: { workflow?: string }) => HarnessRuntime;
   /** Override the dry-run renderer. Test seam. */
   readonly renderPreviews?: (
     previews: readonly PhasePreview[],
     task: string,
   ) => void | Promise<void>;
-}
-
-interface RunCommandOpts {
-  readonly workflow?: string;
-  readonly project?: string;
-  readonly repo?: string;
-  readonly tier: "S" | "M" | "L";
-  readonly slug?: string;
-  readonly only?: string;
-  readonly from?: string;
-  readonly dryRun?: boolean;
-  readonly sandbox?: SandboxMode;
-  readonly script?: string;
 }
 
 /**
@@ -47,15 +38,26 @@ interface RunCommandOpts {
  */
 export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
   program
-    .command("run <task...>")
+    .command("run [task...]")
     .description("Run a workflow")
     .option("-w, --workflow <name>", "Workflow name from workflows/<name>.yaml")
     .option("-p, --project <name>", "Target project name from projects.yaml")
     .option("-r, --repo <path>", "Target repo path (overrides --project)")
-    .option("-t, --tier <tier>", "Task tier (S|M|L)", parseTier, "M" as const)
+    .option("-t, --tier <tier>", "Task tier (S|M|L)", parseTier)
     .option("-s, --slug <slug>", "Artefact slug (inferred from task if omitted)")
     .option("--only <phase>", "Run only this phase id")
     .option("--from <phase>", "Start at this phase id and run the remaining workflow")
+    .option("--fixture <name>", "Seed target repo from fixtures/runs/<name> before running")
+    .option(
+      "--from-run <runId>",
+      "Seed this run from a prior run, or use as the source for --capture-fixture",
+    )
+    .option("--again <runId>", "Repeat a prior run; explicit CLI flags override reused values")
+    .option(
+      "--capture-fixture <name>",
+      "Capture declared artefacts from --from-run into fixtures/runs/<name>",
+    )
+    .option("--force", "Allow --capture-fixture to overwrite an existing fixture")
     .option("--dry-run", "Print each phase's composed prompt without invoking any runtime")
     .option(
       "--sandbox <mode>",
@@ -67,30 +69,27 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
       "Path to a YAML plan for ScriptedRuntime (deterministic test runs without an LLM)",
     )
     .action(async (taskParts: string[], opts: RunCommandOpts) => {
-      const input = buildRunInput(taskParts, opts);
+      const createRuntime = deps.createRuntime ?? ordin;
+      const resolved = await resolveRunCommand(taskParts ?? [], opts, createRuntime);
+      const input = resolved.input;
+      const runtime = createRuntime({ workflow: resolved.workflow });
 
       if (opts.dryRun) {
-        const runtime = (deps.createDryRunRuntime ?? ordin)({ workflow: opts.workflow });
+        const runtime = (deps.createDryRunRuntime ?? ordin)({ workflow: resolved.workflow });
         const previews = await runtime.previewRun(input);
         await (deps.renderPreviews ?? renderDryRun)(previews, input.task);
         return;
       }
 
+      if ((await applySeedPlan(resolved.seed, input, runtime)) === "captured") {
+        return;
+      }
+
       const session = await (deps.createSession ?? ordinRunSession)({
-        workflow: opts.workflow,
-        ...(opts.sandbox ? { sandboxMode: opts.sandbox } : {}),
+        workflow: resolved.workflow,
+        ...(resolved.sandbox ? { sandboxMode: resolved.sandbox } : {}),
         ...(opts.script ? { scriptPath: opts.script } : {}),
-        header: {
-          task: input.task,
-          slug: input.slug,
-          tier: input.tier,
-          ...(opts.workflow ? { workflow: opts.workflow } : {}),
-          ...(input.repoPath
-            ? { repoPath: input.repoPath, project: basename(input.repoPath) }
-            : input.projectName
-              ? { project: input.projectName }
-              : {}),
-        },
+        header: resolved.header,
       });
       try {
         const result = await session.runtime.startRun({
@@ -102,35 +101,4 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
         await session.dispose();
       }
     });
-}
-
-export function buildRunInput(
-  taskParts: readonly string[],
-  opts: RunCommandOpts,
-): {
-  readonly task: string;
-  readonly slug: string;
-  readonly projectName?: string;
-  readonly repoPath?: string;
-  readonly tier: "S" | "M" | "L";
-  readonly onlyPhases?: readonly string[];
-  readonly startAt?: string;
-} {
-  if (opts.only && opts.from) {
-    throw new Error("Use either --only or --from, not both");
-  }
-
-  const task = taskParts.join(" ");
-  const slug = opts.slug ?? slugify(task);
-  if (!slug) throw new Error("Unable to determine slug; pass --slug");
-
-  return {
-    task,
-    slug,
-    ...(opts.project ? { projectName: opts.project } : {}),
-    ...(opts.repo ? { repoPath: opts.repo } : {}),
-    tier: opts.tier,
-    ...(opts.only ? { onlyPhases: [opts.only] } : {}),
-    ...(opts.from ? { startAt: opts.from } : {}),
-  };
 }

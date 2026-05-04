@@ -16,10 +16,25 @@ export function registerRuns(program: Command): void {
     .command("runs")
     .description("List historical runs")
     .option("-n, --limit <n>", "How many recent runs to show", (v) => Number.parseInt(v, 10), 20)
-    .action(async (opts: { limit: number }) => {
+    .option("--plain", "Print tab-separated rows with full run ids")
+    .option("--json", "Print run metadata as JSON")
+    .action(async (opts: { limit: number; plain?: boolean; json?: boolean }) => {
+      if (opts.plain && opts.json) {
+        throw new Error("Use either --plain or --json, not both");
+      }
       const runtime = ordin();
       const all = await runtime.listRuns();
       const slice = all.slice(0, opts.limit);
+
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(slice, null, 2)}\n`);
+        return;
+      }
+
+      if (opts.plain) {
+        printPlainRows(slice);
+        return;
+      }
 
       printCommandHeader("runs", `${slice.length} most recent`);
       printBlank();

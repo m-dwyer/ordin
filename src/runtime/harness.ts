@@ -197,6 +197,9 @@ export class HarnessRuntime {
         slug,
         workspaceRoot,
         tier: input.tier ?? "M",
+        ...(infra.kind === "managed" ? { sandboxMode: infra.mode } : {}),
+        ...(input.startAt ? { startAt: input.startAt } : {}),
+        ...(input.onlyPhases ? { onlyPhases: input.onlyPhases } : {}),
         onGateRequested: (request) => this.handleGateRequest(request),
         onEvent,
         dispatchPhase: this.makeDispatchPhase(infra, state),
@@ -329,6 +332,13 @@ export class HarnessRuntime {
     return workflow;
   }
 
+  async resolveRunWorkspace(
+    input: Pick<StartRunInput, "projectName" | "repoPath">,
+  ): Promise<string> {
+    const { projects } = await this.load();
+    return this.resolveWorkspaceRoot(input as StartRunInput, projects);
+  }
+
   /**
    * Configured sandbox mode (after applying the resolution order:
    * `sandboxMode` constructor override > config file). Used by the
@@ -437,7 +447,13 @@ export class HarnessRuntime {
       onEgress: audit.egressSink(),
       ...(this.egressGatePrompter ? { onEgressGate: this.egressGatePrompter } : {}),
     });
-    return { kind: "managed", sandbox: selectSandbox(mode, { broker }), broker, audit };
+    return {
+      kind: "managed",
+      mode,
+      sandbox: selectSandbox(mode, { broker }),
+      broker,
+      audit,
+    };
   }
 
   private engineServices(state: LoadedState): EngineServices {
@@ -523,6 +539,7 @@ type RunInfra =
   | { readonly kind: "override"; readonly sandbox: Sandbox }
   | {
       readonly kind: "managed";
+      readonly mode: SandboxMode;
       readonly sandbox: Sandbox;
       readonly broker: Broker;
       readonly audit: AuditService;

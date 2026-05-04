@@ -74,6 +74,9 @@ export interface EngineRunInput {
   readonly slug: string;
   readonly workspaceRoot: string;
   readonly tier: "S" | "M" | "L";
+  readonly sandboxMode?: "passthrough" | "srt";
+  readonly startAt?: string;
+  readonly onlyPhases?: readonly string[];
   readonly onEvent?: (event: RunEvent) => void;
   readonly onGateRequested: (request: GateRequest) => Promise<GateDecision>;
   /**

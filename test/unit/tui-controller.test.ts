@@ -18,6 +18,11 @@ vi.mock("@opentui/core", () => ({
 vi.mock("@opentui/solid", () => ({
   render: vi.fn(async () => {}),
 }));
+vi.mock("@opentui/solid/jsx-runtime", () => ({
+  Fragment: (props: { children?: unknown }) => props.children ?? null,
+  jsx: () => null,
+  jsxs: () => null,
+}));
 // run-app.tsx contains Solid JSX with `jsx: "preserve"` — Vite can't
 // parse it without the Solid babel plugin, which we don't load in
 // tests. The controller only references RunApp inside mount(), which

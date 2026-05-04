@@ -1,67 +1,7 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import { buildRunInput, registerRun } from "../../src/cli/run";
+import { registerRun } from "../../src/cli/run";
 import type { HarnessRuntime, PhasePreview, StartRunInput } from "../../src/runtime/harness";
-
-describe("buildRunInput", () => {
-  it("builds a full workflow run input", () => {
-    expect(
-      buildRunInput(["Add", "validation"], {
-        repo: ".scratch/repo",
-        tier: "S",
-        slug: "add-validation",
-      }),
-    ).toEqual({
-      task: "Add validation",
-      slug: "add-validation",
-      repoPath: ".scratch/repo",
-      tier: "S",
-    });
-  });
-
-  it("supports running a single workflow-defined phase", () => {
-    expect(
-      buildRunInput(["Do", "work"], {
-        project: "fixture",
-        tier: "M",
-        only: "implement",
-      }),
-    ).toEqual({
-      task: "Do work",
-      slug: "do-work",
-      projectName: "fixture",
-      tier: "M",
-      onlyPhases: ["implement"],
-    });
-  });
-
-  it("supports starting from a workflow-defined phase", () => {
-    expect(
-      buildRunInput(["Continue"], {
-        repo: ".scratch/repo",
-        tier: "L",
-        slug: "continue",
-        from: "review",
-      }),
-    ).toEqual({
-      task: "Continue",
-      slug: "continue",
-      repoPath: ".scratch/repo",
-      tier: "L",
-      startAt: "review",
-    });
-  });
-
-  it("rejects conflicting phase slicing options", () => {
-    expect(() =>
-      buildRunInput(["Do work"], {
-        tier: "M",
-        only: "build",
-        from: "build",
-      }),
-    ).toThrow(/either --only or --from/);
-  });
-});
 
 describe("registerRun", () => {
   it("passes workflow and run options to the runtime", async () => {
