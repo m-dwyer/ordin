@@ -54,6 +54,12 @@ runtimes:
     base_url: http://llm-gateway/
     max_steps: 40
 
+  claude-cli-provider:
+    bin: claude
+    timeout_ms: 600000
+    max_steps: 40
+    protocol_debug: true
+
   claude-cli:
     # Path to the `claude` binary. Empty = use whatever's on PATH.
     bin: claude

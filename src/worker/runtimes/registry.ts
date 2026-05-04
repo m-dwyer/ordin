@@ -28,7 +28,12 @@ export interface RuntimeBuildContext {
  *
  * Names match the strings that workflow YAML uses in `runtime:` fields.
  */
-export const KNOWN_RUNTIME_NAMES = ["ai-sdk", "claude-cli", "scripted"] as const;
+export const KNOWN_RUNTIME_NAMES = [
+  "ai-sdk",
+  "claude-cli",
+  "claude-cli-provider",
+  "scripted",
+] as const;
 export type KnownRuntimeName = (typeof KNOWN_RUNTIME_NAMES)[number];
 
 export async function buildRuntime(
@@ -45,6 +50,12 @@ export async function buildRuntime(
       const { ClaudeCliRuntime } = await import("./claude-cli");
       return ClaudeCliRuntime.fromConfig(configSlice, {
         pluginDirs: [ctx.harnessRoot],
+        runsDirFallback: ctx.runsDir,
+      });
+    }
+    case "claude-cli-provider": {
+      const { ClaudeCliProviderRuntime } = await import("./claude-cli-provider");
+      return ClaudeCliProviderRuntime.fromConfig(configSlice, {
         runsDirFallback: ctx.runsDir,
       });
     }

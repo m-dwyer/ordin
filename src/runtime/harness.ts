@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -372,7 +372,7 @@ export class HarnessRuntime {
   private async prepareRun(input: StartRunInput): Promise<PreparedRun> {
     const state = await this.load();
     const slug = requireSlug(input.slug);
-    const workspaceRoot = this.resolveWorkspaceRoot(input, state.projects);
+    const workspaceRoot = await this.resolveWorkspaceRoot(input, state.projects);
     const engine = this.engines.get(this.engineName);
     const program = engine.compile(this.workflowForRun(state.workflow, input));
     return { state, engine, program, slug, workspaceRoot };
@@ -400,16 +400,26 @@ export class HarnessRuntime {
     return this.loaded;
   }
 
-  private resolveWorkspaceRoot(input: StartRunInput, projects: ProjectRegistry): string {
+  private async resolveWorkspaceRoot(
+    input: StartRunInput,
+    projects: ProjectRegistry,
+  ): Promise<string> {
     if (input.repoPath && input.projectName) {
       throw new Error(
         "startRun accepts either `projectName` (registry) or `repoPath`, not both — " +
           "pick the one that names the workspace you mean to run against.",
       );
     }
-    if (input.repoPath) return resolve(input.repoPath);
-    if (input.projectName) return projects.get(input.projectName).path;
-    throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
+    const workspaceRoot = input.repoPath
+      ? resolve(input.repoPath)
+      : input.projectName
+        ? projects.get(input.projectName).path
+        : undefined;
+    if (!workspaceRoot) {
+      throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
+    }
+    await assertWorkspaceDirectory(workspaceRoot);
+    return workspaceRoot;
   }
 
   private workflowForRun(workflow: WorkflowManifest, input: StartRunInput): WorkflowManifest {
@@ -582,15 +592,32 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+async function assertWorkspaceDirectory(path: string): Promise<void> {
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(path);
+  } catch (err) {
+    const code =
+      typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+    if (code === "ENOENT") {
+      throw new Error(`Workspace path does not exist: ${path}`);
+    }
+    throw err;
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`Workspace path is not a directory: ${path}`);
+  }
+}
+
 /**
  * Pre-resolve any parent-side concerns in a runtime's config slice so
  * the worker can build the runtime without env or PATH access. Today
- * the only resolution is `claude-cli.bin` through `resolveClaudeBin`
- * (honors `CLAUDE_BIN` env, defaults to `"claude"`). Other runtimes
- * pass through untouched.
+ * the only resolution is Claude CLI-backed runtime bins through
+ * `resolveClaudeBin` (honors `CLAUDE_BIN` env, defaults to `"claude"`).
+ * Other runtimes pass through untouched.
  */
 function resolveRuntimeConfig(name: string, slice: unknown): unknown {
-  if (name === "claude-cli") {
+  if (name === "claude-cli" || name === "claude-cli-provider") {
     const cur = (slice ?? {}) as { bin?: string };
     return { ...cur, bin: resolveClaudeBin(cur.bin) };
   }

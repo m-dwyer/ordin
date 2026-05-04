@@ -82,10 +82,11 @@ describe("HarnessRuntime", () => {
     };
 
     const harness = new HarnessRuntime({ root, engine: "custom", engines: [engine] });
+    const repoPath = await mkdtemp(join(tmpdir(), "ordin-custom-repo-"));
     const meta = await harness.startRun({
       task: "Use custom engine",
       slug: "custom-engine",
-      repoPath: "/tmp/repo",
+      repoPath,
     });
 
     expect(meta.runId).toBe("custom-custom-engine");
@@ -94,6 +95,7 @@ describe("HarnessRuntime", () => {
 
   it("passes phase-specific artefact inputs through a full run", async () => {
     const root = await makeHarnessRoot();
+    const repoPath = await mkdtemp(join(tmpdir(), "ordin-fake-repo-"));
     const runtime = new FakeRuntime();
     const harness = new HarnessRuntime({
       root,
@@ -104,7 +106,7 @@ describe("HarnessRuntime", () => {
     await harness.startRun({
       task: "Ship feature x",
       slug: "ship-feature-x",
-      repoPath: "/tmp/repo",
+      repoPath,
       tier: "M",
     });
 
@@ -176,6 +178,7 @@ describe("HarnessRuntime", () => {
 
   it("previewRun() returns composed prompts without invoking the runtime", async () => {
     const root = await makeHarnessRoot();
+    const repoPath = await mkdtemp(join(tmpdir(), "ordin-preview-repo-"));
     const runtime = new FakeRuntime();
     const harness = new HarnessRuntime({
       root,
@@ -186,7 +189,7 @@ describe("HarnessRuntime", () => {
     const previews = await harness.previewRun({
       task: "Preview the whole thing",
       slug: "preview-it",
-      repoPath: "/tmp/repo",
+      repoPath,
       tier: "M",
     });
 

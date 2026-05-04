@@ -8,7 +8,18 @@ import {
 import type { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
 import type { Duplex } from "node:stream";
-import { z } from "zod";
+import type { LocalServiceAuthConfig, LocalServicesConfig } from "../domain/capability-policy";
+
+export type {
+  LocalServiceAuthConfig,
+  LocalServiceConfig,
+  LocalServicesConfig,
+} from "../domain/capability-policy";
+export {
+  LocalServiceAuthSchema,
+  LocalServiceConfigSchema,
+  LocalServicesConfigSchema,
+} from "../domain/capability-policy";
 
 /**
  * Trust-critical service in the parent ordin process. Mediates HTTP
@@ -49,34 +60,6 @@ import { z } from "zod";
  * traffic through us. HTTPS auth injection is not possible (broker
  * doesn't terminate TLS), and no current upstream needs it.
  */
-export const LocalServiceAuthSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("basic"),
-    username_env: z.string().min(1),
-    password_env: z.string().min(1),
-  }),
-  z.object({
-    type: z.literal("bearer"),
-    token_env: z.string().min(1),
-  }),
-]);
-export type LocalServiceAuthConfig = z.infer<typeof LocalServiceAuthSchema>;
-
-export const LocalServiceConfigSchema = z.object({
-  target: z.string().regex(/^[^:\s]+:\d+$/, "expected host:port"),
-  auth: LocalServiceAuthSchema.optional(),
-});
-export type LocalServiceConfig = z.infer<typeof LocalServiceConfigSchema>;
-
-export const LocalServicesConfigSchema = z.record(
-  z
-    .string()
-    .min(1)
-    .regex(/^[a-z][a-z0-9-]*$/, "service name must be a single dotless label"),
-  LocalServiceConfigSchema,
-);
-export type LocalServicesConfig = z.infer<typeof LocalServicesConfigSchema>;
-
 export type InternalServiceHandler = (
   req: IncomingMessage,
   res: ServerResponse,

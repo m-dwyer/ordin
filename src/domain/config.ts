@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type LocalServicesConfig, LocalServicesConfigSchema } from "../broker";
+import { type LocalServicesConfig, LocalServicesConfigSchema } from "./capability-policy";
 
 /**
  * ordin.config.yaml — global defaults, tier overrides, run-store

@@ -9,6 +9,14 @@
 module.exports = {
   forbidden: [
     {
+      name: "domain-is-core",
+      severity: "error",
+      comment:
+        "Domain is the core vocabulary. It must not import other local src layers.",
+      from: { path: "^src/domain" },
+      to: { path: "^src/(?!domain(?:/|$))" },
+    },
+    {
       name: "domain-cannot-depend-on-orchestrator",
       severity: "error",
       comment:
