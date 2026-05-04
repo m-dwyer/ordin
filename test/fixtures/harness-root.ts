@@ -1,12 +1,18 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
+import type { PhaseDispatchRequest } from "../../src/orchestrator/engine";
+import {
+  invokeWithRuntime,
+  PhaseRunner,
+  type PhaseRunResult,
+} from "../../src/orchestrator/phase-runner";
 import type {
   AgentRuntime,
   InvokeRequest,
   InvokeResult,
   RuntimeCapabilities,
-} from "../../src/runtimes/types";
+} from "../../src/worker/runtimes/types";
 
 /**
  * Stand-in agent runtime used across HarnessRuntime / RunService /
@@ -36,6 +42,28 @@ export class FakeRuntime implements AgentRuntime {
       durationMs: 5,
     };
   }
+}
+
+/**
+ * Wraps an `AgentRuntime` as a `dispatchPhase` callback. Tests pass
+ * this as `HarnessRuntimeOptions.dispatchPhase` to short-circuit the
+ * worker spawn — the runtime's `invoke` is called directly in-process
+ * via the parent-side `PhaseRunner`, which emits the same lifecycle
+ * events the production sandboxed path emits.
+ */
+export function dispatchFromRuntime(
+  runtime: AgentRuntime,
+): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
+  const runner = new PhaseRunner();
+  return (req) =>
+    runner.run({
+      preview: req.preview,
+      runtimeName: runtime.name,
+      invoke: invokeWithRuntime(runtime),
+      context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+      emit: req.emit,
+      ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+    });
 }
 
 export async function materializeDeclaredOutputs(userPrompt: string, cwd: string): Promise<void> {

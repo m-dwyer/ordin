@@ -41,6 +41,7 @@ import { PALETTE } from "./theme";
 import type {
   ControllerState,
   EditDiff,
+  EgressGateState,
   FeedRow,
   GateState,
   PausedState,
@@ -120,6 +121,14 @@ export function RunApp(props: RunAppProps) {
   };
 
   useKeyboard((key) => {
+    // Egress gate — fires mid-phase, blocks an in-flight HTTP request.
+    // Takes precedence over phase gates because it's the more time-
+    // sensitive prompt (the inner is waiting for srt to answer).
+    if (state.egressGate()) {
+      if (key.name === "a") state.decideEgressGate(true);
+      else if (key.name === "r") state.decideEgressGate(false);
+      return;
+    }
     // Gate prompt — single-key approve/reject takes priority.
     if (state.gate()) {
       if (key.name === "a") state.decideGate({ status: "approved" });
@@ -198,10 +207,14 @@ export function RunApp(props: RunAppProps) {
         collapsedPhases={state.collapsedPhases()}
         togglePhaseCollapsed={state.togglePhaseCollapsed}
       />
+      <Show when={state.egressGate()} keyed>
+        {(eg: EgressGateState) => <EgressGateCard egress={eg} />}
+      </Show>
       <Footer
         phases={phases()}
         active={activePhase()}
         gate={state.gate()}
+        egressGate={state.egressGate()}
         paused={state.paused()}
         hint={state.hint()}
         cols={cols()}
@@ -516,48 +529,86 @@ function ToolRow(props: { row: FeedRow; repoPath?: string }) {
   };
   const detail = () => prettifyDetail(props.row.tool, props.row.detail, props.repoPath);
   return (
-    <box flexDirection="row" width="100%" gap={1}>
-      <box flexDirection="row" flexShrink={1} flexGrow={1} gap={1}>
-        <text
-          width={GLYPH_COL}
-          flexShrink={0}
-          fg={glyphColor()}
-          wrapMode="none"
-          content={glyph()}
-        />
-        <text
-          flexShrink={0}
-          fg={glyphColor()}
-          attributes={nameAttr()}
-          wrapMode="none"
-          truncate
-          content={props.row.tool ?? ""}
-        />
-        <Show when={detail()}>
-          <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
-          {/* wrapMode="none" + truncate keeps the OSC 8 link as one
-              continuous chunk (wrapping breaks the underline + click
-              target across lines). Detail is pre-ellipsized to the
-              basename so what gets shown is always the diagnostic
-              part of the path. */}
-          <text flexGrow={1} flexShrink={1} fg={detailColor()} wrapMode="none" truncate>
-            <Show when={linkUrl(props.row.tool, props.row.detail)} keyed fallback={detail()}>
-              {(href: string) => <a href={href}>{detail()}</a>}
-            </Show>
-          </text>
+    <box flexDirection="column" width="100%">
+      <box flexDirection="row" width="100%" gap={1}>
+        <box flexDirection="row" flexShrink={1} flexGrow={1} gap={1}>
+          <text
+            width={GLYPH_COL}
+            flexShrink={0}
+            fg={glyphColor()}
+            wrapMode="none"
+            content={glyph()}
+          />
+          <text
+            flexShrink={0}
+            fg={glyphColor()}
+            attributes={nameAttr()}
+            wrapMode="none"
+            truncate
+            content={props.row.tool ?? ""}
+          />
+          <Show when={detail()}>
+            <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+            {/* wrapMode="none" + truncate keeps the OSC 8 link as one
+                continuous chunk (wrapping breaks the underline + click
+                target across lines). Detail is pre-ellipsized to the
+                basename so what gets shown is always the diagnostic
+                part of the path. */}
+            <text flexGrow={1} flexShrink={1} fg={detailColor()} wrapMode="none" truncate>
+              <Show when={linkUrl(props.row.tool, props.row.detail)} keyed fallback={detail()}>
+                {(href: string) => <a href={href}>{detail()}</a>}
+              </Show>
+            </text>
+          </Show>
+        </box>
+        <Show when={props.row.extra}>
+          <text
+            width={EXTRA_COL}
+            flexShrink={0}
+            fg={failed() ? PALETTE.failed : PALETTE.muted}
+            wrapMode="none"
+            content={(props.row.extra ?? "").padStart(EXTRA_COL)}
+          />
         </Show>
       </box>
-      <Show when={props.row.extra}>
-        <text
-          width={EXTRA_COL}
-          flexShrink={0}
-          fg={failed() ? PALETTE.failed : PALETTE.muted}
-          wrapMode="none"
-          content={(props.row.extra ?? "").padStart(EXTRA_COL)}
-        />
+      {/* Tool result preview — multi-line, dim, indented to align with
+          the detail column. We split on `\n`, render the first
+          RESULT_PREVIEW_LINES via OpenTUI text rows (each truncates
+          natively if it overflows the viewport width), and emit a
+          muted "(+N more)" trailer when output ran long. The runtime-
+          side preview builders (ai-sdk, scripted) already cap total
+          length, so this is purely a layout concern. */}
+      <Show when={props.row.result}>
+        <box flexDirection="column" width="100%" marginLeft={GLYPH_COL + 1}>
+          <For each={visibleResultLines(props.row.result ?? "")}>
+            {(line) => (
+              <text flexShrink={1} fg={PALETTE.muted} wrapMode="none" truncate content={line} />
+            )}
+          </For>
+          <Show when={hiddenResultLineCount(props.row.result ?? "") > 0}>
+            <text
+              flexShrink={1}
+              fg={PALETTE.muted}
+              wrapMode="none"
+              truncate
+              content={`(+${hiddenResultLineCount(props.row.result ?? "")} more)`}
+            />
+          </Show>
+        </box>
       </Show>
     </box>
   );
+}
+
+const RESULT_PREVIEW_LINES = 5;
+
+function visibleResultLines(result: string): readonly string[] {
+  return result.replace(/\s+$/, "").split("\n").slice(0, RESULT_PREVIEW_LINES);
+}
+
+function hiddenResultLineCount(result: string): number {
+  const total = result.replace(/\s+$/, "").split("\n").length;
+  return Math.max(0, total - RESULT_PREVIEW_LINES);
 }
 
 /**
@@ -824,6 +875,48 @@ function GateCard(props: { ctx: GateContext; repoPath?: string }) {
   );
 }
 
+/**
+ * Egress gate card — surfaced when srt's askCallback (via the broker)
+ * pauses an in-flight request to a host that isn't in `local_services`
+ * and hasn't been approved this run. The inner is unaware: it just
+ * sees an HTTP request that's still pending. Sits between the
+ * scrollback and the footer so the user can see it without the
+ * scrollback shifting.
+ */
+function EgressGateCard(props: { egress: EgressGateState }) {
+  const target = () =>
+    props.egress.port !== undefined
+      ? `${props.egress.host}:${props.egress.port}`
+      : props.egress.host;
+  return (
+    <box
+      width="100%"
+      flexDirection="column"
+      border
+      borderStyle="rounded"
+      borderColor={PALETTE.gateGlow}
+      title=" egress request "
+      titleAlignment="left"
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+      marginTop={1}
+    >
+      <box width="100%">
+        <text fg={PALETTE.text} wrapMode="word" content={`agent wants to reach ${target()}`} />
+      </box>
+      <box width="100%">
+        <text
+          fg={PALETTE.hint}
+          wrapMode="word"
+          content="approve to allow (sticky for this run) or reject to deny"
+        />
+      </box>
+    </box>
+  );
+}
+
 function Chip(props: { label: string; bg: string; fg: string }) {
   return (
     <text
@@ -843,6 +936,7 @@ function Footer(props: {
   phases: readonly PhaseRow[];
   active: PhaseRow | null;
   gate: GateState | null;
+  egressGate: EgressGateState | null;
   paused: PausedState | null;
   hint: string;
   cols: number;
@@ -877,7 +971,7 @@ function Footer(props: {
       </Show>
       <FooterBottomRow
         phases={props.phases}
-        gate={!!props.gate}
+        gate={!!props.gate || !!props.egressGate}
         paused={props.paused}
         hint={props.hint}
         showRight={showRight()}
@@ -948,24 +1042,32 @@ function KeyHint(props: { gate: boolean; paused: PausedState | null; hint: strin
             />
           }
         >
-          {(p: PausedState) => (
-            <box flexDirection="row" flexShrink={0} gap={1}>
-              <text
-                flexShrink={0}
-                fg={p.status === "halted" ? PALETTE.gate : PALETTE.failed}
-                attributes={TextAttributes.BOLD}
-                wrapMode="none"
-                content={p.status === "halted" ? "✗ run halted" : "✗ run failed"}
-              />
-              <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
-              <text
-                flexShrink={0}
-                fg={PALETTE.hint}
-                wrapMode="none"
-                content="↑↓ scroll · q to exit"
-              />
-            </box>
-          )}
+          {(p: PausedState) => {
+            const ui =
+              p.status === "completed"
+                ? { glyph: "✓ run completed", color: PALETTE.done }
+                : p.status === "halted"
+                  ? { glyph: "✗ run halted", color: PALETTE.gate }
+                  : { glyph: "✗ run failed", color: PALETTE.failed };
+            return (
+              <box flexDirection="row" flexShrink={0} gap={1}>
+                <text
+                  flexShrink={0}
+                  fg={ui.color}
+                  attributes={TextAttributes.BOLD}
+                  wrapMode="none"
+                  content={ui.glyph}
+                />
+                <text flexShrink={0} fg={PALETTE.muted} wrapMode="none" content="·" />
+                <text
+                  flexShrink={0}
+                  fg={PALETTE.hint}
+                  wrapMode="none"
+                  content="↑↓ scroll · q to exit"
+                />
+              </box>
+            );
+          }}
         </Show>
       }
     >

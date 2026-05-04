@@ -186,13 +186,13 @@ export class AiSdkRuntime implements AgentRuntime {
     for (const call of step.toolCalls) {
       emit({ type: "tool.use", id: call.toolCallId, name: call.toolName, input: call.input });
     }
-    for (const result of step.toolResults) {
-      const preview = typeof result.output === "string" ? previewLines(result.output) : undefined;
+    for (const r of step.toolResults) {
+      const output = typeof r.output === "string" ? r.output : undefined;
       emit({
         type: "tool.result",
-        id: result.toolCallId,
+        id: r.toolCallId,
         ok: true,
-        ...(preview ? { preview } : {}),
+        ...(output ? { result: output } : {}),
       });
     }
     // AI SDK v6 surfaces tool execution failures only in `step.content`
@@ -207,7 +207,7 @@ export class AiSdkRuntime implements AgentRuntime {
         type: "tool.result",
         id: part.toolCallId,
         ok: false,
-        preview: previewLines(message),
+        result: message,
       });
     }
 
@@ -226,9 +226,4 @@ export class AiSdkRuntime implements AgentRuntime {
       emit({ type: "tokens", usage: { ...tokens } });
     }
   }
-}
-
-function previewLines(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length <= 160 ? trimmed : `${trimmed.slice(0, 160)}…`;
 }

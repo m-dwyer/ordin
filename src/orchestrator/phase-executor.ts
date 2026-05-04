@@ -8,7 +8,6 @@ import { GateCoordinator } from "./gate-coordinator";
 import { formatMissing, PhaseArtefactVerifier } from "./phase-artefacts";
 import { PhaseInvocationPlanner, PhaseInvoker } from "./phase-invocation";
 import { PhaseRecorder } from "./phase-recorder";
-import type { PhaseRunner } from "./phase-runner";
 import type { PhaseMeta, RunMeta } from "./run-store";
 
 export type EngineOutcome = "halted" | "failed";
@@ -26,7 +25,6 @@ export interface PhaseExecutorContext {
   readonly manifest: WorkflowManifest;
   readonly input: EngineRunInput;
   readonly services: EngineServices;
-  readonly phaseRunner: PhaseRunner;
   readonly preparer: PhasePreparer;
   readonly emit: (event: RunEvent) => void;
   readonly iterations: Map<string, number>;
@@ -68,7 +66,6 @@ class PhaseTransaction {
       runId: ctx.runId,
       input: ctx.input,
       services: ctx.services,
-      phaseRunner: ctx.phaseRunner,
       emit: ctx.emit,
     });
     this.gateCoordinator = new GateCoordinator({
@@ -108,7 +105,11 @@ class PhaseTransaction {
       return await this.failBeforeRuntime(phase, iteration, invocation.error);
     }
 
-    const { meta: phaseMeta, invokeResult } = await this.invoker.invoke(invocation.plan, iteration);
+    const { meta: phaseMeta, invokeResult } = await this.invoker.invoke(
+      phase,
+      invocation.plan,
+      iteration,
+    );
     await this.recorder.recordRunResult(phaseMeta);
 
     if (phaseMeta.status === "failed") {

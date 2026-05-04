@@ -6,7 +6,7 @@ import { OrdinHttpClient } from "../../src/client/http-client";
 import { createHttpApp } from "../../src/http/app";
 import { type RunningHttpServer, startHttpServer } from "../../src/http/server";
 import { RunService } from "../../src/run-service/run-service";
-import { FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
 
 describe("OrdinHttpClient (real server)", () => {
   let server: RunningHttpServer;
@@ -16,7 +16,7 @@ describe("OrdinHttpClient (real server)", () => {
     const root = await makeHarnessRoot();
     const service = new RunService({
       root,
-      runtimes: new Map([["ai-sdk", new FakeRuntime()]]),
+      dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
     server = await startHttpServer(createHttpApp(service), { port: 0 });
     client = new OrdinHttpClient({ baseUrl: `http://${server.hostname}:${server.port}` });

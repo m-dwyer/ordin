@@ -1,4 +1,4 @@
-import type { RuntimeEvent, TokenUsage } from "../runtimes/types";
+import type { TokenUsage } from "../worker/runtimes/types";
 
 /**
  * Unified event stream the orchestrator emits for a run. Consumers get
@@ -76,6 +76,8 @@ export type RunEvent =
       readonly id: string;
       readonly name: string;
       readonly input: unknown;
+      /** Set when this tool use belongs to a subagent (Task tool). */
+      readonly parentToolUseId?: string;
     }
   | {
       readonly type: "agent.tool.result";
@@ -83,7 +85,14 @@ export type RunEvent =
       readonly phaseId: string;
       readonly id: string;
       readonly ok: boolean;
-      readonly preview?: string;
+      /**
+       * Full tool output as a string. The runtime emits the complete
+       * result; consumers (CLI footer, HTTP responses, …) handle their
+       * own truncation for display.
+       */
+      readonly result?: string;
+      /** Set when this tool result belongs to a subagent (Task tool). */
+      readonly parentToolUseId?: string;
     }
   | {
       readonly type: "agent.tokens";
@@ -97,39 +106,3 @@ export type RunEvent =
       readonly phaseId: string;
       readonly message: string;
     };
-
-/**
- * Promote a runtime-local event into a tagged RunEvent. The orchestrator
- * is the merging point — this function lives here, not in the runtimes
- * layer (which must stay unaware of runId/phaseId).
- */
-export function promoteRuntimeEvent(event: RuntimeEvent, runId: string, phaseId: string): RunEvent {
-  switch (event.type) {
-    case "assistant.text":
-      return { type: "agent.text", runId, phaseId, text: event.text };
-    case "assistant.thinking":
-      return { type: "agent.thinking", runId, phaseId };
-    case "tool.use":
-      return {
-        type: "agent.tool.use",
-        runId,
-        phaseId,
-        id: event.id,
-        name: event.name,
-        input: event.input,
-      };
-    case "tool.result":
-      return {
-        type: "agent.tool.result",
-        runId,
-        phaseId,
-        id: event.id,
-        ok: event.ok,
-        ...(event.preview !== undefined ? { preview: event.preview } : {}),
-      };
-    case "tokens":
-      return { type: "agent.tokens", runId, phaseId, usage: event.usage };
-    case "error":
-      return { type: "agent.error", runId, phaseId, message: event.message };
-  }
-}

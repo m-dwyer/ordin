@@ -65,7 +65,7 @@ export function nonTtyRunSession(): NonTtySession {
         if (!event.ok) {
           const meta = toolMeta.get(event.id);
           const label = meta ? `${meta.name}${meta.preview ? ` · ${meta.preview}` : ""}` : event.id;
-          const reason = event.preview ? ` — ${firstLine(event.preview)}` : "";
+          const reason = event.result ? ` — ${firstLine(event.result)}` : "";
           writeLine(`  ✗ ${label} failed${reason}`);
         }
         return;

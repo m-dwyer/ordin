@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type LocalServicesConfig, LocalServicesConfigSchema } from "../broker";
 
 /**
  * ordin.config.yaml — global defaults, tier overrides, run-store
@@ -59,11 +60,39 @@ export type TiersRaw = z.infer<typeof TiersSchema>;
 export const RuntimesConfigSchema = z.record(z.string(), z.unknown()).default({});
 export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
 
+/**
+ * Sandbox mode. `passthrough` = no isolation (default — ADR-007).
+ * `srt` = `@anthropic-ai/sandbox-runtime`-backed kernel enforcement
+ * (Seatbelt on macOS, bwrap+seccomp on Linux) plus deny-by-default
+ * network egress through srt's HTTP+SOCKS proxies (Phase 9c). Linux
+ * and Docker variants stay behind the same `Sandbox` interface.
+ */
+export const SandboxModeSchema = z.enum(["passthrough", "srt"]);
+export type SandboxMode = z.infer<typeof SandboxModeSchema>;
+
+/**
+ * Sandbox config accepts the legacy string form (`sandbox: srt`) and
+ * the object form (`sandbox: { mode: srt, local_services: {...} }`).
+ * Preprocess folds the string variant into the object shape so
+ * downstream code only sees one type.
+ */
+const SandboxConfigInner = z.object({
+  mode: SandboxModeSchema.default("passthrough"),
+  local_services: LocalServicesConfigSchema.default({}),
+});
+export const SandboxConfigSchema = z.preprocess(
+  (v) => (typeof v === "string" ? { mode: v } : v),
+  SandboxConfigInner,
+);
+export type SandboxConfigRaw = z.infer<typeof SandboxConfigInner>;
+const DEFAULT_SANDBOX: SandboxConfigRaw = { mode: "passthrough", local_services: {} };
+
 export const HarnessConfigSchema = z.object({
   run_store: RunStoreSchema.default(DEFAULT_RUN_STORE),
   default_runtime: z.string().default("ai-sdk"),
   default_model: z.string().min(1).default("qwen3-8b"),
   allowed_tools: z.array(z.string()).default([]),
+  sandbox: SandboxConfigSchema.default(DEFAULT_SANDBOX),
   runtimes: RuntimesConfigSchema,
   tiers: TiersSchema,
 });
@@ -74,6 +103,7 @@ export class HarnessConfig {
     readonly defaultRuntime: string,
     readonly defaultModel: string,
     readonly allowedTools: readonly string[],
+    readonly sandbox: SandboxConfigRaw,
     readonly runtimes: RuntimesConfigRaw,
     readonly tiers: TiersRaw,
   ) {}
@@ -93,5 +123,13 @@ export class HarnessConfig {
 
   runStoreDir(): string {
     return this.runStore.base_dir;
+  }
+
+  sandboxMode(): SandboxMode {
+    return this.sandbox.mode;
+  }
+
+  localServices(): LocalServicesConfig {
+    return this.sandbox.local_services;
   }
 }

@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ComposedPrompt } from "../../src/domain/composer";
-import { ClaudeCliRuntime, classifyFailure } from "../../src/runtimes/claude-cli";
-import type { InvokeRequest, RuntimeEvent } from "../../src/runtimes/types";
+import { ClaudeCliRuntime, classifyFailure } from "../../src/worker/runtimes/claude-cli";
+import type { InvokeRequest, RuntimeEvent } from "../../src/worker/runtimes/types";
 
 /**
  * Minimal ChildProcess stand-in. Implements the surface ClaudeCliRuntime
@@ -73,6 +73,7 @@ describe("ClaudeCliRuntime.buildArgs", () => {
   });
 
   const runtime = new ClaudeCliRuntime({
+    bin: "claude",
     pluginDirs: ["/harness/root"],
     spawner: () => new FakeChild() as unknown as ChildProcess,
   });
@@ -103,15 +104,16 @@ describe("ClaudeCliRuntime.buildArgs", () => {
   });
 
   it("maps tier to --effort", () => {
-    expect(
-      new ClaudeCliRuntime().buildArgs({ runId: "r", prompt: makePrompt("x", { tier: "S" }) }, "/"),
-    ).toContain("low");
-    expect(
-      new ClaudeCliRuntime().buildArgs({ runId: "r", prompt: makePrompt("x", { tier: "M" }) }, "/"),
-    ).toContain("medium");
-    expect(
-      new ClaudeCliRuntime().buildArgs({ runId: "r", prompt: makePrompt("x", { tier: "L" }) }, "/"),
-    ).toContain("high");
+    const rt = new ClaudeCliRuntime({ bin: "claude" });
+    expect(rt.buildArgs({ runId: "r", prompt: makePrompt("x", { tier: "S" }) }, "/")).toContain(
+      "low",
+    );
+    expect(rt.buildArgs({ runId: "r", prompt: makePrompt("x", { tier: "M" }) }, "/")).toContain(
+      "medium",
+    );
+    expect(rt.buildArgs({ runId: "r", prompt: makePrompt("x", { tier: "L" }) }, "/")).toContain(
+      "high",
+    );
   });
 
   it("omits per-phase overrides when none are configured", () => {
@@ -122,6 +124,7 @@ describe("ClaudeCliRuntime.buildArgs", () => {
 
   it("applies per-phase fallback_model and max_turns from runtime config", () => {
     const configured = new ClaudeCliRuntime({
+      bin: "claude",
       phaseOverrides: {
         plan: { fallback_model: "claude-haiku-4-6", max_turns: 60 },
         build: { max_turns: 80 },
@@ -140,6 +143,7 @@ describe("ClaudeCliRuntime.buildArgs", () => {
 
   it("omits fallback_model when it matches the selected main model", () => {
     const configured = new ClaudeCliRuntime({
+      bin: "claude",
       phaseOverrides: {
         plan: { fallback_model: "claude-sonnet-4-6", max_turns: 60 },
       },
@@ -182,14 +186,17 @@ describe("ClaudeCliRuntime.buildArgs", () => {
 });
 
 describe("ClaudeCliRuntime.fromConfig", () => {
-  it("applies defaults for an empty slice", () => {
-    const rt = ClaudeCliRuntime.fromConfig({});
+  it("accepts a minimal slice with bin set", () => {
+    const rt = ClaudeCliRuntime.fromConfig({ bin: "claude" });
     expect(rt.name).toBe("claude-cli");
   });
 
-  it("rejects invalid shapes", () => {
+  it("rejects missing bin and other invalid shapes", () => {
+    expect(() => ClaudeCliRuntime.fromConfig({})).toThrow();
     expect(() => ClaudeCliRuntime.fromConfig({ bin: 123 })).toThrow();
-    expect(() => ClaudeCliRuntime.fromConfig({ phases: { plan: { max_turns: -1 } } })).toThrow();
+    expect(() =>
+      ClaudeCliRuntime.fromConfig({ bin: "claude", phases: { plan: { max_turns: -1 } } }),
+    ).toThrow();
   });
 
   it("surfaces per-phase overrides through buildArgs", () => {
@@ -215,6 +222,7 @@ describe("ClaudeCliRuntime.invoke (with fake spawner)", () => {
     captured: CapturedSpawn[] = [],
   ): ClaudeCliRuntime {
     return new ClaudeCliRuntime({
+      bin: "claude",
       runsDirFallback: runsDir,
       spawner: (bin, args, opts) => {
         captured.push({ bin, args, cwd: opts.cwd });

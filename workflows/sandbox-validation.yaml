@@ -1,0 +1,33 @@
+# Deterministic end-to-end validation workflow for the v1 sandbox stack.
+#
+# Uses ScriptedRuntime (no LLM) — paired with scripts/sandbox-validation.yaml.
+# Run with:
+#   bun ordin run --workflow sandbox-validation -p fixture 'validate'
+#   bun ordin run --sandbox srt --workflow sandbox-validation -p fixture 'validate'
+#
+# Both invocations should produce identical artefacts; the second proves
+# the v1 sandbox doesn't break the agent's tool surface.
+
+name: sandbox-validation
+version: 1
+runtime: scripted
+model: scripted
+description: >
+  End-to-end sandbox validation using a deterministic scripted runtime.
+  Exercises Read, Write, Glob, and Bash tools against the workspace and
+  produces a report artefact. Pure infrastructure check — no LLM call.
+
+phases:
+  - id: validate
+    agent: probe-agent
+    gate: auto
+    allowed_tools:
+      - Read
+      - Write
+      - Glob
+      - Bash
+    fresh_context: true
+    outputs:
+      - label: Validation report
+        path: reviews/sandbox-validation-report.md
+        description: Probe outcomes — what was reachable, what wasn't

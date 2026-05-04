@@ -1,5 +1,5 @@
 import { InvalidArgumentError } from "commander";
-import { HarnessRuntime, type RunEvent, type RunMeta } from "../runtime/harness";
+import { HarnessRuntime, type RunEvent, type RunMeta, type SandboxMode } from "../runtime/harness";
 import type { RunHeader } from "./tui/types";
 
 export function parseTier(value: string): "S" | "M" | "L" {
@@ -7,8 +7,15 @@ export function parseTier(value: string): "S" | "M" | "L" {
   throw new InvalidArgumentError("Tier must be S, M, or L");
 }
 
+export function parseSandboxMode(value: string): SandboxMode {
+  if (value === "passthrough" || value === "srt") return value;
+  throw new InvalidArgumentError("Sandbox mode must be passthrough or srt");
+}
+
 export interface OrdinCliOptions {
   readonly workflow?: string;
+  readonly sandboxMode?: SandboxMode;
+  readonly scriptPath?: string;
 }
 
 /**
@@ -24,6 +31,8 @@ export interface OrdinCliOptions {
 export function ordin(opts: OrdinCliOptions = {}): HarnessRuntime {
   return new HarnessRuntime({
     ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+    ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
   });
 }
 
@@ -54,49 +63,60 @@ export interface OrdinRunSession {
  */
 export async function ordinRunSession(opts: {
   readonly workflow?: string;
+  readonly sandboxMode?: SandboxMode;
+  readonly scriptPath?: string;
   readonly header: RunHeader;
 }): Promise<OrdinRunSession> {
-  if (process.stdout.isTTY === true) {
-    const { OpenTuiRunController } = await import("./tui/controller");
-    const { openTuiGateResolver } = await import("./gate-prompters/opentui");
-    const controller = new OpenTuiRunController();
-    const runtime = new HarnessRuntime({
-      ...(opts.workflow ? { workflow: opts.workflow } : {}),
-      gateForKind: openTuiGateResolver(controller),
-    });
-    // Pre-populate the footer's phase list so all phases show up as
-    // `pending` from the first frame, instead of appearing one-by-one
-    // as `phase.started` events arrive. workflowDefinition() just
-    // loads the YAML — cheap, no composition.
-    const manifest = await runtime.workflowDefinition();
-    await controller.mount(
-      opts.header,
-      manifest.phases.map((p) => p.id),
-    );
+  const sharedOpts = {
+    ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
+    ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
+  };
+
+  if (process.stdout.isTTY !== true) {
+    const { nonTtyRunSession } = await import("./tui/non-tty-sink");
+    const session = nonTtyRunSession();
     return {
-      runtime,
-      onEvent: (ev) => controller.pushEvent(ev),
-      finish: (summary) => controller.finish(summary),
-      dispose: async () => {
-        await controller.dispose();
-        // Final summary lands AFTER renderer teardown, on plain
-        // stdout — sidesteps OpenTUI's destroy-time scrollback
-        // re-flush that was causing the block to print twice.
-        controller.printFinalSummary();
-      },
+      runtime: new HarnessRuntime({ ...sharedOpts, gateForKind: session.gateForKind }),
+      onEvent: session.onEvent,
+      finish: () => session.finish(),
+      dispose: () => session.finish(),
     };
   }
 
-  const { nonTtyRunSession } = await import("./tui/non-tty-sink");
-  const session = nonTtyRunSession();
+  // Under L2, the parent owns the TUI for the entire run. Mounting it
+  // up-front (before the runtime ever spawns a worker) means there's no
+  // alt-screen race with sandboxed children — the inner is just a
+  // worker process whose stdout/stderr the parent captures.
+  const { OpenTuiRunController } = await import("./tui/controller");
+  const { openTuiEgressGatePrompter, openTuiGateResolver } = await import(
+    "./gate-prompters/opentui"
+  );
+  const controller = new OpenTuiRunController();
+  const runtime = new HarnessRuntime({
+    ...sharedOpts,
+    gateForKind: openTuiGateResolver(controller),
+    egressGatePrompter: openTuiEgressGatePrompter(controller),
+  });
+  // Pre-populate the footer's phase list so all phases show up as
+  // `pending` from the first frame, instead of appearing one-by-one
+  // as `phase.started` events arrive. workflowDefinition() just loads
+  // the YAML — cheap, no composition.
+  const manifest = await runtime.workflowDefinition();
+  await controller.mount(
+    opts.header,
+    manifest.phases.map((p) => p.id),
+  );
   return {
-    runtime: new HarnessRuntime({
-      ...(opts.workflow ? { workflow: opts.workflow } : {}),
-      gateForKind: session.gateForKind,
-    }),
-    onEvent: session.onEvent,
-    finish: () => session.finish(),
-    dispose: () => session.finish(),
+    runtime,
+    onEvent: (ev) => controller.pushEvent(ev),
+    finish: (summary) => controller.finish(summary),
+    dispose: async () => {
+      await controller.dispose();
+      // Final summary lands AFTER renderer teardown, on plain stdout —
+      // sidesteps OpenTUI's destroy-time scrollback re-flush.
+      controller.printFinalSummary();
+    },
   };
 }
 

@@ -11,13 +11,14 @@ import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
+import { invokeWithRuntime, PhaseRunner } from "../../src/orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
   AgentRuntime,
   InvokeRequest,
   InvokeResult,
   RuntimeCapabilities,
-} from "../../src/runtimes/types";
+} from "../../src/worker/runtimes/types";
 
 /**
  * Verifies MastraEngine drives topology correctly: phase ordering,
@@ -103,7 +104,7 @@ function makeServices(harness: Harness, runtime: AgentRuntime): EngineServices {
   return {
     config: harness.config,
     agents: harness.agents,
-    runtimes: new Map([[runtime.name, runtime]]),
+    runtimeNames: new Set([runtime.name]),
     runStore: harness.runStore,
   };
 }
@@ -122,6 +123,8 @@ async function runWithMastra(
 ): Promise<RunMeta> {
   const engine = new MastraEngine();
   const program = engine.compile(harness.workflow);
+  const services = makeServices(harness, runtime);
+  const runner = new PhaseRunner();
   return engine.run(
     program,
     {
@@ -130,9 +133,17 @@ async function runWithMastra(
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
       tier: input.tier ?? "M",
       onGateRequested,
+      dispatchPhase: (req) =>
+        runner.run({
+          preview: req.preview,
+          runtimeName: runtime.name,
+          invoke: invokeWithRuntime(runtime),
+          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+          emit: req.emit,
+        }),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
     },
-    makeServices(harness, runtime),
+    services,
   );
 }
 

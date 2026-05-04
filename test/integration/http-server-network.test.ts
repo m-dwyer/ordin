@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHttpApp } from "../../src/http/app";
 import { type RunningHttpServer, startHttpServer } from "../../src/http/server";
 import { RunService } from "../../src/run-service/run-service";
-import { FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
 
 /**
  * Real-port integration: exercises the @hono/node-server adapter that
@@ -20,7 +20,7 @@ describe("HTTP server (real port)", () => {
     const root = await makeHarnessRoot();
     const service = new RunService({
       root,
-      runtimes: new Map([["ai-sdk", new FakeRuntime()]]),
+      dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
     server = await startHttpServer(createHttpApp(service), { port: 0 });
     baseUrl = `http://${server.hostname}:${server.port}`;

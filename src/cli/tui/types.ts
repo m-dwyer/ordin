@@ -37,6 +37,11 @@ export interface GateState {
   ctx: GateContext;
 }
 
+export interface EgressGateState {
+  host: string;
+  port: number | undefined;
+}
+
 export type FeedRowKind = "tool" | "result" | "note" | "error" | "edit";
 
 export interface EditDiff {
@@ -56,6 +61,9 @@ export interface FeedRow {
   /** Set by `agent.tool.result` when the tool returned !ok. Drives a
    * coral-tinted glyph + detail without changing kind. */
   readonly failed?: boolean;
+  /** Tool output (Bash stdout, Read excerpt, Glob list, …). Rendered
+   * multi-line under the tool row, capped by the renderer. */
+  readonly result?: string;
 }
 
 export interface PhaseSection {
@@ -93,6 +101,7 @@ export interface ControllerState {
   phases: () => readonly PhaseRow[];
   sections: () => readonly PhaseSection[];
   gate: Accessor<GateState | null>;
+  egressGate: Accessor<EgressGateState | null>;
   hint: Accessor<string>;
   paused: Accessor<PausedState | null>;
   /** Set of row ids (or group keys) currently expanded. Anything not
@@ -102,6 +111,7 @@ export interface ControllerState {
    * sections are expanded; user click on a phase header collapses. */
   collapsedPhases: Accessor<ReadonlySet<string>>;
   decideGate: (decision: GateDecision) => void;
+  decideEgressGate: (approved: boolean) => void;
   dismiss: () => void;
   toggleExpanded: (id: number) => void;
   collapseAll: () => void;

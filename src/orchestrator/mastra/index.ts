@@ -13,7 +13,6 @@ import type {
 } from "../engine";
 import type { RunEvent } from "../events";
 import { executePhase, type PhaseExecutorContext } from "../phase-executor";
-import { PhaseRunner } from "../phase-runner";
 import { generateRunId, type RunMeta } from "../run-store";
 import { compileWorkflowPlan, type ExecutionPlan } from "../workflow-plan";
 
@@ -89,7 +88,6 @@ export class MastraEngine implements Engine {
         await services.runStore.writeMeta(meta);
         emit({ type: "run.started", runId });
 
-        const phaseRunner = new PhaseRunner();
         const preparer = new PhasePreparer();
 
         const ctx: RunCtx = {
@@ -98,7 +96,6 @@ export class MastraEngine implements Engine {
           manifest: program.manifest,
           input,
           services,
-          phaseRunner,
           preparer,
           emit,
           iterations: new Map(),

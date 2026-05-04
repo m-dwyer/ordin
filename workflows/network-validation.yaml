@@ -1,0 +1,43 @@
+# Deterministic end-to-end validation workflow for the v1 network egress
+# stack (srt's HTTP+SOCKS proxies + deny-by-default allowlist).
+#
+# Uses ScriptedRuntime (no LLM) — paired with scripts/network-validation.yaml.
+#
+# Run with srt to assert the lockdown holds (the expected, regression-test
+# usage):
+#   bun ordin run --sandbox srt --workflow network-validation -p fixture 'validate'
+#
+# Run under passthrough to inspect outcomes without enforcement (probes
+# that should be denied will succeed, and the final assertion step will
+# fail loudly — that's the design):
+#   bun ordin run --workflow network-validation -p fixture 'validate'
+#
+# Asserts (default policy = empty allowlist; all external denied):
+#   - api.anthropic.com -> denied
+#   - github.com        -> denied
+#   - example.com       -> denied
+#   - api.openai.com    -> denied
+#   - 1.1.1.1 (raw IP)  -> denied (hostname-only allowlist not bypassed)
+#   - localhost:4000    -> reachable OR refused-not-blocked (NO_PROXY)
+
+name: network-validation
+version: 1
+runtime: scripted
+model: scripted
+description: >
+  End-to-end network egress validation using a deterministic scripted runtime.
+  Each probe records its HTTP code + curl exit code; the final assertion step
+  fails loudly if reachability does not match the expected matrix.
+
+phases:
+  - id: validate
+    agent: probe-agent
+    gate: auto
+    allowed_tools:
+      - Bash
+      - Write
+    fresh_context: true
+    outputs:
+      - label: Network validation report
+        path: reviews/network-validation-report.md
+        description: Per-host probe outcomes + assertion summary
