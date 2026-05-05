@@ -6,6 +6,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
+import type { MastraTracingFactory } from "../../observability/mastra-tracing";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -60,6 +61,24 @@ export interface AiSdkRuntimeConfig {
    * undefined and the OpenAI-compatible provider is built per-invoke.
    */
   model?: MastraModelConfig;
+  /**
+   * Mastra container factory used to wire vendor-specific
+   * observability (today: a `LangfuseExporter` pointed at the
+   * harness's broker). The factory lives in
+   * `src/worker/observability/mastra-tracing.ts`; the runtime never
+   * imports `@mastra/langfuse` or `@mastra/observability` directly.
+   * Leave undefined and Agent runs without observability wiring.
+   */
+  mastraTracing?: MastraTracingFactory;
+  /**
+   * Parent OTel trace context, used by Mastra's `tracingOptions` so
+   * spans emitted by Mastra (chat / tool calls forwarded to Langfuse
+   * by `LangfuseExporter`) nest under the active `ordin.phase.*`
+   * span instead of producing a sibling trace tree. Threaded through
+   * by the worker entry from W3C `TRACEPARENT`.
+   */
+  parentTraceId?: string;
+  parentSpanId?: string;
 }
 
 export const AiSdkRuntimeConfigSchema = z.object({
@@ -97,6 +116,9 @@ export class AiSdkRuntime implements AgentRuntime {
   private readonly maxSteps: number;
   private readonly bypassCache: boolean;
   private readonly modelOverride: MastraModelConfig | undefined;
+  private readonly mastraTracing: MastraTracingFactory | undefined;
+  private readonly parentTraceId: string | undefined;
+  private readonly parentSpanId: string | undefined;
 
   constructor(config: AiSdkRuntimeConfig = {}) {
     this.baseUrl = config.baseUrl ?? "http://localhost:4000";
@@ -106,15 +128,25 @@ export class AiSdkRuntime implements AgentRuntime {
     this.maxSteps = config.maxSteps ?? 40;
     this.bypassCache = config.bypassCache ?? false;
     this.modelOverride = config.model;
+    this.mastraTracing = config.mastraTracing;
+    this.parentTraceId = config.parentTraceId;
+    this.parentSpanId = config.parentSpanId;
   }
 
-  static fromConfig(raw: unknown, extras: Pick<AiSdkRuntimeConfig, "runsDir"> = {}): AiSdkRuntime {
+  static fromConfig(
+    raw: unknown,
+    extras: Pick<
+      AiSdkRuntimeConfig,
+      "runsDir" | "mastraTracing" | "parentTraceId" | "parentSpanId"
+    > = {},
+  ): AiSdkRuntime {
     const parsed = AiSdkRuntimeConfigSchema.parse(raw ?? {});
     const apiKey = parsed.api_key_env ? process.env[parsed.api_key_env] : parsed.api_key;
     return new AiSdkRuntime({
+      ...extras,
       ...(parsed.base_url ? { baseUrl: parsed.base_url } : {}),
       ...(apiKey ? { apiKey } : {}),
-      ...(parsed.runs_dir ? { runsDir: parsed.runs_dir } : extras),
+      ...(parsed.runs_dir ? { runsDir: parsed.runs_dir } : {}),
       ...(parsed.max_steps !== undefined ? { maxSteps: parsed.max_steps } : {}),
       ...(parsed.bypass_cache !== undefined ? { bypassCache: parsed.bypass_cache } : {}),
     });
@@ -138,12 +170,14 @@ export class AiSdkRuntime implements AgentRuntime {
     const model = this.modelOverride ?? this.buildModel(modelId);
 
     const tools = buildTools(req.prompt.cwd, req.prompt.tools, req.prompt.skills);
+    const mastra = this.mastraTracing?.(emit);
     const agent = new Agent({
       id: `ordin.${req.prompt.phaseId}`,
       name: `ordin.${req.prompt.phaseId}`,
       instructions: req.prompt.systemPrompt,
       model,
       tools,
+      ...(mastra ? { mastra } : {}),
     });
 
     const started = Date.now();
@@ -167,6 +201,8 @@ export class AiSdkRuntime implements AgentRuntime {
             "ordin.base_url": this.baseUrl,
             "langfuse.sessionId": req.runId,
           },
+          ...(this.parentTraceId ? { traceId: this.parentTraceId } : {}),
+          ...(this.parentSpanId ? { parentSpanId: this.parentSpanId } : {}),
         },
       });
       await output.consumeStream();

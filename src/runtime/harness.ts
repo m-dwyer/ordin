@@ -3,6 +3,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { context, trace } from "@opentelemetry/api";
 import { Broker } from "../broker";
 import { type VerifyResult, verifyChainText } from "../broker/audit-chain";
 import { AuditService } from "../broker/audit-service";
@@ -646,9 +647,17 @@ interface SpawnWorkerInvokeArgs {
 async function spawnWorkerInvoke(args: SpawnWorkerInvokeArgs): Promise<InvokeResult> {
   const { sandbox, harnessRoot, workerEnv, planPath, resultPath, phaseId, iteration, invokeReq } =
     args;
+  // Stamp the active OTel span as W3C `TRACEPARENT` so the worker can
+  // hand it to Mastra's `tracingOptions` and Mastra-emitted spans
+  // (chat / tool calls forwarded to Langfuse) nest under the active
+  // `ordin.phase.*` span instead of producing a sibling trace tree.
+  // No-op when tracing is disabled — `trace.getSpan` returns
+  // undefined under the API's default no-op TracerProvider.
+  const traceparent = serializeActiveTraceparent();
+  const env = traceparent ? { ...workerEnv, TRACEPARENT: traceparent } : workerEnv;
   const handle = sandbox.spawnWorker({
     argv: [...workerArgv({ harnessRoot }), "--plan", planPath],
-    env: workerEnv,
+    env,
   });
   const events = consumeRuntimeEvents(handle.stdout, invokeReq.onEvent);
   if (invokeReq.abortSignal) {
@@ -662,6 +671,21 @@ async function spawnWorkerInvoke(args: SpawnWorkerInvokeArgs): Promise<InvokeRes
   }
   const resultText = await readFile(resultPath, "utf8");
   return JSON.parse(resultText) as InvokeResult;
+}
+
+/**
+ * Serialize the currently-active OTel span to a W3C Trace Context
+ * `traceparent` value (`00-<traceId>-<spanId>-<flags>`). Returns
+ * undefined when no SDK is active — under `@opentelemetry/api`'s
+ * default no-op tracer provider, `trace.getSpan` returns undefined.
+ */
+function serializeActiveTraceparent(): string | undefined {
+  const span = trace.getSpan(context.active());
+  if (!span) return undefined;
+  const sc = span.spanContext();
+  if (!sc.traceId || !sc.spanId) return undefined;
+  const flags = (sc.traceFlags ?? 0).toString(16).padStart(2, "0");
+  return `00-${sc.traceId}-${sc.spanId}-${flags}`;
 }
 
 /**

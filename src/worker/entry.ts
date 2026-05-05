@@ -23,6 +23,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
+import { buildMastraTracingContainer } from "./observability/mastra-tracing";
 import { prepareInnerProcess } from "./prepare";
 import { buildRuntime } from "./runtimes/registry";
 import type { RuntimeEvent } from "./runtimes/types";
@@ -46,11 +47,16 @@ async function main(): Promise<void> {
   prepareInnerProcess();
   const planPath = parsePlanPath(process.argv);
   const plan: WorkerPlan = JSON.parse(await readFile(planPath, "utf8"));
+  const traceContext = parseTraceparent(process.env["TRACEPARENT"]);
   const runtime = await buildRuntime(plan.runtimeName, plan.runtimeConfig, {
     harnessRoot: plan.harnessRoot,
     workflowName: plan.workflowName,
     runsDir: plan.runsDir,
     ...(plan.scriptPath ? { scriptPath: plan.scriptPath } : {}),
+    mastraTracing: buildMastraTracingContainer,
+    ...(traceContext
+      ? { parentTraceId: traceContext.traceId, parentSpanId: traceContext.spanId }
+      : {}),
   });
   const result = await runtime.invoke({
     runId: plan.runId,
@@ -70,6 +76,21 @@ function parsePlanPath(argv: readonly string[]): string {
   const path = ix >= 0 ? argv[ix + 1] : undefined;
   if (!path) throw new Error("worker: --plan <path> required");
   return path;
+}
+
+/**
+ * Parse a W3C Trace Context header value (`00-<traceId>-<spanId>-<flags>`)
+ * the parent stamps into the worker's env so Mastra spans nest under
+ * the active `ordin.phase.*` span. Returns undefined for any malformed
+ * or absent value — observability is supplementary, never load-bearing.
+ */
+function parseTraceparent(
+  value: string | undefined,
+): { traceId: string; spanId: string } | undefined {
+  if (!value) return undefined;
+  const match = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/.exec(value);
+  if (!match?.[1] || !match[2]) return undefined;
+  return { traceId: match[1], spanId: match[2] };
 }
 
 main().catch((err: unknown) => {

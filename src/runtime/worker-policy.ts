@@ -23,6 +23,11 @@ const EXACT_SRT_WORKER_ENV_ALLOWLIST = new Set([
   "TMP",
   "LANG",
   "LC_ALL",
+  // W3C Trace Context. The parent stamps the active OTel span here so
+  // the worker can hand it to Mastra's `tracingOptions` and Mastra-
+  // emitted Langfuse spans nest under `ordin.phase.*`. Tracing data
+  // only — no credentials.
+  "TRACEPARENT",
 ]);
 
 export function buildWorkerEnv(

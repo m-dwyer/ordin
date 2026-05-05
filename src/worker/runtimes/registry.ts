@@ -1,3 +1,4 @@
+import type { MastraTracingFactory } from "../observability/mastra-tracing";
 import type { AgentRuntime } from "./types";
 
 /**
@@ -12,6 +13,25 @@ export interface RuntimeBuildContext {
   readonly runsDir: string;
   /** Optional override for `ScriptedRuntime`'s plan file path. */
   readonly scriptPath?: string;
+  /**
+   * Mastra container factory. Mastra-Agent-based runtimes thread the
+   * resulting container into their `Agent` constructor so Mastra's
+   * tracing pipeline ships chat / tool spans through the configured
+   * exporter (today: `LangfuseExporter` via the broker). Other
+   * runtimes ignore it. The factory lives in
+   * `src/worker/observability/mastra-tracing.ts`; the runtime never
+   * imports `@mastra/langfuse` directly.
+   */
+  readonly mastraTracing?: MastraTracingFactory;
+  /**
+   * Parent OTel trace context, parsed by the worker entry from W3C
+   * `TRACEPARENT`. Mastra-Agent-based runtimes pass these to
+   * `agent.stream`'s `tracingOptions` so spans nest under the parent
+   * `ordin.phase.*` span instead of producing a sibling trace tree
+   * in Langfuse.
+   */
+  readonly parentTraceId?: string;
+  readonly parentSpanId?: string;
 }
 
 /**
@@ -44,7 +64,12 @@ export async function buildRuntime(
   switch (name) {
     case "ai-sdk": {
       const { AiSdkRuntime } = await import("./ai-sdk");
-      return AiSdkRuntime.fromConfig(configSlice, { runsDir: ctx.runsDir });
+      return AiSdkRuntime.fromConfig(configSlice, {
+        runsDir: ctx.runsDir,
+        ...(ctx.mastraTracing ? { mastraTracing: ctx.mastraTracing } : {}),
+        ...(ctx.parentTraceId ? { parentTraceId: ctx.parentTraceId } : {}),
+        ...(ctx.parentSpanId ? { parentSpanId: ctx.parentSpanId } : {}),
+      });
     }
     case "claude-cli": {
       const { ClaudeCliRuntime } = await import("./claude-cli");
