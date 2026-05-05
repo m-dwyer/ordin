@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
 import { ToolDispatcher } from "./shared/dispatcher";
 import { parseToolSpec } from "./shared/tools";
@@ -45,6 +45,7 @@ export interface ClaudeProviderTurn {
 export interface ClaudeModelProvider {
   complete(req: {
     readonly systemPrompt: string;
+    readonly systemPromptFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
     readonly cwd: string;
@@ -72,6 +73,7 @@ export type ProviderSpawner = (
 ) => ProviderChildProcess;
 
 export interface ProviderChildProcess {
+  readonly stdin: Writable | null;
   readonly stdout: Readable | null;
   readonly stderr: Readable | null;
   readonly killed: boolean;
@@ -91,7 +93,7 @@ const defaultSpawner: ProviderSpawner = (bin, args, opts) =>
   spawn(bin, args as string[], {
     cwd: opts.cwd,
     env: opts.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
 /**
@@ -170,6 +172,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
         emit({ type: "assistant.thinking" });
         const turn = await this.provider.complete({
           systemPrompt: buildProviderSystemPrompt(req),
+          systemPromptFile: join(runDir, `${req.prompt.phaseId}.provider-system.${step}.md`),
           messages,
           model: req.prompt.model,
           cwd: req.prompt.cwd,
@@ -350,6 +353,7 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
 
   async complete(req: {
     readonly systemPrompt: string;
+    readonly systemPromptFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
     readonly cwd: string;
@@ -357,10 +361,12 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     readonly abortSignal?: AbortSignal;
     readonly onRawLine?: (line: string) => void;
   }): Promise<ClaudeProviderTurn> {
+    if (req.systemPromptFile) await writeFile(req.systemPromptFile, req.systemPrompt, "utf8");
     const child = this.spawner(this.bin, this.buildArgs(req), {
       cwd: req.cwd,
       env: process.env,
     });
+    child.stdin?.end(renderMessages(req.messages));
     const stdout = child.stdout;
     const stderr = child.stderr;
     if (!stdout || !stderr) {
@@ -371,9 +377,10 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     let toolCall: ClaudeToolCall | undefined;
     let tokens = ZERO_TOKENS;
     const stderrChunks: string[] = [];
+    let closed = false;
 
     const kill = (): void => {
-      if (!child.killed) child.kill("SIGTERM");
+      terminateChild(child, () => closed);
     };
     const abortHandler = (): void => kill();
     req.abortSignal?.addEventListener("abort", abortHandler, { once: true });
@@ -401,7 +408,10 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
 
     const exitInfo: { code: number; signal: NodeJS.Signals | null } = await new Promise(
       (resolveExit) => {
-        child.on("close", (code, signal) => resolveExit({ code: code ?? -1, signal }));
+        child.on("close", (code, signal) => {
+          closed = true;
+          resolveExit({ code: code ?? -1, signal });
+        });
         child.on("error", (err) => {
           stderrChunks.push(err.message);
           resolveExit({ code: -1, signal: null });
@@ -425,6 +435,7 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
 
   private buildArgs(req: {
     readonly systemPrompt: string;
+    readonly systemPromptFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
     readonly tools: readonly string[];
@@ -432,12 +443,14 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     const nativeTools = req.tools.filter((name) => name !== "Skill");
     const args = [
       "-p",
-      renderMessages(req.messages),
+      "--input-format",
+      "text",
       "--output-format",
       "stream-json",
       "--verbose",
-      "--system-prompt",
-      req.systemPrompt,
+      ...(req.systemPromptFile
+        ? ["--system-prompt-file", req.systemPromptFile]
+        : ["--system-prompt", req.systemPrompt]),
       "--model",
       req.model,
       "--permission-mode",
@@ -459,6 +472,14 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
 
 function renderMessages(messages: readonly ProviderMessage[]): string {
   return messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n");
+}
+
+function terminateChild(child: ProviderChildProcess, isClosed: () => boolean): void {
+  if (isClosed() || child.killed) return;
+  child.kill("SIGTERM");
+  setTimeout(() => {
+    if (!isClosed()) child.kill("SIGKILL");
+  }, 1_000).unref();
 }
 
 function usageFromClaude(usage: ClaudeUsage): TokenUsage {

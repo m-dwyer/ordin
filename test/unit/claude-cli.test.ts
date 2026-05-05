@@ -82,8 +82,11 @@ describe("ClaudeCliRuntime.buildArgs", () => {
     const prompt = makePrompt();
     const args = runtime.buildArgs({ runId: "r", prompt }, "/run-dir");
 
+    expect(args).not.toContain(prompt.userPrompt);
     expect(args).toContain("--setting-sources");
     expect(args[args.indexOf("--setting-sources") + 1]).toBe("project");
+    expect(args).toContain("--input-format");
+    expect(args[args.indexOf("--input-format") + 1]).toBe("text");
     expect(args).toContain("--exclude-dynamic-system-prompt-sections");
     expect(args).toContain("--include-hook-events");
     expect(args).toContain("--output-format");

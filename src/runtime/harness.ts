@@ -457,7 +457,7 @@ export class HarnessRuntime {
         input.onEvent?.(ev.payload as RunEvent);
       },
     });
-    const services = mode === "srt" ? state.config.localServices() : {};
+    const services = state.config.localServices();
     const broker = new Broker(services, {
       proxyAuth: randomBytes(32).toString("hex"),
       onEgress: audit.egressSink(),

@@ -724,16 +724,17 @@ The phases below are additive and only built when the named trigger fires. Don't
 
 **Deliverables:**
 - `infra/docker-compose.yml` Langfuse v3 stack (web, worker, postgres, clickhouse, redis, minio); web bound to 127.0.0.1:3000
-- `src/observability/tracing.ts` — single OTel `NodeSDK` bootstrap. Reads `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`; no exporter when unset
+- `src/observability/tracing.ts` — single OTel `NodeSDK` bootstrap. Parent process exports OTLP/HTTP to the broker hostname (`http://otel/api/public/otel/v1/traces`); the broker forwards to `sandbox.local_services.otel.target` and injects auth from `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`. `LANGFUSE_HOST` is not read by the harness.
 - Run span (`ordin.run`) in `MastraEngine.run`; phase span (`ordin.phase`) in `executePhase` — engine-neutral so any future engine inherits tracing through the shared phase entry point
 - AI SDK `experimental_telemetry: { isEnabled, functionId, metadata }` on `generateText` — auto-emits nested spans for the model loop, tool calls, and step boundaries; nests under the phase span via OTel context
 - Eval bootstrap (`evals/setup.ts`) starts/shuts the SDK; `runPhase()` opens its own `ordin.eval.phase` root span since it bypasses `MastraEngine`
-- Stage-3-ready: `LANGFUSE_HOST` env var swaps to a shared instance with no code change
+- Stage-3-ready: changing `sandbox.local_services.otel.target` points tracing at a shared instance with no code change
 
 **Non-deliverables (deferred):**
 - `ClaudeCliRuntime` instrumentation. The phase span still wraps subprocess invocations so phase boundaries are visible, but model/tool detail isn't auto-emitted (the subprocess speaks no OTel). Parsing the JSON event stream into spans is a follow-up.
 - Langfuse SDK as a direct harness dependency — OTLP/HTTP keeps the harness vendor-neutral
 - Dashboard provisioning. Defer until trace shape is observed in real use.
+- Live trace visibility during an active run. Today long-lived run/phase spans are exported when they end, and SDK shutdown flushes them at run teardown. If live progress in Langfuse becomes important, add short-lived child spans around runtime invocation, tool dispatch (`Read`, `Write`, etc.), and gate waits, or tune the OTel batch exporter delay. Batch tuning only helps after spans end; active spans will still not appear as completed observations.
 
 **Exit criteria:**
 - Every harness run appears as a Langfuse trace with token counts, durations

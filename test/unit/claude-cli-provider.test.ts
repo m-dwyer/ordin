@@ -73,6 +73,7 @@ class FakeDispatcher extends ToolDispatcher {
 }
 
 class FakeChild extends EventEmitter implements ProviderChildProcess {
+  readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   killed = false;
@@ -204,13 +205,15 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     expect(capturedArgs).toContain("--output-format");
     expect(capturedArgs[capturedArgs.indexOf("--output-format") + 1]).toBe("stream-json");
     expect(capturedArgs).toContain("--verbose");
-    expect(capturedArgs).toContain("--system-prompt");
-    expect(capturedArgs[capturedArgs.indexOf("--system-prompt") + 1]).toContain(
-      "Use Summary, Problem, Options.",
-    );
-    expect(capturedArgs[capturedArgs.indexOf("--system-prompt") + 1]).toContain(
-      "Do not call a Skill tool",
-    );
+    expect(capturedArgs).toContain("--input-format");
+    expect(capturedArgs[capturedArgs.indexOf("--input-format") + 1]).toBe("text");
+    expect(capturedArgs).not.toContain("user");
+    expect(capturedArgs).toContain("--system-prompt-file");
+    const systemPromptPath = capturedArgs[capturedArgs.indexOf("--system-prompt-file") + 1];
+    if (!systemPromptPath) throw new Error("missing --system-prompt-file value");
+    const systemPrompt = await readFile(systemPromptPath, "utf8");
+    expect(systemPrompt).toContain("Use Summary, Problem, Options.");
+    expect(systemPrompt).toContain("Do not call a Skill tool");
     expect(capturedArgs).toContain("--tools");
     expect(capturedArgs[capturedArgs.indexOf("--tools") + 1]).toBe("Read,Bash");
     expect(capturedArgs).toContain("--allowed-tools");

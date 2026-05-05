@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -74,7 +74,7 @@ const defaultSpawner: Spawner = (bin, args, opts) =>
   spawn(bin, args as string[], {
     cwd: opts.cwd,
     env: opts.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
 export interface ClaudeCliRuntimeOptions {
@@ -148,10 +148,13 @@ export class ClaudeCliRuntime implements AgentRuntime {
     const transcriptPath = join(runDir, `${req.prompt.phaseId}.jsonl`);
     await mkdir(runDir, { recursive: true });
 
-    const args = this.buildArgs(req, runDir);
+    const systemPromptPath = join(runDir, `${req.prompt.phaseId}.system.md`);
+    await writeFile(systemPromptPath, req.prompt.systemPrompt, "utf8");
+    const args = this.buildArgs(req, runDir, systemPromptPath);
     const started = Date.now();
 
     const child = this.spawner(this.bin, args, { cwd: req.prompt.cwd, env: process.env });
+    child.stdin?.end(req.prompt.userPrompt);
 
     const transcript = createWriteStream(transcriptPath, { flags: "a" });
     const stderrFatalChunks: string[] = [];
@@ -160,6 +163,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
       value: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
     };
     let sessionId: string | undefined;
+    let closed = false;
 
     const emit = (event: RuntimeEvent): void => {
       req.onEvent?.(event);
@@ -168,6 +172,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
     const stdout = child.stdout;
     const stderr = child.stderr;
     if (!stdout || !stderr) {
+      terminateChild(child, () => closed);
       throw new Error("Failed to capture stdio from claude subprocess");
     }
 
@@ -190,7 +195,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
     });
 
     const abortHandler = (): void => {
-      if (!child.killed) child.kill("SIGTERM");
+      terminateChild(child, () => closed);
     };
     req.abortSignal?.addEventListener("abort", abortHandler, { once: true });
 
@@ -199,13 +204,16 @@ export class ClaudeCliRuntime implements AgentRuntime {
       ? setTimeout(() => {
           timedOut = true;
           emit({ type: "error", message: `Timed out after ${this.timeoutMs}ms` });
-          if (!child.killed) child.kill("SIGTERM");
+          terminateChild(child, () => closed);
         }, this.timeoutMs)
       : undefined;
 
     const exitInfo: { code: number; signal: NodeJS.Signals | null } = await new Promise(
       (resolveExit) => {
-        child.on("close", (code, signal) => resolveExit({ code: code ?? -1, signal }));
+        child.on("close", (code, signal) => {
+          closed = true;
+          resolveExit({ code: code ?? -1, signal });
+        });
         child.on("error", (err) => {
           emit({ type: "error", message: `Failed to spawn claude: ${err.message}` });
           resolveExit({ code: -1, signal: null });
@@ -241,17 +249,19 @@ export class ClaudeCliRuntime implements AgentRuntime {
     };
   }
 
-  buildArgs(req: InvokeRequest, runDir: string): string[] {
+  buildArgs(req: InvokeRequest, runDir: string, systemPromptPath?: string): string[] {
     const { prompt } = req;
     const override = this.phaseOverrides[prompt.phaseId] ?? {};
     const args: string[] = [
       "-p",
-      prompt.userPrompt,
+      "--input-format",
+      "text",
       "--output-format",
       "stream-json",
       "--verbose",
-      "--append-system-prompt",
-      prompt.systemPrompt,
+      ...(systemPromptPath
+        ? ["--append-system-prompt-file", systemPromptPath]
+        : ["--append-system-prompt", prompt.systemPrompt]),
       "--model",
       prompt.model,
       "--permission-mode",
@@ -386,6 +396,14 @@ function mergeUsage(current: TokenUsage, usage: ClaudeUsage): TokenUsage {
       usage.cache_creation_input_tokens ?? 0,
     ),
   };
+}
+
+function terminateChild(child: ChildProcess, isClosed: () => boolean): void {
+  if (isClosed() || child.killed) return;
+  child.kill("SIGTERM");
+  setTimeout(() => {
+    if (!isClosed()) child.kill("SIGKILL");
+  }, 1_000).unref();
 }
 
 /**
