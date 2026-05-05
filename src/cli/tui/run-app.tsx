@@ -136,10 +136,18 @@ export function RunApp(props: RunAppProps) {
         state.decideGate({ status: "rejected", reason: "rejected at gate" });
       return;
     }
-    // Paused (failed/halted) — q/esc/enter dismisses the alt-screen.
-    if (state.paused() && (key.name === "q" || key.name === "escape" || key.name === "return")) {
-      state.dismiss();
-      return;
+    // Paused (terminal status — completed/failed/halted) — review state.
+    // Stop any renderable-level handlers from interpreting review keystrokes
+    // (OpenTUI dispatches global listeners first, then renderable handlers
+    // unless the event is preventDefault'd; without this, unhandled letters
+    // bubble down into renderables and surface as scrollback artefacts).
+    // Our scroll/expand keys still work because our handler runs first.
+    if (state.paused()) {
+      key.preventDefault();
+      if (key.name === "q" || key.name === "escape" || key.name === "return") {
+        state.dismiss();
+        return;
+      }
     }
     // Collapsible toggle: `e` expands the next collapsed thing in
     // scroll order; `c` collapses everything back. Two distinct keys
