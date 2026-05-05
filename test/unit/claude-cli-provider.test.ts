@@ -213,8 +213,8 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     const systemPromptPath = capturedArgs[capturedArgs.indexOf("--system-prompt-file") + 1];
     if (!systemPromptPath) throw new Error("missing --system-prompt-file value");
     const systemPrompt = await readFile(systemPromptPath, "utf8");
-    expect(systemPrompt).toContain("Use Summary, Problem, Options.");
-    expect(systemPrompt).toContain("Do not call a Skill tool");
+    expect(systemPrompt).not.toContain("Use Summary, Problem, Options.");
+    expect(capturedArgs).toContain("mcp__ordin__Skill");
     expect(capturedArgs).toContain("--tools");
     expect(capturedArgs[capturedArgs.indexOf("--tools") + 1]).toBe("");
     expect(capturedArgs).toContain("--mcp-config");
@@ -232,6 +232,49 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     expect(capturedArgs).not.toContain("--disable-slash-commands");
     expect(capturedArgs).toContain("--effort");
     expect(capturedArgs[capturedArgs.indexOf("--effort") + 1]).toBe("medium");
+  });
+
+  it("loads a skill body via the MCP-exposed Skill tool", async () => {
+    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
+    const provider = new QueueProvider([
+      {
+        texts: [],
+        toolCall: { id: "t1", name: "Skill", input: { name: "rfc-template" } },
+        tokens: ZERO_TOKENS,
+      },
+      { texts: ["done"], tokens: ZERO_TOKENS },
+    ]);
+    const runtime = new ClaudeCliProviderRuntime({
+      bin: "claude",
+      runsDirFallback: runsDir,
+      provider,
+      maxSteps: 5,
+    });
+    const events: RuntimeEvent[] = [];
+
+    const result = await runtime.invoke({
+      runId: "run1",
+      prompt: makePrompt({
+        tools: ["Read"],
+        skills: [
+          {
+            name: "rfc-template",
+            description: "RFC guidance",
+            body: "Use Summary, Problem, Options.",
+            source: "/harness/skills/rfc-template/SKILL.md",
+          },
+        ],
+      }),
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(result.status).toBe("ok");
+    const skillResult = events.find(
+      (e): e is Extract<RuntimeEvent, { type: "tool.result" }> =>
+        e.type === "tool.result" && e.id === "t1",
+    );
+    expect(skillResult?.ok).toBe(true);
+    expect(skillResult?.result).toBe("Use Summary, Problem, Options.");
   });
 
   it("emits tool events, dispatches through ToolDispatcher, and stops at final", async () => {
@@ -459,7 +502,9 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
               JSON.stringify({
                 type: "assistant",
                 message: {
-                  content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }],
+                  content: [
+                    { type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } },
+                  ],
                 },
               }),
             );

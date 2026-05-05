@@ -59,103 +59,28 @@ Likely files when picked up:
 - `src/worker/runtimes/shared/` (new module for the policy class)
 - `src/worker/runtimes/claude-cli-provider.ts`, `scripted/index.ts` (call sites)
 
-## 2. Decide Skill Loading Strategy
+## 2. Skill Loading via MCP-Exposed `Skill`
 
-Status: works, but not equivalent to stable runtime.
+Status: done.
 
-Current provider behavior:
+Provider lists skill names + descriptions in the system prompt and exposes
+`Skill` via the schema-only MCP server. Bodies are no longer inlined; the model
+calls `Skill { name }` to load on demand. ordin's `ToolDispatcher` serves the
+SKILL.md body. Matches the agentskills.io activation pattern; same shape as
+stable runtime's plugin system, with ordin owning the catalog and loader.
 
-- Composer still lists available skill names/descriptions in the user prompt.
-- Provider then inlines full skill bodies into the provider system prompt.
-- Provider prompt tells Claude not to call `Skill`.
+## 3. Tier/Effort Mapping
 
-This is reliable, but loses progressive disclosure and increases every first
-turn prompt. Stable `claude-cli` instead uses Claude Code native plugin/skill
-discovery through `--plugin-dir <harnessRoot>`.
+Status: done. `effortForTier` extracted from `claude-cli.ts` for shared use;
+provider passes `--effort low|medium|high`.
 
-Options:
+## 4. Per-Phase Claude Provider Overrides
 
-1. Keep inline skills for provider v1.
-   - Pros: simple; no extra tool call; avoids Claude trying to read harness
-     paths outside the workspace.
-   - Cons: larger prompt; not equivalent to stable runtime; no progressive
-     disclosure.
-
-2. Expose `Skill` through schema-only MCP.
-   - Pros: restores provider-owned progressive disclosure; works like
-     `AiSdkRuntime` and `ToolDispatcher`.
-   - Cons: Claude may spend an extra turn loading a skill; needs prompt cleanup
-     so the model knows to call `Skill`.
-
-3. Pass `--plugin-dir <harnessRoot>` as well.
-   - Pros: closest to stable Claude Code behavior.
-   - Cons: reintroduces Claude Code native skill machinery while the provider is
-     trying to own the loop; may conflict with schema-only MCP and cwd
-     boundaries.
-
-Recommendation:
-
-Use option 2 first. It validates ordin-owned skill activation across runtimes and
-keeps the provider architecture honest.
-
-Implementation notes:
-
-- Stop inlining full skill bodies in `buildProviderSystemPrompt`.
-- Restore wording that says available skills can be loaded with `Skill`.
-- Add `Skill` to the MCP tool list when `req.prompt.skills.length > 0`, even if
-  the workflow phase does not list `Skill` in `allowed_tools`.
-- Or explicitly include `Skill` in workflow allowed tools for phases whose
-  agents declare skills. Pick one rule and make it deterministic.
-- Ensure the `Skill` tool result includes the skill body and enough metadata
-  (`name`, `description`) for Claude to use it.
-- Add tests proving a provider tool loop can call `Skill` and then write the
-  expected artifact.
-
-Likely files:
-
-- `src/worker/runtimes/claude-cli-provider.ts`
-- `src/worker/runtimes/claude-provider-mcp.ts`
-- `src/worker/runtimes/shared/dispatcher.ts`
-- `test/unit/claude-cli-provider.test.ts`
-
-## 3. Add Tier/Effort Mapping
-
-Status: missing.
-
-Stable `claude-cli` maps ordin tier to Claude Code `--effort`:
-
-- `S` -> `low`
-- `M` -> `medium`
-- `L` -> `high`
-
-Provider currently does not pass `--effort`, so it may use Claude Code defaults.
-
-Implementation notes:
-
-- Reuse or extract `ClaudeCliRuntime.effortForTier`.
-- Add `--effort <level>` in `ClaudeCliStreamProvider.buildArgs`.
-- Unit-test that provider args include expected effort for S/M/L.
-
-Likely files:
-
-- `src/worker/runtimes/claude-cli.ts`
-- `src/worker/runtimes/claude-cli-provider.ts`
-- `test/unit/claude-cli-provider.test.ts`
-
-## 4. Add Per-Phase Claude Provider Overrides
-
-Status: missing.
-
-Stable `claude-cli` supports:
-
-- `phases.<phase>.fallback_model`
-- `phases.<phase>.max_turns`
-
-Provider supports only:
-
-- `timeout_ms`
-- `max_steps`
-- `protocol_debug`
+Status: done. `ClaudeCliProviderConfigSchema.phases.<id>.{fallback_model,max_steps}`.
+`fallback_model` flows through to `claude -p` (omitted when same as main
+model); `max_steps` overrides the provider-loop ceiling. `max_turns` is
+intentionally not supported — the provider kills the child after each tool use
+so it has no analog.
 
 Implementation notes:
 
@@ -173,36 +98,13 @@ Likely files:
 - `src/worker/runtimes/claude-cli-provider.ts`
 - `test/unit/claude-cli-provider.test.ts`
 
-## 5. Improve Failure Classification
+## 5. Failure Classification Parity
 
-Status: provider collapses most failures to `kind: "model"`.
-
-Stable `claude-cli` classifies failures into:
-
-- `rate_limit`
-- `auth`
-- `tool`
-- `model`
-- `timeout`
-- `crash`
-- `unknown`
-
-Provider should classify the same way so orchestrator retry/diagnostic behavior
-does not depend on runtime choice.
-
-Implementation notes:
-
-- Reuse or extract `classifyFailure` from `claude-cli.ts`.
-- Keep provider-specific malformed-protocol failures distinguishable, probably
-  `kind: "model"` or `kind: "unknown"` with `retryable: false`.
-- Mark timeout-triggered child kills as `timeout`.
-- Unit-test auth, rate limit, bad tool request, timeout, and crash paths.
-
-Likely files:
-
-- `src/worker/runtimes/claude-cli.ts`
-- `src/worker/runtimes/claude-cli-provider.ts`
-- `test/unit/claude-cli-provider.test.ts`
+Status: done. Provider catch reuses `classifyFailure` from `claude-cli.ts`, so
+`rate_limit`, `auth`, `tool`, `timeout`, `crash`, `unknown` surface identically
+across runtimes. `ProviderTimeoutError` propagates timer-fired child kills as
+`kind: timeout, retryable: true`. The "tool not allowed" matcher was broadened
+to include `is not allowed` so policy-violation messages classify as `tool`.
 
 ## 6. Partial Streaming and Hook Events
 

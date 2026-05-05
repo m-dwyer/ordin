@@ -48,10 +48,9 @@ export function buildTools(
 }
 
 function skillTool(skills: readonly Skill[]): ToolSet[string] {
-  const known = skills.map((s) => s.name).join(", ");
   return tool({
     inputSchema: z.object({
-      name: z.string().describe(`Name of the skill to load. Available: ${known}.`),
+      name: z.string().describe("Name of the skill to load. Catalog is in the user prompt."),
     }),
     execute: async (input) => executeSkill(skills, input),
   });

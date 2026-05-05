@@ -192,7 +192,10 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     const started = Date.now();
     const override = this.phaseOverrides[req.prompt.phaseId] ?? {};
     const maxSteps = override.max_steps ?? this.maxSteps;
-    const toolNames = req.prompt.tools.map((spec) => parseToolSpec(spec).name);
+    const toolNames = [...new Set(req.prompt.tools.map((spec) => parseToolSpec(spec).name))];
+    if (req.prompt.skills.length > 0 && !toolNames.includes("Skill")) {
+      toolNames.push("Skill");
+    }
     const allowedTools = new Set(toolNames);
     const messages: ProviderMessage[] = [{ role: "user", content: req.prompt.userPrompt }];
     let tokens = ZERO_TOKENS;
@@ -214,7 +217,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
         let turn: ClaudeProviderTurn;
         try {
           turn = await this.provider.complete({
-            systemPrompt: buildProviderSystemPrompt(req),
+            systemPrompt: buildProviderSystemPrompt(req, toolNames),
             systemPromptFile: join(runDir, `${req.prompt.phaseId}.provider-system.${step}.md`),
             mcpConfigFile: join(runDir, `${req.prompt.phaseId}.provider-mcp.json`),
             messages,
@@ -407,28 +410,8 @@ export function interpretClaudeStreamLine(line: string): {
   };
 }
 
-function buildProviderSystemPrompt(req: InvokeRequest): string {
-  const tools = req.prompt.tools.length > 0 ? req.prompt.tools.join(", ") : "(none)";
-  const skillSection =
-    req.prompt.skills.length > 0
-      ? [
-          "",
-          "## Loaded skills",
-          "The phase skills are already loaded below. Do not call a Skill tool and do not read skill files from the harness repo.",
-          ...req.prompt.skills.map((skill) =>
-            [
-              "",
-              `### ${skill.name}`,
-              "",
-              skill.description,
-              "",
-              "```markdown",
-              skill.body,
-              "```",
-            ].join("\n"),
-          ),
-        ].join("\n")
-      : "";
+function buildProviderSystemPrompt(req: InvokeRequest, allowedTools: readonly string[]): string {
+  const tools = allowedTools.length > 0 ? allowedTools.join(", ") : "(none)";
   return [
     req.prompt.systemPrompt,
     "",
@@ -438,7 +421,6 @@ function buildProviderSystemPrompt(req: InvokeRequest): string {
     "For file tools, use paths relative to the working directory. Do not read or write outside the working directory.",
     "After a tool result is returned, continue from that result. When done, provide the final response as normal text.",
     `Allowed tools for this phase: ${tools}`,
-    skillSection,
   ].join("\n");
 }
 
