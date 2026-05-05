@@ -56,6 +56,7 @@ export async function buildRuntime(
     case "claude-cli-provider": {
       const { ClaudeCliProviderRuntime } = await import("./claude-cli-provider");
       return ClaudeCliProviderRuntime.fromConfig(configSlice, {
+        harnessRoot: ctx.harnessRoot,
         runsDirFallback: ctx.runsDir,
       });
     }

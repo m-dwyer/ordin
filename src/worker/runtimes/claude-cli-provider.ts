@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
+import type { ClaudeProviderMcpEntrypoint } from "./claude-provider-mcp";
 import { ToolDispatcher } from "./shared/dispatcher";
 import { parseToolSpec } from "./shared/tools";
 import type {
@@ -16,6 +17,8 @@ import type {
   RuntimeEvent,
   TokenUsage,
 } from "./types";
+
+type _KeepClaudeProviderMcpEntrypointCruised = ClaudeProviderMcpEntrypoint;
 
 export const ClaudeCliProviderConfigSchema = z.object({
   bin: z.string().min(1),
@@ -40,16 +43,19 @@ export interface ClaudeProviderTurn {
   readonly texts: readonly string[];
   readonly toolCall?: ClaudeToolCall;
   readonly tokens: TokenUsage;
+  readonly sessionId?: string;
 }
 
 export interface ClaudeModelProvider {
   complete(req: {
     readonly systemPrompt: string;
     readonly systemPromptFile?: string;
+    readonly mcpConfigFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
     readonly cwd: string;
     readonly tools: readonly string[];
+    readonly sessionId?: string;
     readonly abortSignal?: AbortSignal;
     readonly onRawLine?: (line: string) => void;
   }): Promise<ClaudeProviderTurn>;
@@ -57,6 +63,7 @@ export interface ClaudeModelProvider {
 
 export interface ClaudeCliProviderRuntimeOptions {
   readonly bin: string;
+  readonly harnessRoot?: string;
   readonly timeoutMs?: number;
   readonly maxSteps?: number;
   readonly protocolDebug?: boolean;
@@ -106,10 +113,11 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
   readonly capabilities: RuntimeCapabilities = {
     nativeSkillDiscovery: false,
     streaming: true,
-    mcpSupport: false,
+    mcpSupport: true,
     maxContextTokens: 200_000,
   };
 
+  private readonly harnessRoot?: string;
   private readonly maxSteps: number;
   private readonly protocolDebug: boolean;
   private readonly runsDirFallback: string;
@@ -117,6 +125,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
   private readonly dispatcher: ToolDispatcher;
 
   constructor(opts: ClaudeCliProviderRuntimeOptions) {
+    this.harnessRoot = opts.harnessRoot;
     this.maxSteps = opts.maxSteps ?? 40;
     this.protocolDebug = opts.protocolDebug ?? false;
     this.runsDirFallback = opts.runsDirFallback ?? join(homedir(), ".ordin", "runs");
@@ -125,6 +134,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
       opts.provider ??
       new ClaudeCliStreamProvider({
         bin: opts.bin,
+        ...(opts.harnessRoot ? { harnessRoot: opts.harnessRoot } : {}),
         ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
         spawner: opts.spawner ?? defaultSpawner,
       });
@@ -157,6 +167,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     const allowedTools = new Set(toolNames);
     const messages: ProviderMessage[] = [{ role: "user", content: req.prompt.userPrompt }];
     let tokens = ZERO_TOKENS;
+    let sessionId: string | undefined;
 
     const emit = (event: RuntimeEvent): void => {
       transcript.write(`${JSON.stringify({ kind: "event", event })}\n`);
@@ -170,16 +181,49 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
       for (let step = 1; step <= this.maxSteps; step++) {
         if (req.abortSignal?.aborted) throw new Error("aborted");
         emit({ type: "assistant.thinking" });
-        const turn = await this.provider.complete({
-          systemPrompt: buildProviderSystemPrompt(req),
-          systemPromptFile: join(runDir, `${req.prompt.phaseId}.provider-system.${step}.md`),
-          messages,
-          model: req.prompt.model,
-          cwd: req.prompt.cwd,
-          tools: toolNames,
-          ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-          onRawLine: (line) => debug({ direction: "provider.out", step, line }),
+        const turnStarted = Date.now();
+        let turn: ClaudeProviderTurn;
+        try {
+          turn = await this.provider.complete({
+            systemPrompt: buildProviderSystemPrompt(req),
+            systemPromptFile: join(runDir, `${req.prompt.phaseId}.provider-system.${step}.md`),
+            mcpConfigFile: join(runDir, `${req.prompt.phaseId}.provider-mcp.json`),
+            messages,
+            model: req.prompt.model,
+            cwd: req.prompt.cwd,
+            tools: toolNames,
+            ...(sessionId ? { sessionId } : {}),
+            ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+            onRawLine: (line) => debug({ direction: "provider.out", step, line }),
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          emit({
+            type: "timing",
+            name: "ordin.provider.turn",
+            durationMs: Date.now() - turnStarted,
+            status: "error",
+            error: message,
+            attributes: {
+              "ordin.provider.step": step,
+              "ordin.provider.resumed": !!sessionId,
+              "ordin.provider.tool_requested": false,
+            },
+          });
+          throw err;
+        }
+        emit({
+          type: "timing",
+          name: "ordin.provider.turn",
+          durationMs: Date.now() - turnStarted,
+          status: "ok",
+          attributes: {
+            "ordin.provider.step": step,
+            "ordin.provider.resumed": !!sessionId,
+            "ordin.provider.tool_requested": !!turn.toolCall,
+          },
         });
+        if (turn.sessionId) sessionId = turn.sessionId;
         tokens = mergeUsage(tokens, turn.tokens);
         if (tokens.input || tokens.output || tokens.cacheReadInput || tokens.cacheCreationInput) {
           emit({ type: "tokens", usage: tokens });
@@ -201,37 +245,51 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
         }
 
         const toolCall = turn.toolCall;
-        if (!allowedTools.has(toolCall.name)) {
-          throw new Error(`Tool "${toolCall.name}" is not allowed for this phase.`);
+        const ordinToolName = ordinToolNameFromClaude(toolCall.name);
+        if (!allowedTools.has(ordinToolName)) {
+          throw new Error(`Tool "${ordinToolName}" is not allowed for this phase.`);
         }
 
         emit({
           type: "tool.use",
           id: toolCall.id,
-          name: toolCall.name,
+          name: ordinToolName,
           input: toolCall.input,
         });
         let result: string;
+        let toolOk = true;
+        const dispatchStarted = Date.now();
         try {
-          result = await this.dispatcher.dispatch(toolCall.name, toolCall.input, {
+          result = await this.dispatcher.dispatch(ordinToolName, toolCall.input, {
             cwd: req.prompt.cwd,
             skills: req.prompt.skills,
           });
           emit({ type: "tool.result", id: toolCall.id, ok: true, ...(result ? { result } : {}) });
         } catch (err) {
           result = err instanceof Error ? err.message : String(err);
+          toolOk = false;
           emit({ type: "tool.result", id: toolCall.id, ok: false, result });
         }
+        emit({
+          type: "timing",
+          name: `ordin.tool.${ordinToolName}`,
+          durationMs: Date.now() - dispatchStarted,
+          status: toolOk ? "ok" : "error",
+          ...(toolOk ? {} : { error: result }),
+          attributes: {
+            "ordin.tool.name": ordinToolName,
+          },
+        });
 
         const assistantText = [
           ...turn.texts,
-          `Requested tool ${toolCall.name} with id ${toolCall.id}.`,
+          `Requested tool ${ordinToolName} with id ${toolCall.id}.`,
         ].join("\n\n");
         messages.push({ role: "assistant", content: assistantText });
         messages.push({
           role: "user",
           content: [
-            `Tool result for ${toolCall.name} (${toolCall.id}):`,
+            `Tool result for ${ordinToolName} (${toolCall.id}):`,
             result || "(no output)",
             "",
             "Continue. If you need another tool, call exactly one tool. Otherwise provide the final answer.",
@@ -261,6 +319,7 @@ export function interpretClaudeStreamLine(line: string): {
   readonly thinking: boolean;
   readonly toolCall?: ClaudeToolCall;
   readonly tokens?: TokenUsage;
+  readonly sessionId?: string;
 } {
   let parsed: unknown;
   try {
@@ -276,8 +335,11 @@ export function interpretClaudeStreamLine(line: string): {
   let thinking = false;
   let toolCall: ClaudeToolCall | undefined;
   let tokens: TokenUsage | undefined;
+  let sessionId: string | undefined;
 
-  if (event.type === "assistant" && event.message?.content) {
+  if (event.type === "system" && event.subtype === "init" && event.session_id) {
+    sessionId = event.session_id;
+  } else if (event.type === "assistant" && event.message?.content) {
     for (const block of event.message.content) {
       if (block.type === "text" && typeof block.text === "string") {
         texts.push(block.text);
@@ -294,9 +356,16 @@ export function interpretClaudeStreamLine(line: string): {
     if (event.message.usage) tokens = usageFromClaude(event.message.usage);
   } else if (event.type === "result" && event.usage) {
     tokens = usageFromClaude(event.usage);
+    if (event.session_id) sessionId = event.session_id;
   }
 
-  return { texts, thinking, ...(toolCall ? { toolCall } : {}), ...(tokens ? { tokens } : {}) };
+  return {
+    texts,
+    thinking,
+    ...(toolCall ? { toolCall } : {}),
+    ...(tokens ? { tokens } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  };
 }
 
 function buildProviderSystemPrompt(req: InvokeRequest): string {
@@ -336,17 +405,20 @@ function buildProviderSystemPrompt(req: InvokeRequest): string {
 
 interface ClaudeCliStreamProviderOptions {
   readonly bin: string;
+  readonly harnessRoot?: string;
   readonly timeoutMs?: number;
   readonly spawner: ProviderSpawner;
 }
 
 class ClaudeCliStreamProvider implements ClaudeModelProvider {
   private readonly bin: string;
+  private readonly harnessRoot?: string;
   private readonly timeoutMs?: number;
   private readonly spawner: ProviderSpawner;
 
   constructor(opts: ClaudeCliStreamProviderOptions) {
     this.bin = opts.bin;
+    this.harnessRoot = opts.harnessRoot;
     this.timeoutMs = opts.timeoutMs;
     this.spawner = opts.spawner;
   }
@@ -354,19 +426,22 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
   async complete(req: {
     readonly systemPrompt: string;
     readonly systemPromptFile?: string;
+    readonly mcpConfigFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
     readonly cwd: string;
     readonly tools: readonly string[];
+    readonly sessionId?: string;
     readonly abortSignal?: AbortSignal;
     readonly onRawLine?: (line: string) => void;
   }): Promise<ClaudeProviderTurn> {
     if (req.systemPromptFile) await writeFile(req.systemPromptFile, req.systemPrompt, "utf8");
-    const child = this.spawner(this.bin, this.buildArgs(req), {
+    const mcpConfigFile = await this.writeMcpConfig(req);
+    const child = this.spawner(this.bin, this.buildArgs({ ...req, mcpConfigFile }), {
       cwd: req.cwd,
       env: process.env,
     });
-    child.stdin?.end(renderMessages(req.messages));
+    child.stdin?.end(renderMessages(messagesForTurn(req.messages, !!req.sessionId)));
     const stdout = child.stdout;
     const stderr = child.stderr;
     if (!stdout || !stderr) {
@@ -376,6 +451,7 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     const texts: string[] = [];
     let toolCall: ClaudeToolCall | undefined;
     let tokens = ZERO_TOKENS;
+    let sessionId = req.sessionId;
     const stderrChunks: string[] = [];
     let closed = false;
 
@@ -393,6 +469,7 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
       const interpreted = interpretClaudeStreamLine(line);
       texts.push(...interpreted.texts);
       if (interpreted.tokens) tokens = mergeUsage(tokens, interpreted.tokens);
+      if (interpreted.sessionId) sessionId = interpreted.sessionId;
       if (interpreted.toolCall && !toolCall) {
         toolCall = interpreted.toolCall;
         kill();
@@ -430,17 +507,24 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
       );
     }
 
-    return { texts, ...(toolCall ? { toolCall } : {}), tokens };
+    return {
+      texts,
+      ...(toolCall ? { toolCall } : {}),
+      tokens,
+      ...(sessionId ? { sessionId } : {}),
+    };
   }
 
   private buildArgs(req: {
     readonly systemPrompt: string;
     readonly systemPromptFile?: string;
+    readonly mcpConfigFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
     readonly tools: readonly string[];
+    readonly sessionId?: string;
   }): string[] {
-    const nativeTools = req.tools.filter((name) => name !== "Skill");
+    const mcpToolNames = req.tools.map((name) => claudeMcpToolName(name));
     const args = [
       "-p",
       "--input-format",
@@ -457,21 +541,65 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
       "default",
       "--setting-sources",
       "project",
-      "--no-session-persistence",
       "--strict-mcp-config",
     ];
-    if (nativeTools.length > 0) {
-      args.push("--tools", nativeTools.join(","));
-      args.push("--allowed-tools", ...nativeTools);
-    } else {
-      args.push("--tools", "");
+    if (req.sessionId) {
+      args.push("--resume", req.sessionId);
+    }
+    if (req.mcpConfigFile) {
+      args.push("--mcp-config", req.mcpConfigFile);
+    }
+    args.push("--tools", "");
+    if (mcpToolNames.length > 0) {
+      args.push("--allowed-tools", ...mcpToolNames);
     }
     return args;
+  }
+
+  private async writeMcpConfig(req: {
+    readonly tools: readonly string[];
+    readonly mcpConfigFile?: string;
+  }): Promise<string | undefined> {
+    if (!this.harnessRoot || !req.mcpConfigFile) return undefined;
+    const toolsFile = req.mcpConfigFile.replace(/\.json$/, ".tools.json");
+    await writeFile(toolsFile, JSON.stringify(req.tools), "utf8");
+    const config = {
+      mcpServers: {
+        ordin: {
+          command: process.execPath,
+          args: [
+            join(this.harnessRoot, "src", "worker", "runtimes", "claude-provider-mcp.ts"),
+            "--tools-json",
+            toolsFile,
+          ],
+        },
+      },
+    };
+    await writeFile(req.mcpConfigFile, JSON.stringify(config), "utf8");
+    return req.mcpConfigFile;
   }
 }
 
 function renderMessages(messages: readonly ProviderMessage[]): string {
   return messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n");
+}
+
+function messagesForTurn(
+  messages: readonly ProviderMessage[],
+  resumed: boolean,
+): readonly ProviderMessage[] {
+  if (!resumed) return messages;
+  const latest = messages[messages.length - 1];
+  return latest ? [latest] : [];
+}
+
+function claudeMcpToolName(name: string): string {
+  return `mcp__ordin__${name}`;
+}
+
+function ordinToolNameFromClaude(name: string): string {
+  const match = /^mcp__ordin__(.+)$/.exec(name);
+  return match?.[1] ?? name;
 }
 
 function terminateChild(child: ProviderChildProcess, isClosed: () => boolean): void {
@@ -510,6 +638,8 @@ function closeStream(stream: NodeJS.WritableStream): Promise<void> {
 
 interface ClaudeStreamEvent {
   type?: string;
+  subtype?: string;
+  session_id?: string;
   message?: { content?: ClaudeContentBlock[]; usage?: ClaudeUsage };
   usage?: ClaudeUsage;
 }

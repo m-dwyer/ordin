@@ -34,6 +34,7 @@ export function nonTtyRunSession(): NonTtySession {
       case "phase.completed":
       case "agent.tokens":
       case "agent.thinking":
+      case "agent.timing":
       case "gate.requested":
       case "gate.decided":
         return;

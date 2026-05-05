@@ -1,5 +1,6 @@
 import type { PhasePreview } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
+import { recordSpan } from "../observability/spans";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -79,6 +80,26 @@ export class PhaseRunner {
       prompt: preview.prompt,
       onEvent: (event) => {
         events.push(event);
+        if (event.type === "timing") {
+          recordSpan(
+            event.name,
+            {
+              "ordin.run_id": context.runId,
+              "ordin.phase_id": preview.phase.id,
+              "ordin.iteration": context.iteration,
+              "ordin.runtime": runtimeName,
+              "ordin.model": preview.prompt.model,
+              "ordin.timing.name": event.name,
+              "ordin.duration_ms": event.durationMs,
+              "langfuse.observation.input": timingInput(event),
+              "langfuse.observation.output": timingOutput(event),
+              ...(event.attributes ?? {}),
+            },
+            event.durationMs,
+            event.status,
+            event.error,
+          );
+        }
         emit(promoteRuntimeEvent(event, context.runId, preview.phase.id));
       },
       ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
@@ -128,3 +149,20 @@ export function invokeWithRuntime(runtime: AgentRuntime): RuntimeInvoke {
 }
 
 export type { Phase };
+
+function timingInput(event: RuntimeEvent): string {
+  const attributes = event.type === "timing" ? (event.attributes ?? {}) : {};
+  const formatted = Object.entries(attributes)
+    .filter(([key]) => !key.startsWith("langfuse."))
+    .map(([key, value]) => `${key}=${String(value)}`);
+  return [`name=${event.type === "timing" ? event.name : "unknown"}`, ...formatted].join("\n");
+}
+
+function timingOutput(event: RuntimeEvent): string {
+  if (event.type !== "timing") return "status=unknown";
+  return [
+    `status=${event.status ?? "ok"}`,
+    `duration_ms=${event.durationMs}`,
+    ...(event.error ? [`error=${event.error}`] : []),
+  ].join("\n");
+}

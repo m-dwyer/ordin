@@ -95,6 +95,16 @@ export type RunEvent =
       readonly parentToolUseId?: string;
     }
   | {
+      readonly type: "agent.timing";
+      readonly runId: string;
+      readonly phaseId: string;
+      readonly name: string;
+      readonly durationMs: number;
+      readonly status?: "ok" | "error";
+      readonly error?: string;
+      readonly attributes?: Record<string, string | number | boolean>;
+    }
+  | {
       readonly type: "agent.tokens";
       readonly runId: string;
       readonly phaseId: string;

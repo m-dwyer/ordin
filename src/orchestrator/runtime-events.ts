@@ -19,6 +19,8 @@ export function promoteRuntimeEvent(event: RuntimeEvent, runId: string, phaseId:
       return { ...event, type: "agent.tool.use", runId, phaseId };
     case "tool.result":
       return { ...event, type: "agent.tool.result", runId, phaseId };
+    case "timing":
+      return { ...event, type: "agent.timing", runId, phaseId };
     case "tokens":
       return { ...event, type: "agent.tokens", runId, phaseId };
     case "error":

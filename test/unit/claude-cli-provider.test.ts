@@ -168,6 +168,7 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     let child: FakeChild | undefined;
     const runtime = new ClaudeCliProviderRuntime({
       bin: "claude",
+      harnessRoot: "/harness",
       runsDirFallback: runsDir,
       maxSteps: 1,
       spawner: (_bin, args) => {
@@ -215,8 +216,19 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     expect(systemPrompt).toContain("Use Summary, Problem, Options.");
     expect(systemPrompt).toContain("Do not call a Skill tool");
     expect(capturedArgs).toContain("--tools");
-    expect(capturedArgs[capturedArgs.indexOf("--tools") + 1]).toBe("Read,Bash");
+    expect(capturedArgs[capturedArgs.indexOf("--tools") + 1]).toBe("");
+    expect(capturedArgs).toContain("--mcp-config");
+    const mcpConfigPath = capturedArgs[capturedArgs.indexOf("--mcp-config") + 1];
+    if (!mcpConfigPath) throw new Error("missing --mcp-config value");
+    const mcpConfig = JSON.parse(await readFile(mcpConfigPath, "utf8")) as {
+      mcpServers?: { ordin?: { command?: string; args?: string[] } };
+    };
+    expect(mcpConfig.mcpServers?.ordin?.args?.[0]).toBe(
+      "/harness/src/worker/runtimes/claude-provider-mcp.ts",
+    );
     expect(capturedArgs).toContain("--allowed-tools");
+    expect(capturedArgs).toContain("mcp__ordin__Read");
+    expect(capturedArgs).toContain("mcp__ordin__Bash");
     expect(capturedArgs).not.toContain("--disable-slash-commands");
   });
 
@@ -225,6 +237,7 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     const provider = new QueueProvider([
       {
         texts: ["I will inspect the file."],
+        sessionId: "session-1",
         toolCall: { id: "t1", name: "Read", input: { file_path: "README.md" } },
         tokens: ZERO_TOKENS,
       },
@@ -251,6 +264,17 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     expect(dispatcher.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
     expect(events).toEqual([
       { type: "assistant.thinking" },
+      {
+        type: "timing",
+        name: "ordin.provider.turn",
+        durationMs: expect.any(Number),
+        status: "ok",
+        attributes: {
+          "ordin.provider.step": 1,
+          "ordin.provider.resumed": false,
+          "ordin.provider.tool_requested": true,
+        },
+      },
       { type: "assistant.text", text: "I will inspect the file." },
       {
         type: "tool.use",
@@ -264,11 +288,104 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
         ok: true,
         result: 'result:Read:{"file_path":"README.md"}',
       },
+      {
+        type: "timing",
+        name: "ordin.tool.Read",
+        durationMs: expect.any(Number),
+        status: "ok",
+        attributes: {
+          "ordin.tool.name": "Read",
+        },
+      },
       { type: "assistant.thinking" },
+      {
+        type: "timing",
+        name: "ordin.provider.turn",
+        durationMs: expect.any(Number),
+        status: "ok",
+        attributes: {
+          "ordin.provider.step": 2,
+          "ordin.provider.resumed": true,
+          "ordin.provider.tool_requested": false,
+        },
+      },
       { type: "assistant.text", text: "done" },
     ]);
     expect(provider.seen[1]?.some((m) => m.content.includes("Tool result for Read"))).toBe(true);
     expect(await readFile(result.transcriptPath, "utf8")).toContain('"kind":"protocol"');
+  });
+
+  it("resumes the Claude session and normalizes MCP tool names", async () => {
+    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
+    const cwd = await mkdtemp(join(tmpdir(), "claude-provider-cwd-"));
+    const capturedArgs: string[][] = [];
+    const stdinBodies: string[] = [];
+    let spawnCount = 0;
+    const dispatcher = new FakeDispatcher();
+    const runtime = new ClaudeCliProviderRuntime({
+      bin: "claude",
+      harnessRoot: "/harness",
+      runsDirFallback: runsDir,
+      dispatcher,
+      maxSteps: 3,
+      spawner: (_bin, args) => {
+        const index = spawnCount++;
+        capturedArgs.push([...args]);
+        const child = new FakeChild();
+        const chunks: string[] = [];
+        child.stdin.on("data", (chunk: Buffer) => chunks.push(chunk.toString("utf8")));
+        child.stdin.on("finish", () => {
+          stdinBodies[index] = chunks.join("");
+        });
+        setImmediate(() => {
+          if (index === 0) {
+            child.emitLine(
+              JSON.stringify({ type: "system", subtype: "init", session_id: "session-1" }),
+            );
+            child.emitLine(
+              JSON.stringify({
+                type: "assistant",
+                message: {
+                  content: [
+                    {
+                      type: "tool_use",
+                      id: "toolu_1",
+                      name: "mcp__ordin__Read",
+                      input: { file_path: "README.md" },
+                    },
+                  ],
+                },
+              }),
+            );
+            child.emitExit(-1, "SIGTERM");
+          } else {
+            child.emitLine(
+              JSON.stringify({
+                type: "assistant",
+                message: { content: [{ type: "text", text: "done" }] },
+              }),
+            );
+            child.emitExit(0);
+          }
+        });
+        return child;
+      },
+    });
+
+    const result = await runtime.invoke({
+      runId: "run1",
+      prompt: makePrompt({ cwd }),
+    });
+
+    expect(result.status).toBe("ok");
+    expect(capturedArgs).toHaveLength(2);
+    expect(capturedArgs[0]).not.toContain("--resume");
+    expect(capturedArgs[1]).toContain("--resume");
+    expect(capturedArgs[1]?.[capturedArgs[1].indexOf("--resume") + 1]).toBe("session-1");
+    expect(stdinBodies[0]).toContain("USER:\nuser");
+    expect(stdinBodies[1]).toContain("Tool result for Read");
+    expect(stdinBodies[1]).not.toContain("USER:\nuser");
+    expect(dispatcher.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
   });
 
   it("fails when the provider requests a disallowed tool", async () => {

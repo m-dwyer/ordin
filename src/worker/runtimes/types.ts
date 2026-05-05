@@ -128,5 +128,13 @@ export type RuntimeEvent =
       /** Set when the tool result belongs to a subagent (Task tool). */
       readonly parentToolUseId?: string;
     }
+  | {
+      readonly type: "timing";
+      readonly name: string;
+      readonly durationMs: number;
+      readonly status?: "ok" | "error";
+      readonly error?: string;
+      readonly attributes?: Record<string, string | number | boolean>;
+    }
   | { readonly type: "tokens"; readonly usage: TokenUsage }
   | { readonly type: "error"; readonly message: string };

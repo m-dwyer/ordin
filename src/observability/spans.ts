@@ -30,3 +30,19 @@ export function withSpan<T>(
     }
   });
 }
+
+export function recordSpan(
+  name: string,
+  attributes: Attributes,
+  durationMs: number,
+  status: "ok" | "error" = "ok",
+  error?: string,
+): void {
+  const startedAt = Date.now() - Math.max(0, durationMs);
+  const span = tracer.startSpan(name, { attributes, startTime: startedAt });
+  if (status === "error") {
+    span.setStatus({ code: SpanStatusCode.ERROR, ...(error ? { message: error } : {}) });
+    if (error) span.setAttribute("ordin.error", error);
+  }
+  span.end();
+}

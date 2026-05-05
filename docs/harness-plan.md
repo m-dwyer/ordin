@@ -736,6 +736,8 @@ The phases below are additive and only built when the named trigger fires. Don't
 - Dashboard provisioning. Defer until trace shape is observed in real use.
 - Live trace visibility during an active run. Today long-lived run/phase spans are exported when they end, and SDK shutdown flushes them at run teardown. If live progress in Langfuse becomes important, add short-lived child spans around runtime invocation, tool dispatch (`Read`, `Write`, etc.), and gate waits, or tune the OTel batch exporter delay. Batch tuning only helps after spans end; active spans will still not appear as completed observations.
 
+**Provider-runtime note.** `claude-cli-provider` is the experimental path where ordin owns tool execution while Claude Code is only the model backend. It uses Claude Code's stream-json output, schema-only MCP tools, and `--resume` for follow-up turns inside a single phase. ordin still breaks on `tool_use`, dispatches through `ToolDispatcher`, and sends the tool result back to the resumed Claude session. Session lifetime remains phase-scoped so Plan / Build / Review stay separate context boundaries.
+
 **Exit criteria:**
 - Every harness run appears as a Langfuse trace with token counts, durations
 - Disabling tracing is a one-env-var change; harness behavior unchanged with no `LANGFUSE_*` set
