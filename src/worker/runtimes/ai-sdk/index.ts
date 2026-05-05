@@ -3,7 +3,8 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, type StepResult, stepCountIs, type ToolSet } from "ai";
+import { Agent } from "@mastra/core/agent";
+import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
 import type {
   AgentRuntime,
@@ -15,16 +16,18 @@ import type {
 import { buildTools } from "./tools";
 
 /**
- * In-process runtime driven by the Vercel AI SDK against any
- * OpenAI-compatible provider. Today's default is the LiteLLM proxy
- * (Phase 4 eval); swap `baseUrl` to hit OpenAI, Ollama direct, or any
- * other compatible gateway — runtime code doesn't change.
+ * In-process runtime driven by Mastra's `Agent` against any
+ * OpenAI-compatible provider (Mastra wraps the AI SDK internally).
+ * Today's default backs onto the LiteLLM proxy (Phase 4 eval); swap
+ * `baseUrl` to hit OpenAI, Ollama direct, or any other compatible
+ * gateway — runtime code doesn't change.
  *
- * The AI SDK owns the tool loop, retries, abort semantics, and step
- * events. This class handles: capability declaration, prompt shaping,
- * step → `RuntimeEvent` mapping, transcript persistence. ClaudeCliRuntime
- * is the production counterpart (subprocess `claude -p` on Max plan); the
- * orchestrator is indifferent to which runs a phase.
+ * Mastra owns the tool loop, retries, abort semantics, and step events.
+ * This class adapts Mastra's per-step callbacks into the harness's
+ * `RuntimeEvent` stream. The Mastra-Agent boundary is the same one
+ * used at the workflow layer (`MastraEngine`); aligning both layers
+ * behind one library means the eventual LangGraph swap is a single
+ * substitution at each level.
  */
 export interface AiSdkRuntimeConfig {
   /** OpenAI-compatible provider URL. Default: LiteLLM proxy at localhost:4000. */
@@ -49,6 +52,14 @@ export interface AiSdkRuntimeConfig {
    * bypasses its cache. Used by `ordin eval --real-models`.
    */
   bypassCache?: boolean;
+  /**
+   * Test-only escape hatch: drop in a pre-built Mastra-compatible
+   * model (e.g. `MockLanguageModelV3` from `ai/test`). When set,
+   * `baseUrl` / `apiKey` / `modelMap` are unused — the supplied model
+   * receives every `doStream` call. Production paths leave this
+   * undefined and the OpenAI-compatible provider is built per-invoke.
+   */
+  model?: MastraModelConfig;
 }
 
 export const AiSdkRuntimeConfigSchema = z.object({
@@ -85,6 +96,7 @@ export class AiSdkRuntime implements AgentRuntime {
   private readonly modelMap: ReadonlyMap<string, string>;
   private readonly maxSteps: number;
   private readonly bypassCache: boolean;
+  private readonly modelOverride: MastraModelConfig | undefined;
 
   constructor(config: AiSdkRuntimeConfig = {}) {
     this.baseUrl = config.baseUrl ?? "http://localhost:4000";
@@ -93,6 +105,7 @@ export class AiSdkRuntime implements AgentRuntime {
     this.modelMap = config.modelMap ?? new Map();
     this.maxSteps = config.maxSteps ?? 40;
     this.bypassCache = config.bypassCache ?? false;
+    this.modelOverride = config.model;
   }
 
   static fromConfig(raw: unknown, extras: Pick<AiSdkRuntimeConfig, "runsDir"> = {}): AiSdkRuntime {
@@ -122,11 +135,15 @@ export class AiSdkRuntime implements AgentRuntime {
     const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 };
 
     const modelId = this.modelMap.get(req.prompt.model) ?? req.prompt.model;
-    const provider = createOpenAICompatible({
-      name: "ai-sdk-runtime",
-      baseURL: this.baseUrl,
-      apiKey: this.apiKey,
-      ...(this.bypassCache ? { headers: { "cache-control": "no-cache" } } : {}),
+    const model = this.modelOverride ?? this.buildModel(modelId);
+
+    const tools = buildTools(req.prompt.cwd, req.prompt.tools, req.prompt.skills);
+    const agent = new Agent({
+      id: `ordin.${req.prompt.phaseId}`,
+      name: `ordin.${req.prompt.phaseId}`,
+      instructions: req.prompt.systemPrompt,
+      model,
+      tools,
     });
 
     const started = Date.now();
@@ -135,17 +152,13 @@ export class AiSdkRuntime implements AgentRuntime {
     let exitCode = 0;
 
     try {
-      await generateText({
-        model: provider.chatModel(modelId),
-        system: req.prompt.systemPrompt,
-        prompt: req.prompt.userPrompt,
-        tools: buildTools(req.prompt.cwd, req.prompt.tools, req.prompt.skills),
-        stopWhen: stepCountIs(this.maxSteps),
+      const output = await agent.stream(req.prompt.userPrompt, {
+        maxSteps: this.maxSteps,
         ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-        onStepFinish: (step) => this.onStep(step, tokens, emit),
-        experimental_telemetry: {
-          isEnabled: true,
-          functionId: `ordin.phase.${req.prompt.phaseId}`,
+        onStepFinish: (step) => {
+          this.emitStep(step, tokens, emit);
+        },
+        tracingOptions: {
           metadata: {
             "ordin.run_id": req.runId,
             "ordin.phase_id": req.prompt.phaseId,
@@ -156,6 +169,11 @@ export class AiSdkRuntime implements AgentRuntime {
           },
         },
       });
+      await output.consumeStream();
+      const streamErr = output.error;
+      if (streamErr) {
+        throw streamErr;
+      }
     } catch (err) {
       status = "failed";
       exitCode = 1;
@@ -175,55 +193,90 @@ export class AiSdkRuntime implements AgentRuntime {
     };
   }
 
-  private onStep(
-    step: StepResult<ToolSet>,
+  private buildModel(modelId: string): MastraModelConfig {
+    // `includeUsage: true` opts the underlying OpenAI Chat Completions
+    // request into `stream_options.include_usage: true`, so the final
+    // SSE chunk carries token counts. Without this, streaming responses
+    // skip usage and ordin's per-phase token totals collapse to zero —
+    // generateText (doGenerate) always returned usage; Agent.stream
+    // (doStream) does not.
+    const provider = createOpenAICompatible({
+      name: "ai-sdk-runtime",
+      baseURL: this.baseUrl,
+      apiKey: this.apiKey,
+      includeUsage: true,
+      ...(this.bypassCache ? { headers: { "cache-control": "no-cache" } } : {}),
+    });
+    return provider.chatModel(modelId);
+  }
+
+  private emitStep(
+    step: MastraStepLike,
     tokens: { input: number; output: number; cacheReadInput: number; cacheCreationInput: number },
     emit: (e: RuntimeEvent) => void,
   ): void {
     if (step.text) emit({ type: "assistant.text", text: step.text });
-    if (step.reasoningText) emit({ type: "assistant.thinking" });
-
-    for (const call of step.toolCalls) {
-      emit({ type: "tool.use", id: call.toolCallId, name: call.toolName, input: call.input });
+    if (Array.isArray(step.reasoning) && step.reasoning.length > 0) {
+      emit({ type: "assistant.thinking" });
     }
-    for (const r of step.toolResults) {
-      const output = typeof r.output === "string" ? r.output : undefined;
+
+    for (const call of step.toolCalls ?? []) {
+      emit({
+        type: "tool.use",
+        id: call.payload.toolCallId,
+        name: call.payload.toolName,
+        input: call.payload.args,
+      });
+    }
+    for (const r of step.toolResults ?? []) {
+      const output = typeof r.payload.result === "string" ? r.payload.result : undefined;
       emit({
         type: "tool.result",
-        id: r.toolCallId,
-        ok: true,
+        id: r.payload.toolCallId,
+        ok: !r.payload.isError,
         ...(output ? { result: output } : {}),
       });
     }
-    // AI SDK v6 surfaces tool execution failures only in `step.content`
-    // (entries with type "tool-error"), not in `toolResults`. Without
-    // this, a thrown tool execute (e.g. Read on a directory) silently
-    // disappears from the transcript and the CLI never logs it.
-    for (const part of step.content) {
+    // Mastra (like AI SDK v6) reports tool execution failures as
+    // `content` entries with `type === "tool-error"`, not in
+    // `toolResults`. Surface those as ok:false so a thrown
+    // tool.execute (e.g. Read on a directory) doesn't silently
+    // disappear from the transcript.
+    for (const part of step.content ?? []) {
       if (part.type !== "tool-error") continue;
       const error = (part as { error?: unknown }).error;
       const message = error instanceof Error ? error.message : String(error ?? "tool failed");
-      emit({
-        type: "tool.result",
-        id: part.toolCallId,
-        ok: false,
-        result: message,
-      });
+      const id = (part as { toolCallId?: string }).toolCallId ?? "";
+      emit({ type: "tool.result", id, ok: false, result: message });
     }
 
     const u = step.usage;
     if (u) {
       tokens.input = Math.max(tokens.input, u.inputTokens ?? 0);
       tokens.output += u.outputTokens ?? 0;
-      tokens.cacheReadInput = Math.max(
-        tokens.cacheReadInput,
-        u.inputTokenDetails?.cacheReadTokens ?? 0,
-      );
-      tokens.cacheCreationInput = Math.max(
-        tokens.cacheCreationInput,
-        u.inputTokenDetails?.cacheWriteTokens ?? 0,
-      );
+      tokens.cacheReadInput = Math.max(tokens.cacheReadInput, u.cachedInputTokens ?? 0);
       emit({ type: "tokens", usage: { ...tokens } });
     }
   }
+}
+
+interface MastraStepLike {
+  readonly text?: string;
+  readonly reasoning?: ReadonlyArray<unknown>;
+  readonly toolCalls?: ReadonlyArray<MastraStepCallLike>;
+  readonly toolResults?: ReadonlyArray<MastraStepResultLike>;
+  readonly content?: ReadonlyArray<{ type: string; toolCallId?: string; error?: unknown }>;
+  readonly usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  };
+}
+
+interface MastraStepCallLike {
+  readonly payload: { toolCallId: string; toolName: string; args?: unknown };
+}
+
+interface MastraStepResultLike {
+  readonly payload: { toolCallId: string; result?: unknown; isError?: boolean };
 }
