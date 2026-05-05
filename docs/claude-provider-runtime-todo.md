@@ -32,54 +32,32 @@ Current provider behavior:
 
 ## 1. Enforce Tool Pattern Allowlist
 
-Status: missing, highest priority.
+Status: deferred until sandbox v1 lands.
 
-Why:
+The workflow supports scoped tools (`Write(docs/rfcs/*)`, `Bash(git diff*)`, …).
+Stable `claude-cli` delegates enforcement to Claude Code via `--allowed-tools`;
+the provider runtime parses only the tool name, so patterns degrade to bare
+tool names at the `ToolDispatcher` boundary.
 
-The workflow supports scoped tools:
+Why deferred:
 
-- `Write(docs/rfcs/*)`
-- `Write(reviews/*)`
-- `Bash(git diff*)`
-- `Bash(git log*)`
-- `Bash(git show*)`
+The right design depends on whether ordin owns the security boundary or only a
+workflow-correctness boundary. Without sandbox, this validator is the only line
+between a model and the host filesystem — argues for shell-quote tokenization,
+strict path normalization, etc. With sandbox, the validator narrows to "does
+this call match the phase's declared intent?" and a much smaller implementation
+suffices. Building the strict version now means rewriting it once sandbox lands.
 
-Stable `claude-cli` passes these exact specs to Claude Code via
-`--allowed-tools`, so Claude enforces the pattern. The provider runtime currently
-parses only the tool name for MCP exposure and allow checks. That means
-`Write(docs/rfcs/*)` effectively becomes `Write` once the call reaches
-`ToolDispatcher`.
+Revisit when:
 
-Implementation notes:
+- Sandbox v1 ships and is the production stance for `claude-cli-provider` runs.
+- A real workflow-correctness bug appears (a phase scoped to `Write(docs/rfcs/*)`
+  writes outside its scope and breaks something).
 
-- Preserve parsed `ToolSpec` values from `parseToolSpec`.
-- Change the provider allowlist from `Set<string>` to a structure that keeps
-  `{ name, pattern }`.
-- Before `ToolDispatcher.dispatch`, enforce the matching pattern against the
-  tool input:
-  - `Read`, `Write`, `Edit`: check `file_path`.
-  - `Grep`: check `path` when present; default search scope should be treated
-    conservatively if the spec is path-scoped.
-  - `Bash`: check `command`.
-- Use the same relative-path normalization as `ToolDispatcher` before matching
-  file paths.
-- Decide whether unrestricted `Write` means all paths under `cwd` or all paths
-  accepted by the sandbox. Prefer `cwd` only.
-- Add unit tests for:
-  - `Write(docs/rfcs/*)` accepts `docs/rfcs/x.md`.
-  - `Write(docs/rfcs/*)` rejects `README.md`.
-  - absolute paths inside `cwd` are normalized before matching.
-  - absolute paths outside `cwd` reject.
-  - `Bash(git diff*)` accepts `git diff -- README.md`.
-  - `Bash(git diff*)` rejects `git status`.
+Likely files when picked up:
 
-Likely files:
-
-- `src/worker/runtimes/claude-cli-provider.ts`
-- `src/worker/runtimes/shared/dispatcher.ts`
-- `src/worker/runtimes/shared/tools.ts`
-- `test/unit/claude-cli-provider.test.ts`
-- `src/worker/runtimes/shared/dispatcher.test.ts`
+- `src/worker/runtimes/shared/` (new module for the policy class)
+- `src/worker/runtimes/claude-cli-provider.ts`, `scripted/index.ts` (call sites)
 
 ## 2. Decide Skill Loading Strategy
 

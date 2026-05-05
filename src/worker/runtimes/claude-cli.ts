@@ -285,7 +285,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
     for (const dir of this.pluginDirs) {
       args.push("--plugin-dir", dir);
     }
-    args.push("--effort", ClaudeCliRuntime.effortForTier(prompt.tier));
+    args.push("--effort", effortForTier(prompt.tier));
     if (override.fallback_model && override.fallback_model !== prompt.model) {
       args.push("--fallback-model", override.fallback_model);
     }
@@ -301,23 +301,6 @@ export class ClaudeCliRuntime implements AgentRuntime {
       );
     }
     return args;
-  }
-
-  /**
-   * Tier → Claude `--effort` mapping. Private to this runtime: the domain
-   * exposes only the neutral `tier` hint and trusts each runtime to pick
-   * its own quality knob. Keep in lockstep with Claude Code's effort
-   * levels (`low`, `medium`, `high`, `xhigh`, `max`).
-   */
-  private static effortForTier(tier: "S" | "M" | "L"): "low" | "medium" | "high" {
-    switch (tier) {
-      case "S":
-        return "low";
-      case "M":
-        return "medium";
-      case "L":
-        return "high";
-    }
   }
 
   /**
@@ -386,6 +369,23 @@ export class ClaudeCliRuntime implements AgentRuntime {
   }
 }
 
+/**
+ * Tier → Claude `--effort` mapping. Domain exposes the neutral `tier`
+ * hint; each Claude-flavored runtime maps it to Claude Code's effort
+ * levels. Shared with `ClaudeCliProviderRuntime` so both adapters keep
+ * the same dial.
+ */
+export function effortForTier(tier: "S" | "M" | "L"): "low" | "medium" | "high" {
+  switch (tier) {
+    case "S":
+      return "low";
+    case "M":
+      return "medium";
+    case "L":
+      return "high";
+  }
+}
+
 function mergeUsage(current: TokenUsage, usage: ClaudeUsage): TokenUsage {
   return {
     input: Math.max(current.input, usage.input_tokens ?? 0),
@@ -444,7 +444,7 @@ export function classifyFailure(input: ClassifyInput): RuntimeFailure {
     ? "rate_limit"
     : matchAny(["invalid api key", "unauthorized", "unauthenticated", "401"])
       ? "auth"
-      : matchAny(["not in allowed-tools", "tool not allowed", "disallowed tool"])
+      : matchAny(["not in allowed-tools", "tool not allowed", "disallowed tool", "is not allowed"])
         ? "tool"
         : matchAny(["model not found", "unknown model", "invalid model"])
           ? "model"

@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
+import { classifyFailure, effortForTier } from "./claude-cli";
 import type { ClaudeProviderMcpEntrypoint } from "./claude-provider-mcp";
 import { ToolDispatcher } from "./shared/dispatcher";
 import { parseToolSpec } from "./shared/tools";
@@ -20,13 +21,26 @@ import type {
 
 type _KeepClaudeProviderMcpEntrypointCruised = ClaudeProviderMcpEntrypoint;
 
+const ProviderPhaseOverrideSchema = z.object({
+  fallback_model: z.string().min(1).optional(),
+  max_steps: z.number().int().positive().optional(),
+});
+
 export const ClaudeCliProviderConfigSchema = z.object({
   bin: z.string().min(1),
   timeout_ms: z.number().int().positive().optional(),
   max_steps: z.number().int().positive().default(40),
   protocol_debug: z.boolean().optional(),
+  /**
+   * Per-phase Claude-provider knobs. `fallback_model` flows through to
+   * `claude -p`. `max_steps` overrides the runtime-wide ceiling — owned
+   * by the provider loop, not Claude, since the process is killed after
+   * each tool use. Stable runtime's `max_turns` has no analog here.
+   */
+  phases: z.record(z.string(), ProviderPhaseOverrideSchema).default({}),
 });
 export type ClaudeCliProviderConfigRaw = z.infer<typeof ClaudeCliProviderConfigSchema>;
+export type ClaudeCliProviderPhaseOverride = z.infer<typeof ProviderPhaseOverrideSchema>;
 
 export interface ProviderMessage {
   readonly role: "user" | "assistant";
@@ -53,7 +67,9 @@ export interface ClaudeModelProvider {
     readonly mcpConfigFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
+    readonly fallbackModel?: string;
     readonly cwd: string;
+    readonly tier: "S" | "M" | "L";
     readonly tools: readonly string[];
     readonly sessionId?: string;
     readonly abortSignal?: AbortSignal;
@@ -67,6 +83,7 @@ export interface ClaudeCliProviderRuntimeOptions {
   readonly timeoutMs?: number;
   readonly maxSteps?: number;
   readonly protocolDebug?: boolean;
+  readonly phaseOverrides?: Readonly<Record<string, ClaudeCliProviderPhaseOverride>>;
   readonly runsDirFallback?: string;
   readonly provider?: ClaudeModelProvider;
   readonly dispatcher?: ToolDispatcher;
@@ -87,6 +104,13 @@ export interface ProviderChildProcess {
   kill(signal?: NodeJS.Signals): boolean;
   on(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: "error", listener: (err: Error) => void): this;
+}
+
+export class ProviderTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Provider turn timed out after ${timeoutMs}ms`);
+    this.name = "ProviderTimeoutError";
+  }
 }
 
 const ZERO_TOKENS: TokenUsage = {
@@ -120,6 +144,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
   private readonly harnessRoot?: string;
   private readonly maxSteps: number;
   private readonly protocolDebug: boolean;
+  private readonly phaseOverrides: Readonly<Record<string, ClaudeCliProviderPhaseOverride>>;
   private readonly runsDirFallback: string;
   private readonly provider: ClaudeModelProvider;
   private readonly dispatcher: ToolDispatcher;
@@ -128,6 +153,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     this.harnessRoot = opts.harnessRoot;
     this.maxSteps = opts.maxSteps ?? 40;
     this.protocolDebug = opts.protocolDebug ?? false;
+    this.phaseOverrides = opts.phaseOverrides ?? {};
     this.runsDirFallback = opts.runsDirFallback ?? join(homedir(), ".ordin", "runs");
     this.dispatcher = opts.dispatcher ?? new ToolDispatcher();
     this.provider =
@@ -144,13 +170,14 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     raw: unknown,
     extras: Omit<
       ClaudeCliProviderRuntimeOptions,
-      "bin" | "timeoutMs" | "maxSteps" | "protocolDebug"
+      "bin" | "timeoutMs" | "maxSteps" | "protocolDebug" | "phaseOverrides"
     > = {},
   ): ClaudeCliProviderRuntime {
     const parsed = ClaudeCliProviderConfigSchema.parse(raw);
     return new ClaudeCliProviderRuntime({
       bin: parsed.bin,
       maxSteps: parsed.max_steps,
+      phaseOverrides: parsed.phases,
       ...(parsed.timeout_ms !== undefined ? { timeoutMs: parsed.timeout_ms } : {}),
       ...(parsed.protocol_debug !== undefined ? { protocolDebug: parsed.protocol_debug } : {}),
       ...extras,
@@ -163,6 +190,8 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     await mkdir(runDir, { recursive: true });
     const transcript = createWriteStream(transcriptPath, { flags: "a" });
     const started = Date.now();
+    const override = this.phaseOverrides[req.prompt.phaseId] ?? {};
+    const maxSteps = override.max_steps ?? this.maxSteps;
     const toolNames = req.prompt.tools.map((spec) => parseToolSpec(spec).name);
     const allowedTools = new Set(toolNames);
     const messages: ProviderMessage[] = [{ role: "user", content: req.prompt.userPrompt }];
@@ -178,7 +207,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     };
 
     try {
-      for (let step = 1; step <= this.maxSteps; step++) {
+      for (let step = 1; step <= maxSteps; step++) {
         if (req.abortSignal?.aborted) throw new Error("aborted");
         emit({ type: "assistant.thinking" });
         const turnStarted = Date.now();
@@ -190,7 +219,11 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
             mcpConfigFile: join(runDir, `${req.prompt.phaseId}.provider-mcp.json`),
             messages,
             model: req.prompt.model,
+            ...(override.fallback_model && override.fallback_model !== req.prompt.model
+              ? { fallbackModel: override.fallback_model }
+              : {}),
             cwd: req.prompt.cwd,
+            tier: req.prompt.tier,
             tools: toolNames,
             ...(sessionId ? { sessionId } : {}),
             ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
@@ -296,19 +329,25 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
           ].join("\n"),
         });
       }
-      throw new Error(`Exceeded max_steps (${this.maxSteps}) before final response.`);
+      throw new Error(`Exceeded max_steps (${maxSteps}) before final response.`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       emit({ type: "error", message });
       await closeStream(transcript);
+      const failure = classifyFailure({
+        exitCode: 1,
+        signal: null,
+        stderr: message,
+        timedOut: err instanceof ProviderTimeoutError,
+      });
       return {
         status: "failed",
         exitCode: 1,
         transcriptPath,
         tokens,
         durationMs: Date.now() - started,
-        failure: { kind: "model", message, retryable: false },
-        error: message,
+        failure,
+        error: failure.message,
       };
     }
   }
@@ -429,7 +468,9 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     readonly mcpConfigFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
+    readonly fallbackModel?: string;
     readonly cwd: string;
+    readonly tier: "S" | "M" | "L";
     readonly tools: readonly string[];
     readonly sessionId?: string;
     readonly abortSignal?: AbortSignal;
@@ -455,12 +496,18 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     const stderrChunks: string[] = [];
     let closed = false;
 
+    let timedOut = false;
     const kill = (): void => {
       terminateChild(child, () => closed);
     };
     const abortHandler = (): void => kill();
     req.abortSignal?.addEventListener("abort", abortHandler, { once: true });
-    const timer = this.timeoutMs ? setTimeout(kill, this.timeoutMs) : undefined;
+    const timer = this.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          kill();
+        }, this.timeoutMs)
+      : undefined;
 
     const rl = createInterface({ input: stdout, crlfDelay: Number.POSITIVE_INFINITY });
     rl.on("line", (line) => {
@@ -499,6 +546,7 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     if (timer) clearTimeout(timer);
     req.abortSignal?.removeEventListener("abort", abortHandler);
 
+    if (timedOut) throw new ProviderTimeoutError(this.timeoutMs ?? 0);
     if (req.abortSignal?.aborted) throw new Error("aborted");
     if (!toolCall && exitInfo.code !== 0) {
       const stderr = stderrChunks.join("\n").trim();
@@ -521,6 +569,8 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
     readonly mcpConfigFile?: string;
     readonly messages: readonly ProviderMessage[];
     readonly model: string;
+    readonly fallbackModel?: string;
+    readonly tier: "S" | "M" | "L";
     readonly tools: readonly string[];
     readonly sessionId?: string;
   }): string[] {
@@ -537,12 +587,17 @@ class ClaudeCliStreamProvider implements ClaudeModelProvider {
         : ["--system-prompt", req.systemPrompt]),
       "--model",
       req.model,
+      "--effort",
+      effortForTier(req.tier),
       "--permission-mode",
       "default",
       "--setting-sources",
       "project",
       "--strict-mcp-config",
     ];
+    if (req.fallbackModel) {
+      args.push("--fallback-model", req.fallbackModel);
+    }
     if (req.sessionId) {
       args.push("--resume", req.sessionId);
     }

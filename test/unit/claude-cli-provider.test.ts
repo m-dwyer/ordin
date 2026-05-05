@@ -230,6 +230,8 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
     expect(capturedArgs).toContain("mcp__ordin__Read");
     expect(capturedArgs).toContain("mcp__ordin__Bash");
     expect(capturedArgs).not.toContain("--disable-slash-commands");
+    expect(capturedArgs).toContain("--effort");
+    expect(capturedArgs[capturedArgs.indexOf("--effort") + 1]).toBe("medium");
   });
 
   it("emits tool events, dispatches through ToolDispatcher, and stops at final", async () => {
@@ -408,6 +410,104 @@ describe("ClaudeCliProviderRuntime tool loop", () => {
 
     expect(result.status).toBe("failed");
     expect(result.error).toMatch(/not allowed/);
+    expect(result.failure?.kind).toBe("tool");
+    expect(result.failure?.retryable).toBe(false);
+  });
+
+  it.each([
+    ["Error: 529 service overloaded", "rate_limit", true],
+    ["Invalid API key", "auth", false],
+  ] as const)("classifies provider error %s as %s", async (message, kind, retryable) => {
+    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
+    const provider: ClaudeModelProvider = {
+      complete: async () => {
+        throw new Error(message);
+      },
+    };
+    const runtime = new ClaudeCliProviderRuntime({
+      bin: "claude",
+      runsDirFallback: runsDir,
+      provider,
+      dispatcher: new FakeDispatcher(),
+      maxSteps: 1,
+    });
+
+    const result = await runtime.invoke({ runId: "run1", prompt: makePrompt() });
+
+    expect(result.failure?.kind).toBe(kind);
+    expect(result.failure?.retryable).toBe(retryable);
+  });
+
+  it("applies per-phase fallback_model and max_steps overrides", async () => {
+    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
+    let capturedArgs: readonly string[] = [];
+    const runtime = ClaudeCliProviderRuntime.fromConfig(
+      {
+        bin: "claude",
+        max_steps: 10,
+        phases: {
+          build: { fallback_model: "claude-haiku-4-6", max_steps: 1 },
+        },
+      },
+      {
+        runsDirFallback: runsDir,
+        spawner: (_bin, args) => {
+          capturedArgs = args;
+          const child = new FakeChild();
+          setImmediate(() => {
+            child.emitLine(
+              JSON.stringify({
+                type: "assistant",
+                message: {
+                  content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }],
+                },
+              }),
+            );
+            child.emitExit(-1, "SIGTERM");
+          });
+          return child;
+        },
+      },
+    );
+
+    const result = await runtime.invoke({ runId: "r", prompt: makePrompt({ phaseId: "build" }) });
+
+    expect(capturedArgs).toContain("--fallback-model");
+    expect(capturedArgs[capturedArgs.indexOf("--fallback-model") + 1]).toBe("claude-haiku-4-6");
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/Exceeded max_steps \(1\)/);
+  });
+
+  it("omits fallback_model when it matches the selected model", async () => {
+    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
+    let capturedArgs: readonly string[] = [];
+    const runtime = ClaudeCliProviderRuntime.fromConfig(
+      {
+        bin: "claude",
+        phases: { build: { fallback_model: "claude-sonnet-4-6" } },
+      },
+      {
+        runsDirFallback: runsDir,
+        spawner: (_bin, args) => {
+          capturedArgs = args;
+          const child = new FakeChild();
+          setImmediate(() => {
+            child.emitLine(
+              JSON.stringify({
+                type: "assistant",
+                message: { content: [{ type: "text", text: "done" }] },
+              }),
+            );
+            child.emitExit(0);
+          });
+          return child;
+        },
+      },
+    );
+
+    await runtime.invoke({ runId: "r", prompt: makePrompt({ phaseId: "build" }) });
+
+    expect(capturedArgs).not.toContain("--fallback-model");
   });
 
   it("fails on max-step exhaustion", async () => {
