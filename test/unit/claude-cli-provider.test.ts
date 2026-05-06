@@ -1,10 +1,15 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import type { BrokerClient, ToolIntent, ToolResult } from "../../src/broker/client/types";
+import type {
+  ApprovalResult,
+  BrokerClient,
+  RecordedResult,
+  ToolIntent,
+} from "../../src/broker/client/types";
 import type { ComposedPrompt } from "../../src/domain/composer";
 import { ClaudeCliProviderRuntime } from "../../src/worker/runtimes/claude-cli-provider";
 import type {
@@ -41,11 +46,16 @@ class FakeChild extends EventEmitter implements ProviderChildProcess {
 }
 
 class FakeBrokerClient implements BrokerClient {
-  readonly calls: Array<{ name: string; input: Record<string, unknown> }> = [];
+  readonly approvals: Array<{ name: string; input: Record<string, unknown> }> = [];
+  readonly results: Array<{ name: string; ok: boolean }> = [];
 
-  async dispatchTool(intent: ToolIntent): Promise<ToolResult> {
-    this.calls.push({ name: intent.tool, input: intent.input });
-    return { ok: true, output: `result:${intent.tool}` };
+  async requestApproval(intent: ToolIntent): Promise<ApprovalResult> {
+    this.approvals.push({ name: intent.tool, input: intent.input });
+    return { ok: true };
+  }
+
+  async recordResult(intent: ToolIntent, recorded: RecordedResult): Promise<void> {
+    this.results.push({ name: intent.tool, ok: recorded.result.ok });
   }
 }
 
@@ -96,6 +106,9 @@ describe("ClaudeCliProviderRuntime", () => {
   it("wires Mastra Agent to ClaudeLanguageModelV2 + dispatcher: tool-call → resume → final, with per-phase fallback", async () => {
     const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
     const cwd = await mkdtemp(join(tmpdir(), "claude-provider-cwd-"));
+    // The runtime now executes tool calls worker-side (ADR-016 corrected),
+    // so the Read tool actually reads from the workspace. Stage a file.
+    await writeFile(join(cwd, "README.md"), "# fixture\n", "utf8");
     const broker = new FakeBrokerClient();
     const { spawner, records } = recordingSpawner([
       (child) => {
@@ -164,7 +177,8 @@ describe("ClaudeCliProviderRuntime", () => {
     expect(records[1]?.args).toContain("--resume");
     expect(records[1]?.args[records[1].args.indexOf("--resume") + 1]).toBe("session-1");
 
-    expect(broker.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
+    expect(broker.approvals).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
+    expect(broker.results).toEqual([{ name: "Read", ok: true }]);
 
     const types = events.map((e) => e.type);
     expect(types).toContain("tool.use");

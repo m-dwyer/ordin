@@ -1,19 +1,29 @@
 import type { Skill } from "../../domain/skill";
 
 /**
- * Tool dispatch surface, per ADR-016 / ADR-018. Runtimes emit a
- * `ToolIntent` and receive a `ToolResult`; the broker enforces ACL,
- * (later) the pattern scanner, and audit-chain bookkeeping.
+ * Tool dispatch surface, per ADR-016 / ADR-018. The broker is policy +
+ * audit only; the worker holds the executors and runs them inside its
+ * own trust domain (kernel-sandboxed under `--sandbox srt`).
  *
- * Two implementations:
- *   - `InProcessBrokerClient` (Phase A): default `--sandbox passthrough`.
- *     Direct method calls into `BrokerDispatch`. Trust boundary is
- *     logical (code discipline, no kernel separation).
- *   - `HttpBrokerClient` (Phase B): worker is a separate process,
- *     dispatch travels over localhost HTTP through the broker.
+ * Each tool call is two legs:
  *
- * The interface is identical for both; tests pin behaviour via a shared
- * contract test (Phase B) so audit envelopes never diverge by transport.
+ *   1. `requestApproval(intent)` — broker checks ACL, runs the
+ *      pattern scanner (ADR-012, when it lands), and writes the
+ *      `broker.tool.dispatch` audit envelope. Returns approved or a
+ *      typed deny.
+ *   2. `recordResult(intent, result)` — worker reports the outcome
+ *      after executing locally; broker writes the
+ *      `broker.tool.result` audit envelope.
+ *
+ * Two transport implementations:
+ *   - `InProcessBrokerClient` — direct method calls into
+ *     `BrokerDispatch`. Used by `--sandbox passthrough` (no kernel
+ *     sandbox; the scanner is the primary defense).
+ *   - `HttpBrokerClient` — localhost HTTP through the broker's `tools`
+ *     internal service. Used by `--sandbox srt`; the agent (worker
+ *     subprocess) executes inside the kernel sandbox.
+ *
+ * The contract test pins audit envelopes identical across transports.
  */
 
 export interface ToolIntent {
@@ -41,6 +51,26 @@ export type ToolResult =
   | { readonly ok: true; readonly output: string }
   | { readonly ok: false; readonly error: ToolError };
 
+/**
+ * Approval response from the broker. `ok: true` means the worker may
+ * execute; `ok: false` means the broker rejected the intent (ACL,
+ * scanner) and the worker must surface the error without running
+ * anything.
+ */
+export type ApprovalResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: ToolError };
+
+/**
+ * Worker-reported outcome the broker writes into the audit chain.
+ * Mirrors `ToolResult` plus the duration the worker observed.
+ */
+export interface RecordedResult {
+  readonly result: ToolResult;
+  readonly durationMs: number;
+}
+
 export interface BrokerClient {
-  dispatchTool(intent: ToolIntent): Promise<ToolResult>;
+  requestApproval(intent: ToolIntent): Promise<ApprovalResult>;
+  recordResult(intent: ToolIntent, recorded: RecordedResult): Promise<void>;
 }

@@ -52,8 +52,8 @@ async function main(): Promise<void> {
           {
             type: "text",
             text:
-              "This MCP server is schema-only. ordin intercepts Claude tool_use events " +
-              "and executes tools through its own ToolDispatcher.",
+              "This MCP server is schema-only. ordin intercepts Claude tool_use events, " +
+              "approves them via the broker, and runs the executor worker-side.",
           },
         ],
         isError: true,

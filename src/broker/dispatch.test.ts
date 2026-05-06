@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,13 +20,13 @@ class RecordingAudit {
 
 const NO_SKILLS: readonly Skill[] = [];
 
-describe("BrokerDispatch", () => {
+describe("BrokerDispatch.requestApproval", () => {
   it("rejects tool calls outside the per-phase ACL and audits the deny", async () => {
     const audit = new RecordingAudit();
     const broker = new BrokerDispatch({ audit });
     const cwd = await mkdtemp(join(tmpdir(), "broker-acl-"));
 
-    const result = await broker.dispatchTool({
+    const approval = await broker.requestApproval({
       tool: "Bash",
       input: { command: "echo nope" },
       runId: "run1",
@@ -36,9 +36,9 @@ describe("BrokerDispatch", () => {
       skills: NO_SKILLS,
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected deny");
-    expect(result.error.kind).toBe("denied");
+    expect(approval.ok).toBe(false);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.kind).toBe("denied");
     expect(audit.calls).toHaveLength(1);
     expect(audit.calls[0]?.kind).toBe("broker.tool.dispatch");
     expect(audit.calls[0]?.payload).toMatchObject({
@@ -53,7 +53,7 @@ describe("BrokerDispatch", () => {
     const broker = new BrokerDispatch({ audit });
     const cwd = await mkdtemp(join(tmpdir(), "broker-unknown-"));
 
-    const result = await broker.dispatchTool({
+    const approval = await broker.requestApproval({
       tool: "Hammer",
       input: {},
       runId: "run1",
@@ -63,81 +63,88 @@ describe("BrokerDispatch", () => {
       skills: NO_SKILLS,
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected deny");
-    expect(result.error.kind).toBe("unknown_tool");
+    expect(approval.ok).toBe(false);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.kind).toBe("unknown_tool");
     expect(audit.calls[0]?.payload).toMatchObject({ decision: "deny" });
   });
 
-  it("normalizes absolute file paths inside cwd before executing file tools", async () => {
+  it("approves and audits an in-ACL intent", async () => {
     const audit = new RecordingAudit();
     const broker = new BrokerDispatch({ audit });
-    const cwd = await mkdtemp(join(tmpdir(), "broker-write-"));
-    await mkdir(join(cwd, "docs"), { recursive: true });
+    const cwd = await mkdtemp(join(tmpdir(), "broker-allow-"));
 
-    const result = await broker.dispatchTool({
-      tool: "Write",
-      input: { file_path: join(cwd, "docs", "note.md"), content: "hello" },
+    const approval = await broker.requestApproval({
+      tool: "Read",
+      input: { file_path: "note.md" },
       runId: "run1",
       phaseId: "build",
       cwd,
-      allowedTools: ["Write"],
+      allowedTools: ["Read"],
       skills: NO_SKILLS,
     });
 
-    if (!result.ok) throw new Error(`expected ok: ${result.error.message}`);
-    expect(result.output).toBe("Wrote 5 bytes to docs/note.md");
-    expect(await readFile(join(cwd, "docs", "note.md"), "utf8")).toBe("hello");
-  });
-
-  it("rejects absolute file paths outside cwd as input errors", async () => {
-    const audit = new RecordingAudit();
-    const broker = new BrokerDispatch({ audit });
-    const cwd = await mkdtemp(join(tmpdir(), "broker-cwd-"));
-    const outside = await mkdtemp(join(tmpdir(), "broker-outside-"));
-
-    const result = await broker.dispatchTool({
-      tool: "Write",
-      input: { file_path: join(outside, "note.md"), content: "hello" },
-      runId: "run1",
-      phaseId: "build",
-      cwd,
-      allowedTools: ["Write"],
-      skills: NO_SKILLS,
-    });
-
-    if (result.ok) throw new Error("expected failure");
-    expect(result.error.kind).toBe("input");
-    expect(result.error.message).toMatch(/outside the workspace/);
-  });
-
-  it("appends a chained dispatch + result envelope on success", async () => {
-    const audit = new RecordingAudit();
-    const broker = new BrokerDispatch({ audit });
-    const cwd = await mkdtemp(join(tmpdir(), "broker-chain-"));
-
-    const result = await broker.dispatchTool({
-      tool: "Bash",
-      input: { command: "echo hello" },
-      runId: "run1",
-      phaseId: "build",
-      cwd,
-      allowedTools: ["Bash"],
-      skills: NO_SKILLS,
-    });
-
-    if (!result.ok) throw new Error("expected ok");
-    expect(result.output).toContain("hello");
-    expect(audit.calls.map((c) => c.kind)).toEqual(["broker.tool.dispatch", "broker.tool.result"]);
+    expect(approval.ok).toBe(true);
     expect(audit.calls[0]?.payload).toMatchObject({
-      tool: "Bash",
+      tool: "Read",
       phaseId: "build",
       decision: "allow",
     });
-    expect(audit.calls[1]?.payload).toMatchObject({
-      tool: "Bash",
-      phaseId: "build",
-      ok: true,
+  });
+});
+
+describe("BrokerDispatch.recordResult", () => {
+  it("appends an ok-result envelope with the worker-reported duration", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+
+    await broker.recordResult(
+      {
+        tool: "Read",
+        input: { file_path: "note.md" },
+        runId: "run1",
+        phaseId: "build",
+        cwd: "/tmp",
+        allowedTools: ["Read"],
+        skills: NO_SKILLS,
+      },
+      { result: { ok: true, output: "hello" }, durationMs: 12 },
+    );
+
+    expect(audit.calls).toEqual([
+      {
+        runId: "run1",
+        kind: "broker.tool.result",
+        payload: { tool: "Read", phaseId: "build", ok: true, durationMs: 12 },
+      },
+    ]);
+  });
+
+  it("appends an error-result envelope carrying the typed error kind + message", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+
+    await broker.recordResult(
+      {
+        tool: "Read",
+        input: { file_path: "missing.md" },
+        runId: "run1",
+        phaseId: "build",
+        cwd: "/tmp",
+        allowedTools: ["Read"],
+        skills: NO_SKILLS,
+      },
+      {
+        result: { ok: false, error: { kind: "executor", message: "ENOENT: missing.md" } },
+        durationMs: 4,
+      },
+    );
+
+    expect(audit.calls[0]?.payload).toMatchObject({
+      ok: false,
+      durationMs: 4,
+      errorKind: "executor",
+      errorMessage: "ENOENT: missing.md",
     });
   });
 });

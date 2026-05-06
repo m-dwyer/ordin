@@ -1,20 +1,18 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Broker } from "../../src/broker";
 import { HttpBrokerClient } from "../../src/broker/client/http";
 import { InProcessBrokerClient } from "../../src/broker/client/in-process";
-import type { ToolIntent } from "../../src/broker/client/types";
+import type { ApprovalResult, RecordedResult, ToolIntent } from "../../src/broker/client/types";
 import { BrokerDispatch } from "../../src/broker/dispatch";
 import { makeToolServiceHandler } from "../../src/broker/tool-service";
 
 /**
  * Contract test (per Phase B sequencing). Drives the same set of
- * `ToolIntent`s through both `InProcessBrokerClient` (direct method
- * calls) and `HttpBrokerClient` (HTTP+JSON over localhost) against
- * fresh `BrokerDispatch` instances. Asserts that audit envelopes,
- * `ToolResult` shapes, and error kinds match exactly across transports.
+ * `(intent, recorded)` pairs through both `InProcessBrokerClient`
+ * (direct method calls) and `HttpBrokerClient` (HTTP+JSON over
+ * localhost) against fresh `BrokerDispatch` instances. Asserts that
+ * the audit envelope sequences match exactly across transports for
+ * both legs (`requestApproval` + `recordResult`).
  *
  * Failure modes this test catches:
  *   - JSON serialization mutating field order / shapes that the audit
@@ -23,7 +21,7 @@ import { makeToolServiceHandler } from "../../src/broker/tool-service";
  *   - Either transport mistranslating typed errors.
  *
  * The contract is the load-bearing invariant for ADR-018: "transport
- * is a layer above policy". A divergence here is a bug.
+ * is a layer above policy". Divergence here is a bug.
  */
 
 interface AuditCall {
@@ -53,21 +51,14 @@ async function buildPair(): Promise<{
     {
       proxyAuth: "parity-secret",
       internalServices: [
-        {
-          kind: "internal",
-          name: "tools",
-          handler: makeToolServiceHandler(httpDispatch),
-        },
+        { kind: "internal", name: "tools", handler: makeToolServiceHandler(httpDispatch) },
       ],
     },
   );
   await broker.start();
 
   return {
-    inProcess: {
-      client: new InProcessBrokerClient(inDispatch),
-      audit: inAudit,
-    },
+    inProcess: { client: new InProcessBrokerClient(inDispatch), audit: inAudit },
     http: {
       client: new HttpBrokerClient({
         proxyUrl: `http://ordin:parity-secret@${broker.host}:${broker.port}`,
@@ -78,6 +69,12 @@ async function buildPair(): Promise<{
   };
 }
 
+interface Step {
+  readonly intent: ToolIntent;
+  /** What the worker would report after running the executor. */
+  readonly recorded: RecordedResult;
+}
+
 describe("broker transport parity", () => {
   let stopBroker: () => Promise<void> = async () => {};
 
@@ -86,80 +83,84 @@ describe("broker transport parity", () => {
     stopBroker = async () => {};
   });
 
-  it("emits identical audit envelopes and ToolResults across transports for a series of intents", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "broker-parity-"));
-    await writeFile(join(cwd, "hello.txt"), "hi\n", "utf8");
-
+  it("emits identical audit envelopes across transports for a sequence of approval + result pairs", async () => {
     const pair = await buildPair();
     stopBroker = pair.http.stop;
 
-    const intents: readonly ToolIntent[] = [
-      // 1. Allowed read — exercises allow + result envelopes.
+    const steps: readonly Step[] = [
+      // 1. Allowed read — broker approves, worker reports success.
       {
-        tool: "Read",
-        input: { file_path: "hello.txt" },
-        runId: "run-A",
-        phaseId: "phase",
-        cwd,
-        allowedTools: ["Read"],
-        skills: [],
+        intent: makeIntent({
+          tool: "Read",
+          input: { file_path: "hello.txt" },
+          allowedTools: ["Read"],
+        }),
+        recorded: { result: { ok: true, output: "hi\n" }, durationMs: 4 },
       },
-      // 2. Tool not in ACL — exercises deny envelope.
+      // 2. Tool not in ACL — broker denies; the worker would not run
+      //    anything, but we still record the (denied) outcome to keep
+      //    the result envelope alongside the dispatch envelope.
       {
-        tool: "Bash",
-        input: { command: "echo nope" },
-        runId: "run-A",
-        phaseId: "phase",
-        cwd,
-        allowedTools: ["Read"],
-        skills: [],
+        intent: makeIntent({
+          tool: "Bash",
+          input: { command: "echo nope" },
+          allowedTools: ["Read"],
+        }),
+        recorded: {
+          result: { ok: false, error: { kind: "denied", message: "denied by ACL" } },
+          durationMs: 0,
+        },
       },
-      // 3. Unknown tool name — exercises unknown_tool error.
+      // 3. Unknown tool name — broker denies with a different kind.
       {
-        tool: "Hammer",
-        input: {},
-        runId: "run-A",
-        phaseId: "phase",
-        cwd,
-        allowedTools: ["Hammer"],
-        skills: [],
+        intent: makeIntent({ tool: "Hammer", input: {}, allowedTools: ["Hammer"] }),
+        recorded: {
+          result: { ok: false, error: { kind: "unknown_tool", message: "unknown" } },
+          durationMs: 0,
+        },
       },
-      // 4. Allowed read missing file — exercises executor error.
+      // 4. Allowed read whose executor failed — broker approves;
+      //    worker reports executor error.
       {
-        tool: "Read",
-        input: { file_path: "missing.txt" },
-        runId: "run-A",
-        phaseId: "phase",
-        cwd,
-        allowedTools: ["Read"],
-        skills: [],
+        intent: makeIntent({
+          tool: "Read",
+          input: { file_path: "missing.txt" },
+          allowedTools: ["Read"],
+        }),
+        recorded: {
+          result: {
+            ok: false,
+            error: { kind: "executor", message: "ENOENT: missing.txt" },
+          },
+          durationMs: 7,
+        },
       },
     ];
 
-    const inResults = await Promise.all(
-      intents.map((intent) => pair.inProcess.client.dispatchTool(intent)),
-    );
-    const httpResults = await Promise.all(
-      intents.map((intent) => pair.http.client.dispatchTool(intent)),
-    );
+    const inApprovals: ApprovalResult[] = [];
+    for (const step of steps) {
+      inApprovals.push(await pair.inProcess.client.requestApproval(step.intent));
+      await pair.inProcess.client.recordResult(step.intent, step.recorded);
+    }
+    const httpApprovals: ApprovalResult[] = [];
+    for (const step of steps) {
+      httpApprovals.push(await pair.http.client.requestApproval(step.intent));
+      await pair.http.client.recordResult(step.intent, step.recorded);
+    }
 
-    expect(httpResults).toEqual(inResults);
-    expect(stripDurations(pair.http.audit.calls)).toEqual(
-      stripDurations(pair.inProcess.audit.calls),
-    );
+    expect(httpApprovals).toEqual(inApprovals);
+    expect(pair.http.audit.calls).toEqual(pair.inProcess.audit.calls);
   });
 });
 
-/**
- * `broker.tool.result` envelopes carry a `durationMs` field that
- * naturally varies between transports (HTTP adds round-trip overhead).
- * Strip before equality checking — the parity guard is shape +
- * decision + error kinds, not wall-clock timing.
- */
-function stripDurations(calls: readonly AuditCall[]): AuditCall[] {
-  return calls.map((c) => {
-    if (c.kind !== "broker.tool.result") return c;
-    const { durationMs: _ignored, ...rest } = c.payload;
-    return { ...c, payload: rest };
-  });
+function makeIntent(
+  overrides: Partial<ToolIntent> & Pick<ToolIntent, "tool" | "input" | "allowedTools">,
+): ToolIntent {
+  return {
+    runId: "run-A",
+    phaseId: "phase",
+    cwd: "/tmp",
+    skills: [],
+    ...overrides,
+  };
 }
