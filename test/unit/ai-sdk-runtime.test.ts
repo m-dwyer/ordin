@@ -120,7 +120,7 @@ describe("AiSdkRuntime.invoke event mapping", () => {
     expect(events[0]).toEqual({ type: "assistant.text", text: "Hello world." });
     expect(events[1]).toEqual({
       type: "tokens",
-      usage: { input: 11, output: 7, cacheReadInput: 0, cacheCreationInput: 0 },
+      usage: { input: 11, output: 7, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 11 },
     });
   });
 
@@ -164,30 +164,34 @@ describe("AiSdkRuntime.invoke event mapping", () => {
     const result = await runtime.invoke(request);
 
     expect(result.status).toBe("ok");
+    // Order: buildDispatcherTools.execute fires tool.use / tool.result /
+    // ordin.tool.<name> timing inside Mastra's tool-call step (before
+    // onStepFinish), then onStepFinish emits the assistant text and
+    // tokens accumulated for that step.
     expect(events.map((e) => e.type)).toEqual([
-      "assistant.text",
       "tool.use",
       "tool.result",
+      "timing",
+      "assistant.text",
       "tokens",
       "assistant.text",
       "tokens",
     ]);
 
-    const toolUse = events[1];
+    const toolUse = events[0];
     if (toolUse?.type !== "tool.use") throw new Error("expected tool.use");
-    expect(toolUse).toMatchObject({
-      id: "call-1",
-      name: "Bash",
-      input: { command: "echo hi" },
-    });
+    expect(toolUse).toMatchObject({ name: "Bash", input: { command: "echo hi" } });
 
-    const toolResult = events[2];
+    const toolResult = events[1];
     if (toolResult?.type !== "tool.result") throw new Error("expected tool.result");
-    expect(toolResult.id).toBe("call-1");
     expect(toolResult.ok).toBe(true);
     expect(toolResult.result).toContain("hi");
 
-    expect(events[4]).toEqual({ type: "assistant.text", text: "done" });
+    const toolTiming = events[2];
+    if (toolTiming?.type !== "timing") throw new Error("expected timing");
+    expect(toolTiming.name).toBe("ordin.tool.Bash");
+
+    expect(events[5]).toEqual({ type: "assistant.text", text: "done" });
     expect(call).toBe(2);
   });
 });

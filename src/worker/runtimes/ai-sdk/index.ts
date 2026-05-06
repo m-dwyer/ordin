@@ -7,6 +7,9 @@ import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
 import type { MastraTracingFactory } from "../../observability/mastra-tracing";
+import { ToolDispatcher } from "../shared/dispatcher";
+import { buildDispatcherTools } from "../shared/mastra-tools";
+import { parseToolSpec } from "../shared/tools";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -14,7 +17,6 @@ import type {
   RuntimeCapabilities,
   RuntimeEvent,
 } from "../types";
-import { buildTools } from "./tools";
 
 /**
  * In-process runtime driven by Mastra's `Agent` against any
@@ -79,6 +81,12 @@ export interface AiSdkRuntimeConfig {
    */
   parentTraceId?: string;
   parentSpanId?: string;
+  /**
+   * Tool dispatcher used by the shared Mastra tool builder. Tests
+   * inject a fake; production paths default to a fresh
+   * `ToolDispatcher`.
+   */
+  dispatcher?: ToolDispatcher;
 }
 
 export const AiSdkRuntimeConfigSchema = z.object({
@@ -119,6 +127,7 @@ export class AiSdkRuntime implements AgentRuntime {
   private readonly mastraTracing: MastraTracingFactory | undefined;
   private readonly parentTraceId: string | undefined;
   private readonly parentSpanId: string | undefined;
+  private readonly dispatcher: ToolDispatcher;
 
   constructor(config: AiSdkRuntimeConfig = {}) {
     this.baseUrl = config.baseUrl ?? "http://localhost:4000";
@@ -131,6 +140,7 @@ export class AiSdkRuntime implements AgentRuntime {
     this.mastraTracing = config.mastraTracing;
     this.parentTraceId = config.parentTraceId;
     this.parentSpanId = config.parentSpanId;
+    this.dispatcher = config.dispatcher ?? new ToolDispatcher();
   }
 
   static fromConfig(
@@ -164,12 +174,18 @@ export class AiSdkRuntime implements AgentRuntime {
     };
 
     // Mutable accumulator; we emit frozen TokenUsage snapshots on each step.
-    const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 };
+    const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 };
 
     const modelId = this.modelMap.get(req.prompt.model) ?? req.prompt.model;
     const model = this.modelOverride ?? this.buildModel(modelId);
 
-    const tools = buildTools(req.prompt.cwd, req.prompt.tools, req.prompt.skills);
+    const toolNames = [...new Set(req.prompt.tools.map((spec) => parseToolSpec(spec).name))];
+    const tools = buildDispatcherTools(toolNames, {
+      cwd: req.prompt.cwd,
+      skills: req.prompt.skills,
+      dispatcher: this.dispatcher,
+      onEvent: emit,
+    });
     const mastra = this.mastraTracing?.(emit);
     const agent = new Agent({
       id: `ordin.${req.prompt.phaseId}`,
@@ -248,49 +264,25 @@ export class AiSdkRuntime implements AgentRuntime {
 
   private emitStep(
     step: MastraStepLike,
-    tokens: { input: number; output: number; cacheReadInput: number; cacheCreationInput: number },
+    tokens: {
+      input: number;
+      output: number;
+      cacheReadInput: number;
+      cacheCreationInput: number;
+      totalInput: number;
+    },
     emit: (e: RuntimeEvent) => void,
   ): void {
     if (step.text) emit({ type: "assistant.text", text: step.text });
     if (Array.isArray(step.reasoning) && step.reasoning.length > 0) {
       emit({ type: "assistant.thinking" });
     }
-
-    for (const call of step.toolCalls ?? []) {
-      emit({
-        type: "tool.use",
-        id: call.payload.toolCallId,
-        name: call.payload.toolName,
-        input: call.payload.args,
-      });
-    }
-    for (const r of step.toolResults ?? []) {
-      const output = typeof r.payload.result === "string" ? r.payload.result : undefined;
-      emit({
-        type: "tool.result",
-        id: r.payload.toolCallId,
-        ok: !r.payload.isError,
-        ...(output ? { result: output } : {}),
-      });
-    }
-    // Mastra (like AI SDK v6) reports tool execution failures as
-    // `content` entries with `type === "tool-error"`, not in
-    // `toolResults`. Surface those as ok:false so a thrown
-    // tool.execute (e.g. Read on a directory) doesn't silently
-    // disappear from the transcript.
-    for (const part of step.content ?? []) {
-      if (part.type !== "tool-error") continue;
-      const error = (part as { error?: unknown }).error;
-      const message = error instanceof Error ? error.message : String(error ?? "tool failed");
-      const id = (part as { toolCallId?: string }).toolCallId ?? "";
-      emit({ type: "tool.result", id, ok: false, result: message });
-    }
-
     const u = step.usage;
     if (u) {
       tokens.input = Math.max(tokens.input, u.inputTokens ?? 0);
       tokens.output += u.outputTokens ?? 0;
       tokens.cacheReadInput = Math.max(tokens.cacheReadInput, u.cachedInputTokens ?? 0);
+      tokens.totalInput = tokens.input + tokens.cacheReadInput + tokens.cacheCreationInput;
       emit({ type: "tokens", usage: { ...tokens } });
     }
   }
@@ -299,20 +291,9 @@ export class AiSdkRuntime implements AgentRuntime {
 interface MastraStepLike {
   readonly text?: string;
   readonly reasoning?: ReadonlyArray<unknown>;
-  readonly toolCalls?: ReadonlyArray<MastraStepCallLike>;
-  readonly toolResults?: ReadonlyArray<MastraStepResultLike>;
-  readonly content?: ReadonlyArray<{ type: string; toolCallId?: string; error?: unknown }>;
   readonly usage?: {
     inputTokens?: number;
     outputTokens?: number;
     cachedInputTokens?: number;
   };
-}
-
-interface MastraStepCallLike {
-  readonly payload: { toolCallId: string; toolName: string; args?: unknown };
-}
-
-interface MastraStepResultLike {
-  readonly payload: { toolCallId: string; result?: unknown; isError?: boolean };
 }
