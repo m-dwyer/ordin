@@ -21,6 +21,8 @@
  * process; it doesn't protect this process from the parent.
  */
 import { readFile, writeFile } from "node:fs/promises";
+import { HttpBrokerClient } from "../broker/client/http";
+import type { BrokerClient } from "../broker/client/types";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { Phase } from "../domain/workflow";
 import { buildMastraTracingContainer } from "./observability/mastra-tracing";
@@ -48,12 +50,14 @@ async function main(): Promise<void> {
   const planPath = parsePlanPath(process.argv);
   const plan: WorkerPlan = JSON.parse(await readFile(planPath, "utf8"));
   const traceContext = parseTraceparent(process.env["TRACEPARENT"]);
+  const broker = brokerClientFromEnv();
   const runtime = await buildRuntime(plan.runtimeName, plan.runtimeConfig, {
     harnessRoot: plan.harnessRoot,
     workflowName: plan.workflowName,
     runsDir: plan.runsDir,
     ...(plan.scriptPath ? { scriptPath: plan.scriptPath } : {}),
     mastraTracing: buildMastraTracingContainer,
+    ...(broker ? { broker } : {}),
     ...(traceContext
       ? { parentTraceId: traceContext.traceId, parentSpanId: traceContext.spanId }
       : {}),
@@ -69,6 +73,20 @@ async function main(): Promise<void> {
 
 function emitRuntimeEvent(event: RuntimeEvent): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+/**
+ * Build an `HttpBrokerClient` from the proxy URL the parent (or srt)
+ * stamped into `HTTP_PROXY`. The worker tunnels every tool dispatch
+ * through the proxy via `HttpProxyAgent`; the broker (forward proxy)
+ * routes by the `tools` virtual hostname. Returns undefined if no
+ * proxy is configured — runtime construction in `registry.ts` then
+ * errors loudly if a broker is required.
+ */
+function brokerClientFromEnv(): BrokerClient | undefined {
+  const proxyUrl = process.env["HTTP_PROXY"];
+  if (!proxyUrl) return undefined;
+  return new HttpBrokerClient({ proxyUrl });
 }
 
 function parsePlanPath(argv: readonly string[]): string {

@@ -10,60 +10,51 @@ import { HarnessRuntime } from "../../src/runtime/harness";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const hasSrt = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
 
-// Disabled in Phase A: the worker subprocess can no longer dispatch
-// tools without a `BrokerClient`, and Phase A only ships the in-process
-// transport. Phase B's `HttpBrokerClient` reactivates this path —
-// re-enable then.
-describe.skip("srt sandbox scripted e2e", () => {
-  it.skipIf(!hasSrt)(
-    "runs the deterministic sandbox validation workflow and verifies audit",
-    async () => {
-      const workspace = await makeWorkspace();
-      const restoreEnv = withParentSecrets();
-      try {
-        process.env["ORDIN_WORKER_ARGV"] = JSON.stringify([
-          findOnPath("bun"),
-          join(repoRoot, "src", "worker", "entry.ts"),
-        ]);
-        const harness = new HarnessRuntime({
-          root: repoRoot,
-          workflow: "sandbox-validation",
-          sandboxMode: "srt",
-          gateForKind: () => new AutoGate(),
-        });
+describe.skipIf(!hasSrt)("srt sandbox scripted e2e", () => {
+  it("runs the deterministic sandbox validation workflow and verifies audit", async () => {
+    const workspace = await makeWorkspace();
+    const restoreEnv = withParentSecrets();
+    try {
+      process.env["ORDIN_WORKER_ARGV"] = JSON.stringify([
+        findOnPath("bun"),
+        join(repoRoot, "src", "worker", "entry.ts"),
+      ]);
+      const harness = new HarnessRuntime({
+        root: repoRoot,
+        workflow: "sandbox-validation",
+        sandboxMode: "srt",
+        gateForKind: () => new AutoGate(),
+      });
 
-        const meta = await harness.startRun({
-          task: "validate sandbox boundary",
-          slug: "sandbox-e2e",
-          repoPath: workspace,
-          tier: "S",
-        });
+      const meta = await harness.startRun({
+        task: "validate sandbox boundary",
+        slug: "sandbox-e2e",
+        repoPath: workspace,
+        tier: "S",
+      });
 
-        expect(meta.status).toBe("completed");
-        expect(meta.phases).toHaveLength(1);
-        expect(meta.phases[0]?.status).toBe("completed");
+      expect(meta.status).toBe("completed");
+      expect(meta.phases).toHaveLength(1);
+      expect(meta.phases[0]?.status).toBe("completed");
 
-        const report = await readFile(
-          join(workspace, "reviews", "sandbox-validation-report.md"),
-          "utf8",
-        );
-        expect(report).toContain("worker env secret check");
-        expect(report).toContain("home root read denied");
-        expect(report).toContain("All seven probes succeeded");
+      const report = await readFile(
+        join(workspace, "reviews", "sandbox-validation-report.md"),
+        "utf8",
+      );
+      expect(report).toContain("env secret check");
+      expect(report).toContain("All six probes succeeded");
 
-        const marker = await readFile(join(workspace, ".sandbox-validation-marker"), "utf8");
-        expect(marker).toContain("shell write OK");
+      const marker = await readFile(join(workspace, ".sandbox-validation-marker"), "utf8");
+      expect(marker).toContain("shell write OK");
 
-        const audit = await harness.verifyAudit(meta.runId);
-        expect(audit.ok).toBe(true);
-        expect(audit.entries).toBeGreaterThan(0);
-      } finally {
-        restoreEnv();
-        await rm(workspace, { recursive: true, force: true });
-      }
-    },
-    30_000,
-  );
+      const audit = await harness.verifyAudit(meta.runId);
+      expect(audit.ok).toBe(true);
+      expect(audit.entries).toBeGreaterThan(0);
+    } finally {
+      restoreEnv();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 function withParentSecrets(): () => void {

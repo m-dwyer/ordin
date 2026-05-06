@@ -36,8 +36,16 @@ export function buildWorkerEnv(
 ): NodeJS.ProcessEnv {
   if (infra.kind !== "managed") return parentEnv;
   if (infra.sandbox.name !== "srt") {
+    // Non-srt subprocess (currently unused — passthrough runs in-process
+    // post-Phase A — but kept robust for future): broker URL with auth
+    // goes in via HTTP_PROXY. The worker's `HttpBrokerClient` reads
+    // HTTP_PROXY and tunnels tool dispatches through the broker.
     return { ...parentEnv, HTTP_PROXY: infra.broker.proxyUrl() };
   }
+  // srt: srt's wrapper populates HTTP_PROXY with its own internal
+  // filter proxy (no auth — srt injects `Proxy-Authorization` from
+  // its `parentProxy` userinfo). The per-run secret never enters the
+  // worker env.
   return allowlistedSrtWorkerEnv(parentEnv);
 }
 
