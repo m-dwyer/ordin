@@ -40,7 +40,7 @@ class FakeRuntime implements AgentRuntime {
     status: "ok",
     exitCode: 0,
     transcriptPath: "/tmp/transcript.jsonl",
-    tokens: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0 },
+    tokens: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 10 },
     durationMs: 100,
   };
 
@@ -260,7 +260,7 @@ describe("MastraEngine", () => {
       status: "failed",
       exitCode: 1,
       transcriptPath: "/tmp/t.jsonl",
-      tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
+      tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 },
       durationMs: 50,
       error: "claude crashed",
     };

@@ -102,7 +102,13 @@ describe("OpenTuiRunController", () => {
         phaseId: "plan",
         iteration: 1,
         durationMs: 32_400,
-        tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
+        tokens: {
+          input: 100,
+          output: 1840,
+          cacheReadInput: 0,
+          cacheCreationInput: 0,
+          totalInput: 100,
+        },
       });
 
       const phase = controller.state().phases()[0];
@@ -122,7 +128,13 @@ describe("OpenTuiRunController", () => {
         phaseId: "plan",
         iteration: 1,
         durationMs: 32_400,
-        tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
+        tokens: {
+          input: 100,
+          output: 1840,
+          cacheReadInput: 0,
+          cacheCreationInput: 0,
+          totalInput: 100,
+        },
       });
 
       const phase = controller.state().phases()[0];
@@ -277,7 +289,7 @@ describe("OpenTuiRunController", () => {
         type: "agent.tokens",
         runId: RUN_ID,
         phaseId: "plan",
-        usage: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0 },
+        usage: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 10 },
       });
 
       expect(controller.state().phases()[0]).toEqual(before);

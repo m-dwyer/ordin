@@ -134,7 +134,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     if (req.prompt.skills.length > 0 && !toolNames.includes("Skill")) {
       toolNames.push("Skill");
     }
-    const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 };
+    const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 };
 
     const emit = (event: RuntimeEvent): void => {
       transcript.write(`${JSON.stringify({ kind: "event", event })}\n`);
@@ -268,7 +268,13 @@ interface MastraStepLike {
 
 function emitStep(
   step: MastraStepLike,
-  tokens: { input: number; output: number; cacheReadInput: number; cacheCreationInput: number },
+  tokens: {
+    input: number;
+    output: number;
+    cacheReadInput: number;
+    cacheCreationInput: number;
+    totalInput: number;
+  },
   emit: (e: RuntimeEvent) => void,
 ): void {
   if (step.text?.trim()) {
@@ -279,6 +285,7 @@ function emitStep(
     tokens.input = Math.max(tokens.input, u.inputTokens ?? 0);
     tokens.output += u.outputTokens ?? 0;
     tokens.cacheReadInput = Math.max(tokens.cacheReadInput, u.cachedInputTokens ?? 0);
+    tokens.totalInput = tokens.input + tokens.cacheReadInput + tokens.cacheCreationInput;
     if (tokens.input || tokens.output || tokens.cacheReadInput) {
       emit({ type: "tokens", usage: { ...tokens } });
     }

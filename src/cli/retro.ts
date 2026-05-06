@@ -87,6 +87,7 @@ function totalTokens(phases: readonly PhaseMeta[]): {
   output: number;
   cacheReadInput: number;
   cacheCreationInput: number;
+  totalInput: number;
 } {
   return phases.reduce(
     (acc, p) => {
@@ -96,8 +97,9 @@ function totalTokens(phases: readonly PhaseMeta[]): {
         output: acc.output + p.tokens.output,
         cacheReadInput: acc.cacheReadInput + p.tokens.cacheReadInput,
         cacheCreationInput: acc.cacheCreationInput + p.tokens.cacheCreationInput,
+        totalInput: acc.totalInput + p.tokens.totalInput,
       };
     },
-    { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
+    { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 },
   );
 }

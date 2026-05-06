@@ -95,10 +95,21 @@ export interface RuntimeFailure {
 }
 
 export interface TokenUsage {
+  /** Fresh prompt tokens billed at the standard input rate. */
   readonly input: number;
+  /** Completion tokens. */
   readonly output: number;
+  /** Cached prefix tokens billed at the cache-read rate (~10% of standard). */
   readonly cacheReadInput: number;
+  /** Tokens written to the cache on this turn (~125% of standard). */
   readonly cacheCreationInput: number;
+  /**
+   * Derived total input the model actually processed:
+   * `input + cacheReadInput + cacheCreationInput`. Granular fields
+   * stay accurate to Anthropic's billing schema; this field answers
+   * the context-size question without the caller summing.
+   */
+  readonly totalInput: number;
 }
 
 /**

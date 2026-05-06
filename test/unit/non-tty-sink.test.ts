@@ -69,7 +69,13 @@ describe("nonTtyRunSession", () => {
       phaseId: "plan",
       iteration: 1,
       durationMs: 32_400,
-      tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
+      tokens: {
+        input: 100,
+        output: 1840,
+        cacheReadInput: 0,
+        cacheCreationInput: 0,
+        totalInput: 100,
+      },
     });
     expect(lines()).toEqual(["✓ plan — 32.4s · out 1,840 tok"]);
   });
@@ -173,14 +179,14 @@ describe("nonTtyRunSession", () => {
         phaseId: "plan",
         iteration: 1,
         durationMs: 1,
-        tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
+        tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 },
       },
       { type: "agent.thinking", runId: RUN_ID, phaseId: "plan" },
       {
         type: "agent.tokens",
         runId: RUN_ID,
         phaseId: "plan",
-        usage: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0 },
+        usage: { input: 10, output: 20, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 10 },
       },
       { type: "gate.requested", runId: RUN_ID, phaseId: "plan" },
       { type: "gate.decided", runId: RUN_ID, phaseId: "plan", decision: "approved" },
@@ -253,7 +259,13 @@ describe("nonTtyRunSession", () => {
         phaseId: "plan",
         iteration: 1,
         durationMs: 32_400,
-        tokens: { input: 100, output: 1840, cacheReadInput: 0, cacheCreationInput: 0 },
+        tokens: {
+          input: 100,
+          output: 1840,
+          cacheReadInput: 0,
+          cacheCreationInput: 0,
+          totalInput: 100,
+        },
       },
       {
         type: "phase.started",

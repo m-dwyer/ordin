@@ -37,7 +37,7 @@ class FakeRuntime implements AgentRuntime {
       status: "ok",
       exitCode: 0,
       transcriptPath: "/tmp/transcript.jsonl",
-      tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0 },
+      tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 1 },
       durationMs: 5,
     };
   }
@@ -149,7 +149,7 @@ describe("HarnessRuntime", () => {
           status: "ok",
           exitCode: 0,
           transcriptPath: "/tmp/transcript.jsonl",
-          tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0 },
+          tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 1 },
           durationMs: 5,
         };
       },
@@ -219,7 +219,7 @@ describe("HarnessRuntime", () => {
           status: "ok",
           exitCode: 0,
           transcriptPath: "/tmp/transcript.jsonl",
-          tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
+          tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 },
           durationMs: 0,
         };
       },

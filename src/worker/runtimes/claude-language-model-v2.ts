@@ -64,6 +64,7 @@ const ZERO_TOKENS: TokenUsage = {
   output: 0,
   cacheReadInput: 0,
   cacheCreationInput: 0,
+  totalInput: 0,
 };
 
 const defaultSpawner: ProviderSpawner = (bin, args, opts) =>
@@ -454,11 +455,15 @@ function terminateChild(child: ProviderChildProcess, isClosed: () => boolean): v
 }
 
 function mergeUsage(current: TokenUsage, next: TokenUsage): TokenUsage {
+  const input = Math.max(current.input, next.input);
+  const cacheReadInput = Math.max(current.cacheReadInput, next.cacheReadInput);
+  const cacheCreationInput = Math.max(current.cacheCreationInput, next.cacheCreationInput);
   return {
-    input: Math.max(current.input, next.input),
+    input,
     output: current.output + next.output,
-    cacheReadInput: Math.max(current.cacheReadInput, next.cacheReadInput),
-    cacheCreationInput: Math.max(current.cacheCreationInput, next.cacheCreationInput),
+    cacheReadInput,
+    cacheCreationInput,
+    totalInput: input + cacheReadInput + cacheCreationInput,
   };
 }
 

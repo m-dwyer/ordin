@@ -215,6 +215,7 @@ const ZERO_TOKENS = {
   output: 0,
   cacheReadInput: 0,
   cacheCreationInput: 0,
+  totalInput: 0,
 } as const;
 
 /**

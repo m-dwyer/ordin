@@ -97,11 +97,15 @@ export function interpretClaudeStreamLine(line: string): {
 }
 
 function usageFromClaude(usage: ClaudeUsage): TokenUsage {
+  const input = usage.input_tokens ?? 0;
+  const cacheReadInput = usage.cache_read_input_tokens ?? 0;
+  const cacheCreationInput = usage.cache_creation_input_tokens ?? 0;
   return {
-    input: usage.input_tokens ?? 0,
+    input,
     output: usage.output_tokens ?? 0,
-    cacheReadInput: usage.cache_read_input_tokens ?? 0,
-    cacheCreationInput: usage.cache_creation_input_tokens ?? 0,
+    cacheReadInput,
+    cacheCreationInput,
+    totalInput: input + cacheReadInput + cacheCreationInput,
   };
 }
 

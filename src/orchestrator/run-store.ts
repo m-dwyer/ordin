@@ -44,6 +44,7 @@ export interface PhaseMeta {
     output: number;
     cacheReadInput: number;
     cacheCreationInput: number;
+    totalInput: number;
   };
   durationMs?: number;
   exitCode?: number;

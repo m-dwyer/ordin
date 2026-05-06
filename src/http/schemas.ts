@@ -78,6 +78,7 @@ export const PhaseMetaSchema = z
         output: z.number(),
         cacheReadInput: z.number(),
         cacheCreationInput: z.number(),
+        totalInput: z.number(),
       })
       .optional(),
   })

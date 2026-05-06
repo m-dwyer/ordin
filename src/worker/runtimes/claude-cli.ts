@@ -160,7 +160,7 @@ export class ClaudeCliRuntime implements AgentRuntime {
     const stderrFatalChunks: string[] = [];
 
     const tokens: { value: TokenUsage } = {
-      value: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 },
+      value: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 },
     };
     let sessionId: string | undefined;
     let closed = false;
@@ -387,14 +387,18 @@ export function effortForTier(tier: "S" | "M" | "L"): "low" | "medium" | "high" 
 }
 
 function mergeUsage(current: TokenUsage, usage: ClaudeUsage): TokenUsage {
+  const input = Math.max(current.input, usage.input_tokens ?? 0);
+  const cacheReadInput = Math.max(current.cacheReadInput, usage.cache_read_input_tokens ?? 0);
+  const cacheCreationInput = Math.max(
+    current.cacheCreationInput,
+    usage.cache_creation_input_tokens ?? 0,
+  );
   return {
-    input: Math.max(current.input, usage.input_tokens ?? 0),
+    input,
     output: Math.max(current.output, usage.output_tokens ?? 0),
-    cacheReadInput: Math.max(current.cacheReadInput, usage.cache_read_input_tokens ?? 0),
-    cacheCreationInput: Math.max(
-      current.cacheCreationInput,
-      usage.cache_creation_input_tokens ?? 0,
-    ),
+    cacheReadInput,
+    cacheCreationInput,
+    totalInput: input + cacheReadInput + cacheCreationInput,
   };
 }
 
