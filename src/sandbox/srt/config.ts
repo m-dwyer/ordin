@@ -32,6 +32,33 @@ export interface BuildSrtConfigInput {
   readonly homeDir?: string;
 }
 
+/**
+ * Dev-tooling roots ADR-014 commits to making readable: per-user
+ * binary install dirs that real workflows reach for (claude, mise,
+ * pnpm, etc.). Listed verbatim — the audit value is in being able to
+ * cross-reference the rendered profile against the ADR.
+ *
+ * Resolved relative to `$HOME` at config-build time. Missing dirs are
+ * fine — `realpathSync` falls back to the input string and srt
+ * tolerates allow rules that don't resolve.
+ */
+const DEV_TOOLING_ROOTS = [
+  ".local",
+  ".bun",
+  ".cargo",
+  ".rustup",
+  ".asdf",
+  ".nvm",
+  ".npm",
+  ".pnpm-store",
+  ".gem",
+  ".composer",
+  ".go",
+  ".cache",
+  ".config/mise",
+  "Library/pnpm",
+] as const;
+
 export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig {
   const home = input.homeDir ?? homedir();
   const params = input.params;
@@ -42,6 +69,7 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
   const tempDirResolved = resolveSafe(tempDir);
   const workerReadRoots = [...(params.workerReadRoots ?? [])].map(resolveSafe);
   const claudeDir = `${home}/.claude`;
+  const devToolingRoots = DEV_TOOLING_ROOTS.map((rel) => resolveSafe(`${home}/${rel}`));
 
   // srt reads are deny-then-allow. Denying the whole home directory
   // and re-allowing only the paths ordin needs is easier to audit than
@@ -71,6 +99,7 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
         workspaceRoot,
         runStoreDir,
         tempDirResolved,
+        ...devToolingRoots,
         ...workerReadRoots,
       ],
       // Writes are allow-only in srt: anything not in allowWrite is

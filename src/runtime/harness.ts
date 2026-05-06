@@ -10,6 +10,7 @@ import { AuditService } from "../broker/audit-service";
 import { InProcessBrokerClient } from "../broker/client/in-process";
 import type { BrokerClient } from "../broker/client/types";
 import { BrokerDispatch } from "../broker/dispatch";
+import { makeToolServiceHandler } from "../broker/tool-service";
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
@@ -492,18 +493,22 @@ export class HarnessRuntime {
       },
     });
     const services = state.config.localServices();
-    const broker = new Broker(services, {
-      proxyAuth: randomBytes(32).toString("hex"),
-      onEgress: audit.egressSink(),
-      ...(this.egressGatePrompter ? { onEgressGate: this.egressGatePrompter } : {}),
-    });
-    // Tool-dispatch authority lives broker-side (ADR-016). The
-    // `InProcessBrokerClient` is the Phase A transport: direct method
-    // calls into `BrokerDispatch`, ACL + audit-chain enforced in the
-    // same address space as the agent. Phase B introduces the HTTP
-    // transport for sandboxed runs.
+    // Tool-dispatch authority lives broker-side (ADR-016). One
+    // `BrokerDispatch` per run; both transports (`InProcessBrokerClient`
+    // for passthrough, `HttpBrokerClient` for sandboxed) call into the
+    // same instance so policy + audit code paths are identical across
+    // modes.
     const brokerDispatch = new BrokerDispatch({
       audit: { append: (ev) => audit.appendEvent(ev) },
+    });
+    const proxyAuth = randomBytes(32).toString("hex");
+    const broker = new Broker(services, {
+      proxyAuth,
+      onEgress: audit.egressSink(),
+      internalServices: [
+        { kind: "internal", name: "tools", handler: makeToolServiceHandler(brokerDispatch) },
+      ],
+      ...(this.egressGatePrompter ? { onEgressGate: this.egressGatePrompter } : {}),
     });
     const brokerClient = new InProcessBrokerClient(brokerDispatch);
     return {
@@ -512,6 +517,7 @@ export class HarnessRuntime {
       sandbox: selectSandbox(mode, { broker }),
       broker,
       brokerClient,
+      proxyAuth,
       audit,
       services,
     };
@@ -604,6 +610,7 @@ type RunInfra =
       readonly sandbox: Sandbox;
       readonly broker: Broker;
       readonly brokerClient: BrokerClient;
+      readonly proxyAuth: string;
       readonly audit: AuditService;
       readonly services: Readonly<Record<string, unknown>>;
     };

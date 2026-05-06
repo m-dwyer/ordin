@@ -100,6 +100,7 @@ No flat siblings under phase.
 4. **TRACEPARENT timing in Phase D.** Parent's phase span isn't open when the worker boots. Mitigation: extract context per `invoke()`, not at SDK init.
 5. **Pattern scanner false positives.** Aggressive patterns will block legitimate commands users expect to work. Mitigation: ship with conservative defaults; provide per-project override file (`.ordin/scanner-allow.json`) for documented exceptions.
 6. **Server-mode unblocking.** ADR-008 deferred sandboxing for `ordin serve` / `ordin mcp`. Phase B's HTTP-transport unblocks them — out of scope for this plan but worth flagging.
+7. **Broker-side bash bypasses srt FS isolation.** Phase A moved the bash executor broker-side; the broker is the parent process which has full host FS access. Result: an agent that calls `Bash` can `cat /etc/whatever` even under `--sandbox seatbelt`. Phase A's env-allowlist on the broker's bash spawn (`src/broker/tools/bash.ts`) blocks credential leakage, but the FS surface is still parent-equivalent. Close-out options: (a) per-call `sandbox-exec` wrap around bash invocations; (b) run bash inside the worker subprocess as a special-case (broker still records audit + ACL, executor runs worker-side). Slot before Phase C's pattern scanner — they cover overlapping threats.
 
 ## Sequencing (strict)
 
