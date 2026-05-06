@@ -1,24 +1,28 @@
 import type { ToolsInput } from "@mastra/core/agent";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import type { BrokerClient } from "../../../broker/client/types";
+import type { BrokerClient, ToolIntent } from "../../../broker/client/types";
 import type { Skill } from "../../../domain/skill";
+import { executeTool } from "../../tools/dispatcher";
 import type { RuntimeEvent } from "../types";
 
 /**
- * Mastra/Vercel tool builder that emits a `ToolIntent` per call into a
- * `BrokerClient`. The broker enforces the per-phase ACL, appends the
- * audit-chain envelopes (intent + result), and runs the executor; the
- * runtime adapter is now just an event emitter.
+ * Mastra/Vercel tool builder. Each Mastra tool call splits into three
+ * worker-side steps (ADR-016 corrected):
  *
- * ADR-016 / ADR-018 — the BrokerClient is `InProcessBrokerClient` in
- * default `--sandbox passthrough` runs (direct method calls) and
- * `HttpBrokerClient` in sandboxed runs (Phase B). The runtime never
- * sees which transport it has.
+ *   1. `broker.requestApproval(intent)` — broker checks ACL, runs the
+ *      pattern scanner (ADR-012, when it lands), audits the intent.
+ *   2. `executeTool(intent)` — worker runs the executor locally, in
+ *      its own trust domain (kernel-sandboxed under `--sandbox srt`).
+ *   3. `broker.recordResult(intent, recorded)` — broker audits the
+ *      outcome.
+ *
+ * The runtime never sees which transport the broker uses;
+ * `InProcessBrokerClient` and `HttpBrokerClient` speak the same
+ * `BrokerClient` surface.
  *
  * Worker isolation: `BrokerClient` and `ToolIntent` are imported as
- * type-only edges so this module honours the `worker-isolation`
- * dependency rule. The concrete client is constructed parent-side and
+ * type-only edges. The concrete client is constructed parent-side and
  * threaded through `DispatcherToolsContext`.
  */
 
@@ -28,20 +32,34 @@ export interface DispatcherToolsContext {
   readonly broker: BrokerClient;
   readonly runId: string;
   readonly phaseId: string;
-  readonly allowedTools: readonly string[];
   readonly onEvent: (event: RuntimeEvent) => void;
 }
 
+/**
+ * Derive the effective allowed-tools list once, then use it for both
+ * (a) which Mastra tools we expose and (b) the `allowedTools` field
+ * on each `ToolIntent` the broker checks. Two concerns must stay in
+ * lockstep: if the model can call a tool, the broker must also know
+ * the runtime considers it permitted. Drift between the two is the
+ * footgun this function eliminates.
+ *
+ * Auto-Skill: when the phase has skills attached (`ctx.skills`
+ * non-empty), `Skill` is implicitly allowed so the model can load
+ * skill bodies on demand. Workflow authors don't need to list it
+ * separately — skill attachment is the opt-in.
+ */
 export function buildDispatcherTools(
   toolNames: readonly string[],
   ctx: DispatcherToolsContext,
 ): ToolsInput {
-  const allowed = new Set(toolNames);
+  const effective = new Set(toolNames);
+  if (ctx.skills.length > 0) effective.add("Skill");
+  const allowedTools = [...effective];
+
   const out: ToolsInput = {};
   for (const [name, schema] of Object.entries(TOOL_SCHEMAS)) {
-    if (allowed.has(name)) out[name] = makeTool(name, schema, ctx);
+    if (effective.has(name)) out[name] = makeTool(name, schema, allowedTools, ctx);
   }
-  if (ctx.skills.length > 0) out["Skill"] = makeTool("Skill", TOOL_SCHEMAS.Skill, ctx);
   return out;
 }
 
@@ -97,7 +115,12 @@ const TOOL_SCHEMAS = {
 
 type ToolSchemaEntry = (typeof TOOL_SCHEMAS)[keyof typeof TOOL_SCHEMAS];
 
-function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsContext) {
+function makeTool(
+  name: string,
+  entry: ToolSchemaEntry,
+  allowedTools: readonly string[],
+  ctx: DispatcherToolsContext,
+) {
   return createTool({
     id: name,
     description: entry.description,
@@ -105,17 +128,44 @@ function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsCont
     execute: async (inputData) => {
       const input = inputData as Record<string, unknown>;
       const callId = randomCallId(name);
-      ctx.onEvent({ type: "tool.use", id: callId, name, input });
-      const started = Date.now();
-      const result = await ctx.broker.dispatchTool({
+      const intent: ToolIntent = {
         tool: name,
         input,
         runId: ctx.runId,
         phaseId: ctx.phaseId,
         cwd: ctx.cwd,
-        allowedTools: ctx.allowedTools,
+        allowedTools,
         skills: ctx.skills,
-      });
+      };
+      ctx.onEvent({ type: "tool.use", id: callId, name, input });
+      const started = Date.now();
+
+      const approval = await ctx.broker.requestApproval(intent);
+      if (!approval.ok) {
+        const message = approval.error.message;
+        ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
+        ctx.onEvent({
+          type: "timing",
+          name: `ordin.tool.${name}`,
+          durationMs: Date.now() - started,
+          status: "error",
+          error: message,
+          attributes: { "ordin.tool.name": name, "ordin.tool.error_kind": approval.error.kind },
+        });
+        // Record the (denied) outcome so audit reflects the worker
+        // never executed it. Fire-and-await — the result envelope
+        // mirrors the dispatch deny envelope.
+        await ctx.broker.recordResult(intent, {
+          result: { ok: false, error: approval.error },
+          durationMs: Date.now() - started,
+        });
+        throw new Error(message);
+      }
+
+      const result = await executeTool(name, input, { cwd: ctx.cwd, skills: ctx.skills });
+      const durationMs = Date.now() - started;
+      await ctx.broker.recordResult(intent, { result, durationMs });
+
       if (result.ok) {
         ctx.onEvent({
           type: "tool.result",
@@ -126,7 +176,7 @@ function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsCont
         ctx.onEvent({
           type: "timing",
           name: `ordin.tool.${name}`,
-          durationMs: Date.now() - started,
+          durationMs,
           status: "ok",
           attributes: { "ordin.tool.name": name },
         });
@@ -137,7 +187,7 @@ function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsCont
       ctx.onEvent({
         type: "timing",
         name: `ordin.tool.${name}`,
-        durationMs: Date.now() - started,
+        durationMs,
         status: "error",
         error: message,
         attributes: { "ordin.tool.name": name, "ordin.tool.error_kind": result.error.kind },

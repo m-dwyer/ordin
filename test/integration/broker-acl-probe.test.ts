@@ -47,6 +47,10 @@ describe("broker ACL e2e", () => {
           kind: "broker.tool.dispatch",
           payload: { tool: "Edit", decision: "deny", errorKind: "denied" },
         },
+        {
+          kind: "broker.tool.result",
+          payload: { tool: "Edit", ok: false, errorKind: "denied" },
+        },
       ]);
 
       const verify = await harness.verifyAudit(runId);

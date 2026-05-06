@@ -1,8 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrokerClient, ToolIntent, ToolResult } from "../../../broker/client/types";
+import type {
+  ApprovalResult,
+  BrokerClient,
+  RecordedResult,
+  ToolIntent,
+} from "../../../broker/client/types";
 import type { ComposedPrompt } from "../../../domain/composer";
 import type { InvokeRequest, RuntimeEvent } from "../types";
 import { type ScriptedPlan, ScriptedRuntime } from "./index";
@@ -28,14 +33,30 @@ function makeRequest(opts: Partial<InvokeRequest> = {}): InvokeRequest {
 }
 
 interface FakeBroker extends BrokerClient {
-  readonly mock: ReturnType<typeof vi.fn>;
+  readonly approvalCalls: ToolIntent[];
+  readonly resultCalls: Array<{ intent: ToolIntent; recorded: RecordedResult }>;
 }
 
-function fakeBroker(impl: (intent: ToolIntent) => Promise<ToolResult>): FakeBroker {
-  const mock = vi.fn(impl);
+function fakeBroker(
+  approve: (intent: ToolIntent) => ApprovalResult = () => ({ ok: true }),
+): FakeBroker {
+  const approvalCalls: ToolIntent[] = [];
+  const resultCalls: Array<{ intent: ToolIntent; recorded: RecordedResult }> = [];
+  const requestApproval = vi.fn(async (intent: ToolIntent): Promise<ApprovalResult> => {
+    approvalCalls.push(intent);
+    return approve(intent);
+  });
+  const recordResult = vi.fn(async (intent: ToolIntent, recorded: RecordedResult) => {
+    resultCalls.push({ intent, recorded });
+  });
   return {
-    dispatchTool: mock as unknown as (intent: ToolIntent) => Promise<ToolResult>,
-    mock,
+    requestApproval: requestApproval as unknown as (intent: ToolIntent) => Promise<ApprovalResult>,
+    recordResult: recordResult as unknown as (
+      intent: ToolIntent,
+      recorded: RecordedResult,
+    ) => Promise<void>,
+    approvalCalls,
+    resultCalls,
   };
 }
 
@@ -58,7 +79,7 @@ describe("ScriptedRuntime", () => {
     const runtime = new ScriptedRuntime({
       plan,
       runsDirFallback: scratch,
-      broker: fakeBroker(async () => ({ ok: true, output: "" })),
+      broker: fakeBroker(),
     });
 
     const result = await runtime.invoke(
@@ -66,15 +87,16 @@ describe("ScriptedRuntime", () => {
     );
 
     expect(result.status).toBe("ok");
-    expect(result.exitCode).toBe(0);
     expect(events).toEqual([
       { type: "assistant.text", text: "hello" },
       { type: "assistant.text", text: "world" },
     ]);
   });
 
-  it("dispatches tool calls via the injected broker", async () => {
-    const broker = fakeBroker(async () => ({ ok: true, output: "tool-output" }));
+  it("requests approval for each tool, executes locally, records the outcome", async () => {
+    // Real executors run, so set up the workspace.
+    writeFileSync(join(scratch, "x.md"), "x content", "utf8");
+    const broker = fakeBroker();
     const plan: ScriptedPlan = new Map([
       [
         "plan",
@@ -90,31 +112,34 @@ describe("ScriptedRuntime", () => {
 
     const events: RuntimeEvent[] = [];
     const result = await runtime.invoke(
-      makeRequest({ runDir: scratch, onEvent: (e) => events.push(e) }),
+      makeRequest({
+        runDir: scratch,
+        prompt: { ...PROMPT, cwd: scratch },
+        onEvent: (e) => events.push(e),
+      }),
     );
 
     expect(result.status).toBe("ok");
-    expect(broker.mock).toHaveBeenCalledTimes(2);
-    expect(broker.mock).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        tool: "Read",
-        input: { file_path: "x.md" },
-        cwd: "/tmp/test-cwd",
-      }),
-    );
-    const toolUseEvents = events.filter((e) => e.type === "tool.use");
-    expect(toolUseEvents).toHaveLength(2);
+    expect(broker.approvalCalls.map((c) => ({ tool: c.tool, input: c.input }))).toEqual([
+      { tool: "Read", input: { file_path: "x.md" } },
+      { tool: "Write", input: { file_path: "y.md", content: "ok" } },
+    ]);
+    expect(
+      broker.resultCalls.map((c) => ({ tool: c.intent.tool, ok: c.recorded.result.ok })),
+    ).toEqual([
+      { tool: "Read", ok: true },
+      { tool: "Write", ok: true },
+    ]);
+    expect(events.filter((e) => e.type === "tool.use")).toHaveLength(2);
   });
 
-  it("substitutes {cwd}, {workspace}, {run_id}, {phase} in text and tool inputs", async () => {
-    const broker = fakeBroker(async () => ({ ok: true, output: "ok" }));
+  it("substitutes {cwd}, {workspace}, {run_id}, {phase} in tool inputs before approval", async () => {
+    const broker = fakeBroker();
     const plan: ScriptedPlan = new Map([
       [
         "plan",
         {
           steps: [
-            { text: "running in {cwd} as {phase}" },
             {
               tool: {
                 name: "Write",
@@ -128,48 +153,46 @@ describe("ScriptedRuntime", () => {
         },
       ],
     ]);
-    const events: RuntimeEvent[] = [];
     const runtime = new ScriptedRuntime({ plan, runsDirFallback: scratch, broker });
 
-    await runtime.invoke(makeRequest({ runDir: scratch, onEvent: (e) => events.push(e) }));
+    await runtime.invoke(makeRequest({ runDir: scratch, prompt: { ...PROMPT, cwd: scratch } }));
 
-    const textEvent = events.find((e) => e.type === "assistant.text");
-    expect(textEvent).toEqual({
-      type: "assistant.text",
-      text: "running in /tmp/test-cwd as plan",
+    expect(broker.approvalCalls[0]?.input).toEqual({
+      file_path: `${scratch}/log-test-run-1-plan.txt`,
+      content: "static",
     });
-    expect(broker.mock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tool: "Write",
-        input: {
-          file_path: "/tmp/test-cwd/log-test-run-1-plan.txt",
-          content: "static",
-        },
-      }),
-    );
   });
 
-  it("emits tool.result with ok=true on success", async () => {
-    const broker = fakeBroker(async () => ({ ok: true, output: "hello world output" }));
+  it("emits tool.result with ok=true and records ok outcome on success", async () => {
+    const broker = fakeBroker();
     const plan: ScriptedPlan = new Map([
       ["plan", { steps: [{ tool: { name: "Bash", input: { command: "echo ok" } } }] }],
     ]);
     const events: RuntimeEvent[] = [];
     const runtime = new ScriptedRuntime({ plan, runsDirFallback: scratch, broker });
 
-    await runtime.invoke(makeRequest({ runDir: scratch, onEvent: (e) => events.push(e) }));
+    await runtime.invoke(
+      makeRequest({
+        runDir: scratch,
+        prompt: { ...PROMPT, cwd: scratch },
+        onEvent: (e) => events.push(e),
+      }),
+    );
 
     const result = events.find((e) => e.type === "tool.result");
-    expect(result).toMatchObject({ type: "tool.result", ok: true, result: "hello world output" });
+    expect(result).toMatchObject({ type: "tool.result", ok: true });
+    if (result?.type !== "tool.result") throw new Error("expected tool.result");
+    expect(result.result).toContain("ok");
+    expect(broker.resultCalls[0]?.recorded.result.ok).toBe(true);
   });
 
-  it("emits tool.result with ok=false and returns failed status when broker denies", async () => {
-    const broker = fakeBroker(async () => ({
+  it("emits tool.result with ok=false and records the deny when the broker rejects", async () => {
+    const broker = fakeBroker(() => ({
       ok: false,
-      error: { kind: "executor", message: "boom" },
+      error: { kind: "denied", message: "denied by ACL" },
     }));
     const plan: ScriptedPlan = new Map([
-      ["plan", { steps: [{ tool: { name: "Bash", input: { command: "fail" } } }] }],
+      ["plan", { steps: [{ tool: { name: "Bash", input: { command: "irrelevant" } } }] }],
     ]);
     const events: RuntimeEvent[] = [];
     const runtime = new ScriptedRuntime({ plan, runsDirFallback: scratch, broker });
@@ -180,9 +203,32 @@ describe("ScriptedRuntime", () => {
 
     expect(result.status).toBe("failed");
     expect(result.failure?.kind).toBe("tool");
-    expect(result.failure?.message).toBe("boom");
-    const failResult = events.find((e) => e.type === "tool.result");
-    expect(failResult).toMatchObject({ type: "tool.result", ok: false, result: "boom" });
+    expect(result.failure?.message).toBe("denied by ACL");
+    const failEvent = events.find((e) => e.type === "tool.result");
+    expect(failEvent).toMatchObject({ type: "tool.result", ok: false, result: "denied by ACL" });
+    expect(broker.resultCalls[0]?.recorded.result.ok).toBe(false);
+  });
+
+  it("emits tool.result with ok=false and records executor failure when bash exits non-zero", async () => {
+    const broker = fakeBroker();
+    const plan: ScriptedPlan = new Map([
+      ["plan", { steps: [{ tool: { name: "Bash", input: { command: "exit 7" } } }] }],
+    ]);
+    const events: RuntimeEvent[] = [];
+    const runtime = new ScriptedRuntime({ plan, runsDirFallback: scratch, broker });
+
+    const result = await runtime.invoke(
+      makeRequest({
+        runDir: scratch,
+        prompt: { ...PROMPT, cwd: scratch },
+        onEvent: (e) => events.push(e),
+      }),
+    );
+
+    expect(result.status).toBe("failed");
+    const recorded = broker.resultCalls[0]?.recorded.result;
+    if (!recorded || recorded.ok) throw new Error("expected executor failure");
+    expect(recorded.error.kind).toBe("executor");
   });
 
   it("throws when no script exists for the requested phase", async () => {
@@ -190,7 +236,7 @@ describe("ScriptedRuntime", () => {
     const runtime = new ScriptedRuntime({
       plan,
       runsDirFallback: scratch,
-      broker: fakeBroker(async () => ({ ok: true, output: "" })),
+      broker: fakeBroker(),
     });
 
     await expect(
@@ -210,7 +256,7 @@ describe("ScriptedRuntime", () => {
     const runtime = new ScriptedRuntime({
       plan,
       runsDirFallback: scratch,
-      broker: fakeBroker(async () => ({ ok: true, output: "" })),
+      broker: fakeBroker(),
     });
 
     const result = await runtime.invoke(makeRequest({ runDir: scratch }));
@@ -227,7 +273,7 @@ describe("ScriptedRuntime", () => {
     const runtime = new ScriptedRuntime({
       planLoader,
       runsDirFallback: scratch,
-      broker: fakeBroker(async () => ({ ok: true, output: "" })),
+      broker: fakeBroker(),
     });
 
     await runtime.invoke(makeRequest({ runDir: scratch }));
@@ -238,7 +284,7 @@ describe("ScriptedRuntime", () => {
   it("throws a clear error when neither plan nor planLoader is provided", async () => {
     const runtime = new ScriptedRuntime({
       runsDirFallback: scratch,
-      broker: fakeBroker(async () => ({ ok: true, output: "" })),
+      broker: fakeBroker(),
     });
     await expect(runtime.invoke(makeRequest({ runDir: scratch }))).rejects.toThrow(
       /no plan and no planLoader/,

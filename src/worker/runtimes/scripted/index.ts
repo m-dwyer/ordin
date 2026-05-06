@@ -3,7 +3,8 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import type { BrokerClient } from "../../../broker/client/types";
+import type { BrokerClient, ToolIntent } from "../../../broker/client/types";
+import { executeTool } from "../../tools/dispatcher";
 import { parseToolSpec } from "../shared/tools";
 import type {
   AgentRuntime,
@@ -49,8 +50,10 @@ export interface ScriptedRuntimeOptions {
   readonly runsDirFallback?: string;
   /**
    * Tool execution surface (ADR-016). Each step's `tool` invocation
-   * routes through `broker.dispatchTool` so ACL + audit cover scripted
-   * runs identically to model-driven ones.
+   * goes through `broker.requestApproval` for ACL + audit + (Phase C)
+   * scanner, executes worker-side, then `broker.recordResult` for the
+   * outcome envelope. Same flow scripted runs share with model-driven
+   * runtimes.
    */
   readonly broker: BrokerClient;
 }
@@ -163,8 +166,7 @@ export class ScriptedRuntime implements AgentRuntime {
         if (step.tool) {
           const id = `scripted-${++toolCounter}`;
           const expanded = substituteInput(step.tool.input, subs);
-          emit({ type: "tool.use", id, name: step.tool.name, input: expanded });
-          const dispatched = await this.broker.dispatchTool({
+          const intent: ToolIntent = {
             tool: step.tool.name,
             input: expanded,
             runId: req.runId,
@@ -172,16 +174,36 @@ export class ScriptedRuntime implements AgentRuntime {
             cwd: req.prompt.cwd,
             allowedTools,
             skills: req.prompt.skills,
+          };
+          emit({ type: "tool.use", id, name: step.tool.name, input: expanded });
+          const stepStarted = Date.now();
+          const approval = await this.broker.requestApproval(intent);
+          if (!approval.ok) {
+            const message = approval.error.message;
+            emit({ type: "tool.result", id, ok: false, result: message });
+            await this.broker.recordResult(intent, {
+              result: { ok: false, error: approval.error },
+              durationMs: Date.now() - stepStarted,
+            });
+            throw new Error(message);
+          }
+          const result = await executeTool(step.tool.name, expanded, {
+            cwd: req.prompt.cwd,
+            skills: req.prompt.skills,
           });
-          if (dispatched.ok) {
+          await this.broker.recordResult(intent, {
+            result,
+            durationMs: Date.now() - stepStarted,
+          });
+          if (result.ok) {
             emit({
               type: "tool.result",
               id,
               ok: true,
-              ...(dispatched.output ? { result: dispatched.output } : {}),
+              ...(result.output ? { result: result.output } : {}),
             });
           } else {
-            const message = dispatched.error.message;
+            const message = result.error.message;
             emit({ type: "tool.result", id, ok: false, result: message });
             throw new Error(message);
           }

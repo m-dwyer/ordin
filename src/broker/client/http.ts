@@ -1,44 +1,40 @@
 import { request } from "node:http";
 import { HttpProxyAgent } from "http-proxy-agent";
-import type { BrokerClient, ToolIntent, ToolResult } from "./types";
+import type { ApprovalResult, BrokerClient, RecordedResult, ToolIntent } from "./types";
 
 /**
- * HTTP transport for tool dispatch (ADR-018 Phase B). The worker runs
- * in a separate process from the broker (sandboxed runs, future
- * `ordin serve`); this client forwards each `ToolIntent` to the
- * broker's `tools` internal service over localhost HTTP via an
- * explicit HTTP proxy.
+ * HTTP transport for tool dispatch (ADR-018 Phase B / ADR-016
+ * correction). The worker tunnels each tool call's two legs —
+ * approval request + result record — through an HTTP proxy to the
+ * broker's `tools` internal service.
  *
  * Two deployment shapes route through the same code path:
  *
  *   - **Tests / non-srt subprocess.** `proxyUrl` is the broker's own
  *     listen URL with userinfo (`http://ordin:<secret>@127.0.0.1:port`).
  *     `HttpProxyAgent` opens TCP to the broker, sends a proxy-form
- *     request (`POST http://tools/dispatch HTTP/1.1`), and the broker's
- *     hostname-map routes it to the `tools` internal service.
+ *     request (`POST http://tools/dispatch/request HTTP/1.1`), and
+ *     the broker's hostname-map routes it to the `tools` internal
+ *     service.
  *
  *   - **srt sandbox.** srt's wrapper sets `HTTP_PROXY` to its own
  *     internal filter proxy (`http://localhost:<srt-port>`, no auth).
  *     `HttpProxyAgent` tunnels there; srt allowlist-checks `tools`,
- *     forwards via `parentProxy` (= broker), broker routes the same
- *     proxy-form request to its internal service. The per-run secret
- *     stays in srt's `parentProxy.http` userinfo — never reaches the
- *     worker.
+ *     forwards via `parentProxy` (= broker), broker routes the
+ *     request. The per-run secret stays in srt's `parentProxy.http`
+ *     userinfo — never reaches the worker.
  *
  * Wire shape mirrors `tool-service.ts`:
- *   POST /dispatch
- *   Body: ToolIntent (JSON)
- *
- *   200 OK { ok: true | false, output | error }
+ *   POST /dispatch/request   Body: ToolIntent              → ApprovalResult
+ *   POST /dispatch/result    Body: { intent, recorded }    → 204 No Content
  *
  * The contract test (`broker-transport-parity.test.ts`) pins that the
- * `ToolResult` and audit envelope shape are identical between this and
- * `InProcessBrokerClient` for the same intent.
+ * audit envelopes are identical between this and `InProcessBrokerClient`
+ * for the same intents.
  *
- * Tool-execution errors travel inside `ToolResult` (ok=false). Genuine
- * transport failures (broker unreachable, malformed response) raise as
- * `BrokerTransportError` so callers can distinguish "policy denied" from
- * "transport broke".
+ * Genuine transport failures (broker unreachable, malformed response)
+ * raise as `BrokerTransportError` so callers can distinguish "policy
+ * denied" from "transport broke".
  */
 
 export interface HttpBrokerClientOptions {
@@ -72,19 +68,41 @@ export class HttpBrokerClient implements BrokerClient {
     this.httpRequest = opts.httpRequest ?? request;
   }
 
-  dispatchTool(intent: ToolIntent): Promise<ToolResult> {
-    const body = Buffer.from(JSON.stringify(intent), "utf8");
-    return new Promise<ToolResult>((resolve, reject) => {
+  async requestApproval(intent: ToolIntent): Promise<ApprovalResult> {
+    const text = await this.post("/dispatch/request", intent, {
+      expectStatus: 200,
+      expectBody: true,
+    });
+    try {
+      return JSON.parse(text ?? "") as ApprovalResult;
+    } catch (err) {
+      throw new BrokerTransportError(
+        `Broker returned malformed approval JSON: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async recordResult(intent: ToolIntent, recorded: RecordedResult): Promise<void> {
+    await this.post("/dispatch/result", { intent, recorded }, { expectStatus: 204 });
+  }
+
+  private post(
+    path: string,
+    body: unknown,
+    options: { expectStatus: number; expectBody?: boolean },
+  ): Promise<string | undefined> {
+    const payload = Buffer.from(JSON.stringify(body), "utf8");
+    return new Promise<string | undefined>((resolve, reject) => {
       const req = this.httpRequest(
         {
           agent: this.agent,
           host: this.serviceHost,
           port: 80,
           method: "POST",
-          path: "/dispatch",
+          path,
           headers: {
             "Content-Type": "application/json",
-            "Content-Length": body.length,
+            "Content-Length": payload.length,
           },
         },
         (res) => {
@@ -92,24 +110,15 @@ export class HttpBrokerClient implements BrokerClient {
           res.on("data", (chunk) => chunks.push(chunk as Buffer));
           res.on("end", () => {
             const text = Buffer.concat(chunks).toString("utf8");
-            if (res.statusCode !== 200) {
+            if (res.statusCode !== options.expectStatus) {
               reject(
                 new BrokerTransportError(
-                  `Broker returned ${res.statusCode ?? "?"}: ${text || "(empty)"}`,
+                  `Broker ${path} returned ${res.statusCode ?? "?"}: ${text || "(empty)"}`,
                 ),
               );
               return;
             }
-            try {
-              const parsed = JSON.parse(text) as ToolResult;
-              resolve(parsed);
-            } catch (err) {
-              reject(
-                new BrokerTransportError(
-                  `Broker returned malformed JSON: ${err instanceof Error ? err.message : String(err)}`,
-                ),
-              );
-            }
+            resolve(options.expectBody ? text : undefined);
           });
           res.on("error", (err) =>
             reject(new BrokerTransportError(`Broker response stream error: ${err.message}`)),
@@ -119,7 +128,7 @@ export class HttpBrokerClient implements BrokerClient {
       req.on("error", (err) =>
         reject(new BrokerTransportError(`Broker request failed: ${err.message}`)),
       );
-      req.write(body);
+      req.write(payload);
       req.end();
     });
   }

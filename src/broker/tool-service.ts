@@ -1,29 +1,31 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ToolIntent, ToolResult } from "./client/types";
+import type { RecordedResult, ToolIntent } from "./client/types";
 import type { BrokerDispatch } from "./dispatch";
 
 /**
  * Adapter from Broker's internal-service HTTP surface to
- * `BrokerDispatch.dispatchTool`. Worker-side `HttpBrokerClient` POSTs
- * `ToolIntent` JSON to `http://tools/dispatch`; the broker routes by
- * hostname and invokes this handler.
+ * `BrokerDispatch`. Worker-side `HttpBrokerClient` POSTs each leg of
+ * a tool dispatch to the broker; the broker routes by hostname (`tools`)
+ * and invokes this handler.
  *
  * Wire shape:
- *   POST /dispatch
- *   Content-Type: application/json
- *   Body: ToolIntent (JSON)
  *
- *   200 OK
- *   Content-Type: application/json
- *   Body: ToolResult (JSON)
+ *   POST /dispatch/request
+ *   Body: ToolIntent
+ *   → 200 OK { ok: true } | { ok: false, error: ToolError }
  *
- * Errors that aren't tool-execution errors (bad method, malformed JSON)
- * surface as 4xx/5xx; tool-execution errors travel inside the
- * `ToolResult` body so the contract test can pin them across both
- * transports without distinguishing transport vs policy failures.
+ *   POST /dispatch/result
+ *   Body: { intent: ToolIntent, recorded: RecordedResult }
+ *   → 204 No Content
+ *
+ * Tool execution itself happens worker-side (ADR-016 corrected) — the
+ * broker never invokes an executor. Errors that aren't policy
+ * decisions (bad method, malformed JSON) surface as 4xx; policy
+ * decisions ride inside the body.
  */
 
-const DISPATCH_PATH = "/dispatch";
+const REQUEST_PATH = "/dispatch/request";
+const RESULT_PATH = "/dispatch/result";
 
 export function makeToolServiceHandler(
   dispatch: BrokerDispatch,
@@ -33,35 +35,61 @@ export function makeToolServiceHandler(
       writeJson(res, 405, { error: { kind: "method_not_allowed", message: "POST required" } });
       return;
     }
-    const url = req.url ?? "";
-    const path = url.startsWith("http") ? new URL(url).pathname : url.split("?")[0];
-    if (path !== DISPATCH_PATH) {
-      writeJson(res, 404, {
-        error: { kind: "not_found", message: `Unknown path: ${path ?? "(none)"}` },
-      });
+    const path = parsePath(req.url);
+    const body = await readBody(req).catch((err) => err as Error);
+    if (body instanceof Error) {
+      writeJson(res, 400, { error: { kind: "body_read_failed", message: body.message } });
       return;
     }
-    let body: string;
-    try {
-      body = await readBody(req);
-    } catch (err) {
-      writeJson(res, 400, {
-        error: { kind: "body_read_failed", message: errMessage(err) },
-      });
+    if (path === REQUEST_PATH) {
+      const intent = parseJson<ToolIntent>(body);
+      if (intent instanceof Error) {
+        writeJson(res, 400, {
+          error: { kind: "json_parse_failed", message: intent.message },
+        });
+        return;
+      }
+      const approval = await dispatch.requestApproval(intent);
+      writeJson(res, 200, approval);
       return;
     }
-    let intent: ToolIntent;
-    try {
-      intent = JSON.parse(body) as ToolIntent;
-    } catch (err) {
-      writeJson(res, 400, {
-        error: { kind: "json_parse_failed", message: errMessage(err) },
-      });
+    if (path === RESULT_PATH) {
+      const parsed = parseJson<{ intent: ToolIntent; recorded: RecordedResult }>(body);
+      if (parsed instanceof Error) {
+        writeJson(res, 400, {
+          error: { kind: "json_parse_failed", message: parsed.message },
+        });
+        return;
+      }
+      await dispatch.recordResult(parsed.intent, parsed.recorded);
+      res.writeHead(204);
+      res.end();
       return;
     }
-    const result: ToolResult = await dispatch.dispatchTool(intent);
-    writeJson(res, 200, result);
+    writeJson(res, 404, {
+      error: { kind: "not_found", message: `Unknown path: ${path ?? "(none)"}` },
+    });
   };
+}
+
+function parsePath(reqUrl: string | undefined): string | undefined {
+  if (!reqUrl) return undefined;
+  if (reqUrl.startsWith("http")) {
+    try {
+      return new URL(reqUrl).pathname;
+    } catch {
+      return undefined;
+    }
+  }
+  return reqUrl.split("?")[0];
+}
+
+function parseJson<T>(text: string): T | Error {
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -79,8 +107,4 @@ async function readBody(req: IncomingMessage): Promise<string> {
     chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer));
   }
   return Buffer.concat(chunks).toString("utf8");
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

@@ -167,7 +167,6 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
       broker: this.broker,
       runId: req.runId,
       phaseId: req.prompt.phaseId,
-      allowedTools: toolNames,
       onEvent: emit,
     });
 

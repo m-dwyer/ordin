@@ -187,7 +187,6 @@ export class AiSdkRuntime implements AgentRuntime {
       broker: this.broker,
       runId: req.runId,
       phaseId: req.prompt.phaseId,
-      allowedTools: toolNames,
       onEvent: emit,
     });
     const mastra = this.mastraTracing?.(emit);

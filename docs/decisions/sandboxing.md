@@ -364,34 +364,36 @@ In `--sandbox seatbelt` runs, srt enforces "egress only via broker" at the kerne
 
 ---
 
-## ADR-016 — Tool dispatch via broker (B-worker tool boundary)
+## ADR-016 — Tool dispatch policy via broker (worker still executes)
 
-**Status:** Provisional (v3 — completes B-worker per ADR-001 trigger list)
+**Status:** Accepted (v3 — corrects the original "broker executes" framing)
 
-**Context:** ADR-001 reserved B-worker. ADR-012 deferred a pre-execution pattern scanner. Both decisions converge on the same gap: today `ToolDispatcher.dispatch(name, input, ctx)` runs in-process inside the worker (`src/worker/runtimes/shared/dispatcher.ts`). A pattern scanner inserted at that point runs in the same trust domain as the agent. A sandbox escape — or a clever prompt injection that causes the dispatcher to be bypassed — defeats the scanner along with the rest of the worker code.
+**Context:** ADR-001 reserved B-worker. ADR-012 deferred a pre-execution pattern scanner. Both decisions converge on the same gap: today `ToolDispatcher.dispatch(name, input, ctx)` runs in-process inside the worker (`src/worker/runtimes/shared/dispatcher.ts`). A pattern scanner inserted at that point runs in the same trust domain as the agent — there is no policy boundary between agent code and the scanner code.
 
-ADR-015 formalised the broker as the canonical worker-egress boundary. This ADR extends that boundary to include tool dispatch — completing the B-worker trust separation that ADR-001 reserved.
+ADR-015 formalised the broker as the canonical worker-egress boundary. This ADR extends that boundary to include tool dispatch *policy* — ACL, scanner, audit — while keeping execution worker-side so the kernel sandbox (`--sandbox srt`) actually confines what the agent runs.
 
-**Decision:** Tool dispatch becomes RPC over the broker.
+**Decision:** Tool dispatch policy moves to the broker; tool *execution* stays in the worker.
 
-- Worker emits tool **intents** (`{tool, input, run_id, phase_id, span_context}`) over HTTP to the broker.
+- Worker emits a tool **intent** (`{tool, input, run_id, phase_id, span_context}`) to the broker via in-process call (passthrough) or localhost HTTP (srt).
 - Broker enforces:
   - Per-phase ACL derived from the workflow's `allowed_tools`.
   - Pre-execution pattern scanner (ADR-012) — denied patterns rejected at the boundary, audit-logged.
-  - Audit-chain entry per attempt (allowed *and* denied).
-- Broker (or a separately-trusted tool-runner process) executes the tool and returns the result.
-- Worker no longer makes filesystem or subprocess syscalls for tool execution. Its role reduces to model orchestration + tool-intent emission.
+  - Audit-chain entry for the intent + decision.
+- Broker returns an **approval** (or a typed deny).
+- Worker executes the tool inside its own trust domain. Under `--sandbox srt` the kernel sandbox confines the syscalls; under `--sandbox passthrough` there is no kernel sandbox and the broker's pattern scanner is the primary defense.
+- Worker reports the result back to the broker; broker appends the result audit envelope.
+
+**Original framing (rejected).** An earlier draft of this ADR said the broker should execute the tool itself — justified by "process-level RCE in the worker no longer grants tool access." That justification doesn't hold up: an attacker with code execution in the worker syscalls as the worker process and bypasses any RPC layer entirely. The broker-as-gate only stops *prompt-level* misuse (the model emitting a bad request) — and against prompt-level threats, the right layers are kernel sandbox + scanner, both of which want execution to stay inside the sandbox. Moving execution into the broker (the parent process) actively *removes* the kernel sandbox's protection, which is the opposite of the intended posture.
 
 **Consequences:**
 
-- **Trust separation in multi-process modes.** When the broker runs in a separate process from the agent (sandboxed runs, hosted runs), process-level RCE in the worker no longer grants tool access; the attacker would need to compromise the broker too.
-- **Policy enforcement in single-process mode.** Default `--sandbox passthrough` runs use the in-process `BrokerClient` (per ADR-018). The trust boundary is logical, not physical: ACL, pattern scanner, and audit chain all run, but the agent and the broker share an address space. This is the same posture as today's in-worker dispatcher, with the policy code consolidated.
-- **Pattern scanner is implementable.** ADR-012's defense-in-depth surface is meaningful in both modes — strongest when the scanner runs in a separate process from the agent.
-- **Audit unifies.** Today's chain captures broker forwards (network) but not in-worker tool calls. After this ADR, every tool intent — allowed, denied, executed, errored — is in the chain regardless of transport.
-- **Per-phase ACL enforced at the trust boundary**, not inside the agent code path. The agent can declare any tool intent it wants; the broker authorises against the workflow declaration.
-- **Latency cost (multi-process only).** HTTP-transport mode pays ~1–10 ms per tool call vs in-process function calls. Phases issuing dozens of bash calls pay spawn-equivalent overhead. Acceptable for sandboxed runs; in-process mode (default) avoids this entirely.
-- **Audit budget.** ADR-001's 1500-LOC budget for `src/sandbox/` doesn't cover `src/broker/` directly; this ADR extends the discipline — treat the budget as inclusive of trust-critical code regardless of directory. Pattern scanner + dispatch handler must fit alongside existing broker code.
-- **New failure mode.** Broker wedge → no tool execution. Existing audit-broker failure modes apply equivalently.
+- **Kernel sandbox is load-bearing again.** Under `--sandbox srt`, bash runs inside the worker subprocess, which sandbox-exec confines. `rm -rf ~/.ssh` is denied at the kernel level — the property pre-Phase A had, restored.
+- **Broker is policy + audit only.** No tool executors live broker-side. `src/broker/` stays small (well under the ADR-001 1500-LOC budget) and contains only policy code.
+- **Pattern scanner has the right siting.** ADR-012's scanner runs in the broker's approval path. It's defense-in-depth (regexes are bypassable), but it's the primary defense for `--sandbox passthrough` and a layer-2 catch under srt.
+- **Audit unifies.** Every intent — allowed, denied, executed, errored — produces a `broker.tool.dispatch` envelope (intent + decision) and, when allowed, a `broker.tool.result` envelope (worker-reported outcome). Same shape across both transports.
+- **Per-phase ACL enforced at the trust boundary**, not inside the agent code path.
+- **Latency cost (HTTP transport only).** Two round-trips per tool call vs one in-process function call: approval request, then result-record. Each leg ~1–10 ms over localhost. Phases with dozens of bash calls pay spawn-equivalent overhead. Acceptable for sandboxed runs; in-process mode amortizes both legs to direct method calls.
+- **New failure mode.** Broker wedge → no tool execution can be approved. Existing audit-broker failure modes apply equivalently.
 
 **Containerization considered.** The standard pattern for "agent does anything destructive" is "run the whole agent in a container". Container/VM tech has improved — Apple Containers (macOS 15+, microVM-per-container via Apple Virtualization Framework) and OrbStack close the filesystem-performance gap that Docker Desktop's bind mounts left open. Native arm64 Linux containers on Apple Silicon are no longer the perf disaster they were two years ago.
 
@@ -411,13 +413,13 @@ For multi-tenant hosted contexts (v3+; see ADR-001 trigger list item 4), contain
 
 **Migration path:**
 
-1. Define the broker's tool-dispatch surface (`POST http://tools/dispatch`); add the broker hostname-map entry as an `internal` service.
-2. Move `executeBash`, `executeWrite`, etc. from `src/worker/runtimes/shared/tools.ts` into a broker-side handler. Keep input shapes identical to ease the move.
-3. Replace `ToolDispatcher.dispatch(...)` in `buildDispatcherTools.execute` with an HTTP call to the broker.
-4. Implement the pattern scanner as a broker-side `before` hook on the dispatch handler (ADR-012's hook surface).
-5. Audit-chain integration: every dispatch attempt produces an envelope.
+1. Define the broker's policy surface — two endpoints: approval request (`POST http://tools/dispatch/request`) and result record (`POST http://tools/dispatch/result`). Both routed via the broker hostname-map as an `internal` service.
+2. Tool executors live worker-side (`src/worker/tools/*`). Worker imports them locally; the broker never does.
+3. `buildDispatcherTools.execute` orchestrates: `requestApproval(intent)` → on approval, run the local executor → `recordResult(intent, result)`.
+4. Implement the pattern scanner as part of the broker's approval check (ADR-012). Same code path serves both transports.
+5. Audit-chain integration: approval emits `broker.tool.dispatch`, result emits `broker.tool.result`.
 
-Out of scope for this ADR: specific RPC framing (HTTP+JSON vs gRPC vs UDS), pattern-file location, and tool-runner process boundary (broker vs sibling). All resolved during implementation.
+Out of scope for this ADR: specific RPC framing (HTTP+JSON vs gRPC vs UDS), pattern-file location, scanner pattern semantics. All resolved during implementation.
 
 ---
 

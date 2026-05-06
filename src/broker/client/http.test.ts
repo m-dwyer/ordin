@@ -1,7 +1,5 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Skill } from "../../domain/skill";
 import { BrokerDispatch } from "../dispatch";
 import { Broker } from "../index";
 import { makeToolServiceHandler } from "../tool-service";
@@ -43,92 +41,62 @@ async function startBroker(audit: RecordingAudit): Promise<{
   const client = new HttpBrokerClient({
     proxyUrl: `http://ordin:test-secret@${broker.host}:${broker.port}`,
   });
-  return {
-    broker,
-    client,
-    cleanup: () => broker.stop(),
-  };
+  return { broker, client, cleanup: () => broker.stop() };
 }
 
-describe("HttpBrokerClient", () => {
-  let cwd: string;
-  let cleanup: () => Promise<void>;
+const NO_SKILLS: readonly Skill[] = [];
 
-  beforeEach(async () => {
-    cwd = await mkdtemp(join(tmpdir(), "http-broker-"));
+describe("HttpBrokerClient.requestApproval", () => {
+  let cleanup: () => Promise<void>;
+  beforeEach(() => {
     cleanup = async () => {};
   });
-
   afterEach(async () => {
     await cleanup();
   });
 
-  it("round-trips a successful tool dispatch through HTTP", async () => {
-    await writeFile(join(cwd, "note.md"), "hello\n", "utf8");
+  it("returns an approval for an in-ACL intent and audits the dispatch envelope", async () => {
     const audit = new RecordingAudit();
     const setup = await startBroker(audit);
     cleanup = setup.cleanup;
 
-    const result = await setup.client.dispatchTool({
+    const approval = await setup.client.requestApproval({
       tool: "Read",
       input: { file_path: "note.md" },
       runId: "run1",
       phaseId: "probe",
-      cwd,
+      cwd: "/tmp",
       allowedTools: ["Read"],
-      skills: [],
+      skills: NO_SKILLS,
     });
 
-    if (!result.ok) throw new Error(`expected ok: ${result.error.message}`);
-    expect(result.output).toBe("hello\n");
-    expect(audit.calls.map((c) => c.kind)).toEqual(["broker.tool.dispatch", "broker.tool.result"]);
+    expect(approval).toEqual({ ok: true });
+    expect(audit.calls).toHaveLength(1);
     expect(audit.calls[0]?.payload).toMatchObject({ tool: "Read", decision: "allow" });
-    expect(audit.calls[1]?.payload).toMatchObject({ tool: "Read", ok: true });
   });
 
-  it("serializes a denied result over HTTP without throwing", async () => {
+  it("serializes a typed deny over HTTP without throwing", async () => {
     const audit = new RecordingAudit();
     const setup = await startBroker(audit);
     cleanup = setup.cleanup;
 
-    const result = await setup.client.dispatchTool({
+    const approval = await setup.client.requestApproval({
       tool: "Bash",
       input: { command: "echo nope" },
       runId: "run1",
       phaseId: "probe",
-      cwd,
+      cwd: "/tmp",
       allowedTools: ["Read"],
-      skills: [],
+      skills: NO_SKILLS,
     });
 
-    if (result.ok) throw new Error("expected deny");
-    expect(result.error.kind).toBe("denied");
-    expect(audit.calls).toHaveLength(1);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.kind).toBe("denied");
     expect(audit.calls[0]?.payload).toMatchObject({
       tool: "Bash",
       decision: "deny",
       errorKind: "denied",
     });
-  });
-
-  it("serializes an executor error result over HTTP without throwing", async () => {
-    const audit = new RecordingAudit();
-    const setup = await startBroker(audit);
-    cleanup = setup.cleanup;
-
-    const result = await setup.client.dispatchTool({
-      tool: "Read",
-      input: { file_path: "missing.md" },
-      runId: "run1",
-      phaseId: "probe",
-      cwd,
-      allowedTools: ["Read"],
-      skills: [],
-    });
-
-    if (result.ok) throw new Error("expected failure");
-    expect(result.error.kind).toBe("executor");
-    expect(result.error.message).toMatch(/ENOENT|missing/i);
   });
 
   it("rejects unauthenticated requests at the proxy layer", async () => {
@@ -141,16 +109,52 @@ describe("HttpBrokerClient", () => {
     });
 
     await expect(
-      wrongAuthClient.dispatchTool({
+      wrongAuthClient.requestApproval({
         tool: "Read",
         input: { file_path: "note.md" },
         runId: "run1",
         phaseId: "probe",
-        cwd,
+        cwd: "/tmp",
         allowedTools: ["Read"],
-        skills: [],
+        skills: NO_SKILLS,
       }),
     ).rejects.toBeInstanceOf(BrokerTransportError);
     expect(audit.calls).toHaveLength(0);
+  });
+});
+
+describe("HttpBrokerClient.recordResult", () => {
+  let cleanup: () => Promise<void>;
+  beforeEach(() => {
+    cleanup = async () => {};
+  });
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  it("appends a result envelope with the worker-reported duration", async () => {
+    const audit = new RecordingAudit();
+    const setup = await startBroker(audit);
+    cleanup = setup.cleanup;
+
+    const intent = {
+      tool: "Read",
+      input: { file_path: "note.md" },
+      runId: "run1",
+      phaseId: "probe",
+      cwd: "/tmp",
+      allowedTools: ["Read"],
+      skills: NO_SKILLS,
+    };
+    await setup.client.recordResult(intent, {
+      result: { ok: true, output: "hello" },
+      durationMs: 17,
+    });
+
+    expect(audit.calls).toHaveLength(1);
+    expect(audit.calls[0]).toMatchObject({
+      kind: "broker.tool.result",
+      payload: { tool: "Read", ok: true, durationMs: 17 },
+    });
   });
 });
