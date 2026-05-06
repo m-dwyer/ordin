@@ -2,7 +2,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { executeBash, executeEdit, parseToolSpec } from "../../src/worker/runtimes/shared/tools";
+import { executeBash } from "../../src/broker/tools/bash";
+import { executeEdit } from "../../src/broker/tools/edit";
+import { parseToolSpec } from "../../src/worker/runtimes/shared/tools";
 
 describe("parseToolSpec", () => {
   it("parses a bare name", () => {

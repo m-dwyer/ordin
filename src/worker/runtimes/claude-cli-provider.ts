@@ -5,12 +5,12 @@ import { join, resolve } from "node:path";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
+import type { BrokerClient } from "../../broker/client/types";
 import type { MastraTracingFactory } from "../observability/mastra-tracing";
 import { classifyFailure } from "./claude-cli";
 import { ClaudeLanguageModelV2 } from "./claude-language-model-v2";
 import type { ClaudeProviderMcpEntrypoint } from "./claude-provider-mcp";
 import type { ProviderSpawner } from "./claude-stream";
-import { ToolDispatcher } from "./shared/dispatcher";
 import { buildDispatcherTools } from "./shared/mastra-tools";
 import { parseToolSpec } from "./shared/tools";
 import type {
@@ -53,7 +53,7 @@ export interface ClaudeCliProviderRuntimeOptions {
   readonly protocolDebug?: boolean;
   readonly phaseOverrides?: Readonly<Record<string, ClaudeCliProviderPhaseOverride>>;
   readonly runsDirFallback?: string;
-  readonly dispatcher?: ToolDispatcher;
+  readonly broker: BrokerClient;
   readonly spawner?: ProviderSpawner;
   readonly mastraTracing?: MastraTracingFactory;
   readonly parentTraceId?: string;
@@ -64,8 +64,8 @@ export interface ClaudeCliProviderRuntimeOptions {
  * Experimental Claude Max provider adapter. Claude Code is used as a
  * model backend through its stream-json event protocol; ordin owns
  * the agent loop via Mastra's `Agent` running against
- * `ClaudeLanguageModelV2` with tools dispatched through
- * `ToolDispatcher`.
+ * `ClaudeLanguageModelV2` with tools dispatched through the broker
+ * (ADR-016).
  */
 export class ClaudeCliProviderRuntime implements AgentRuntime {
   readonly name = "claude-cli-provider";
@@ -83,7 +83,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
   private readonly protocolDebug: boolean;
   private readonly phaseOverrides: Readonly<Record<string, ClaudeCliProviderPhaseOverride>>;
   private readonly runsDirFallback: string;
-  private readonly dispatcher: ToolDispatcher;
+  private readonly broker: BrokerClient;
   private readonly spawner: ProviderSpawner | undefined;
   private readonly mastraTracing: MastraTracingFactory | undefined;
   private readonly parentTraceId: string | undefined;
@@ -97,7 +97,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     this.protocolDebug = opts.protocolDebug ?? false;
     this.phaseOverrides = opts.phaseOverrides ?? {};
     this.runsDirFallback = opts.runsDirFallback ?? join(homedir(), ".ordin", "runs");
-    this.dispatcher = opts.dispatcher ?? new ToolDispatcher();
+    this.broker = opts.broker;
     this.spawner = opts.spawner;
     this.mastraTracing = opts.mastraTracing;
     this.parentTraceId = opts.parentTraceId;
@@ -109,7 +109,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     extras: Omit<
       ClaudeCliProviderRuntimeOptions,
       "bin" | "timeoutMs" | "maxSteps" | "protocolDebug" | "phaseOverrides"
-    > = {},
+    >,
   ): ClaudeCliProviderRuntime {
     const parsed = ClaudeCliProviderConfigSchema.parse(raw);
     return new ClaudeCliProviderRuntime({
@@ -164,7 +164,10 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     const tools = buildDispatcherTools(toolNames, {
       cwd: req.prompt.cwd,
       skills: req.prompt.skills,
-      dispatcher: this.dispatcher,
+      broker: this.broker,
+      runId: req.runId,
+      phaseId: req.prompt.phaseId,
+      allowedTools: toolNames,
       onEvent: emit,
     });
 

@@ -1,0 +1,19 @@
+# Scripted plan paired with `workflows/broker-acl-probe.yaml`. The
+# phase's allowed_tools is just `Read`; the second tool step intentionally
+# requests `Edit` so the broker rejects with a `denied` envelope and the
+# run fails. ScriptedRuntime executes the steps in order.
+
+phases:
+  probe:
+    steps:
+      - text: "broker ACL probe — Read should pass, Edit should be denied"
+      - tool:
+          name: Read
+          input:
+            file_path: README.md
+      - tool:
+          name: Edit
+          input:
+            file_path: README.md
+            old_string: "# fixture"
+            new_string: "# fixture (edited)"

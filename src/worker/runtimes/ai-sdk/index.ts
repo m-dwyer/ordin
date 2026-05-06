@@ -6,8 +6,8 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
+import type { BrokerClient } from "../../../broker/client/types";
 import type { MastraTracingFactory } from "../../observability/mastra-tracing";
-import { ToolDispatcher } from "../shared/dispatcher";
 import { buildDispatcherTools } from "../shared/mastra-tools";
 import { parseToolSpec } from "../shared/tools";
 import type {
@@ -82,11 +82,12 @@ export interface AiSdkRuntimeConfig {
   parentTraceId?: string;
   parentSpanId?: string;
   /**
-   * Tool dispatcher used by the shared Mastra tool builder. Tests
-   * inject a fake; production paths default to a fresh
-   * `ToolDispatcher`.
+   * Broker client used by the shared Mastra tool builder. Required:
+   * tool dispatch authority lives in the broker (ADR-016) — there is
+   * no in-runtime fallback. Tests inject a fake; the harness wires an
+   * `InProcessBrokerClient` for passthrough runs.
    */
-  dispatcher?: ToolDispatcher;
+  broker: BrokerClient;
 }
 
 export const AiSdkRuntimeConfigSchema = z.object({
@@ -127,9 +128,9 @@ export class AiSdkRuntime implements AgentRuntime {
   private readonly mastraTracing: MastraTracingFactory | undefined;
   private readonly parentTraceId: string | undefined;
   private readonly parentSpanId: string | undefined;
-  private readonly dispatcher: ToolDispatcher;
+  private readonly broker: BrokerClient;
 
-  constructor(config: AiSdkRuntimeConfig = {}) {
+  constructor(config: AiSdkRuntimeConfig) {
     this.baseUrl = config.baseUrl ?? "http://localhost:4000";
     this.apiKey = config.apiKey ?? "unset";
     this.runsDir = config.runsDir ?? join(homedir(), ".ordin", "runs");
@@ -140,15 +141,15 @@ export class AiSdkRuntime implements AgentRuntime {
     this.mastraTracing = config.mastraTracing;
     this.parentTraceId = config.parentTraceId;
     this.parentSpanId = config.parentSpanId;
-    this.dispatcher = config.dispatcher ?? new ToolDispatcher();
+    this.broker = config.broker;
   }
 
   static fromConfig(
     raw: unknown,
     extras: Pick<
       AiSdkRuntimeConfig,
-      "runsDir" | "mastraTracing" | "parentTraceId" | "parentSpanId"
-    > = {},
+      "runsDir" | "mastraTracing" | "parentTraceId" | "parentSpanId" | "broker"
+    >,
   ): AiSdkRuntime {
     const parsed = AiSdkRuntimeConfigSchema.parse(raw ?? {});
     const apiKey = parsed.api_key_env ? process.env[parsed.api_key_env] : parsed.api_key;
@@ -183,7 +184,10 @@ export class AiSdkRuntime implements AgentRuntime {
     const tools = buildDispatcherTools(toolNames, {
       cwd: req.prompt.cwd,
       skills: req.prompt.skills,
-      dispatcher: this.dispatcher,
+      broker: this.broker,
+      runId: req.runId,
+      phaseId: req.prompt.phaseId,
+      allowedTools: toolNames,
       onEvent: emit,
     });
     const mastra = this.mastraTracing?.(emit);
