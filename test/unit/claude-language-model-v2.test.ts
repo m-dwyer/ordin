@@ -4,13 +4,13 @@ import type {
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
-} from "@ai-sdk/provider";
+} from "@ai-sdk/provider-v5";
 import { describe, expect, it } from "vitest";
+import { ClaudeLanguageModelV2 } from "../../src/worker/runtimes/claude-language-model-v2";
 import type {
   ProviderChildProcess,
   ProviderSpawner,
-} from "../../src/worker/runtimes/claude-cli-provider";
-import { ClaudeLanguageModelV2 } from "../../src/worker/runtimes/claude-language-model-v2";
+} from "../../src/worker/runtimes/claude-stream";
 
 class FakeChild extends EventEmitter implements ProviderChildProcess {
   readonly stdin = new PassThrough();

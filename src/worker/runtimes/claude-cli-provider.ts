@@ -1,14 +1,17 @@
-import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import type { Readable, Writable } from "node:stream";
+import { Agent } from "@mastra/core/agent";
+import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
-import { classifyFailure, effortForTier } from "./claude-cli";
+import type { MastraTracingFactory } from "../observability/mastra-tracing";
+import { classifyFailure } from "./claude-cli";
+import { ClaudeLanguageModelV2 } from "./claude-language-model-v2";
 import type { ClaudeProviderMcpEntrypoint } from "./claude-provider-mcp";
+import type { ProviderSpawner } from "./claude-stream";
 import { ToolDispatcher } from "./shared/dispatcher";
+import { buildDispatcherTools } from "./shared/mastra-tools";
 import { parseToolSpec } from "./shared/tools";
 import type {
   AgentRuntime,
@@ -16,7 +19,6 @@ import type {
   InvokeResult,
   RuntimeCapabilities,
   RuntimeEvent,
-  TokenUsage,
 } from "./types";
 
 type _KeepClaudeProviderMcpEntrypointCruised = ClaudeProviderMcpEntrypoint;
@@ -34,48 +36,14 @@ export const ClaudeCliProviderConfigSchema = z.object({
   /**
    * Per-phase Claude-provider knobs. `fallback_model` flows through to
    * `claude -p`. `max_steps` overrides the runtime-wide ceiling — owned
-   * by the provider loop, not Claude, since the process is killed after
-   * each tool use. Stable runtime's `max_turns` has no analog here.
+   * by the Mastra Agent loop, not Claude, since the subprocess is
+   * killed after each tool use. Stable runtime's `max_turns` has no
+   * analog here.
    */
   phases: z.record(z.string(), ProviderPhaseOverrideSchema).default({}),
 });
 export type ClaudeCliProviderConfigRaw = z.infer<typeof ClaudeCliProviderConfigSchema>;
 export type ClaudeCliProviderPhaseOverride = z.infer<typeof ProviderPhaseOverrideSchema>;
-
-export interface ProviderMessage {
-  readonly role: "user" | "assistant";
-  readonly content: string;
-}
-
-export interface ClaudeToolCall {
-  readonly id: string;
-  readonly name: string;
-  readonly input: Record<string, unknown>;
-}
-
-export interface ClaudeProviderTurn {
-  readonly texts: readonly string[];
-  readonly toolCall?: ClaudeToolCall;
-  readonly tokens: TokenUsage;
-  readonly sessionId?: string;
-}
-
-export interface ClaudeModelProvider {
-  complete(req: {
-    readonly systemPrompt: string;
-    readonly systemPromptFile?: string;
-    readonly mcpConfigFile?: string;
-    readonly messages: readonly ProviderMessage[];
-    readonly model: string;
-    readonly fallbackModel?: string;
-    readonly cwd: string;
-    readonly tier: "S" | "M" | "L";
-    readonly tools: readonly string[];
-    readonly sessionId?: string;
-    readonly abortSignal?: AbortSignal;
-    readonly onRawLine?: (line: string) => void;
-  }): Promise<ClaudeProviderTurn>;
-}
 
 export interface ClaudeCliProviderRuntimeOptions {
   readonly bin: string;
@@ -85,52 +53,19 @@ export interface ClaudeCliProviderRuntimeOptions {
   readonly protocolDebug?: boolean;
   readonly phaseOverrides?: Readonly<Record<string, ClaudeCliProviderPhaseOverride>>;
   readonly runsDirFallback?: string;
-  readonly provider?: ClaudeModelProvider;
   readonly dispatcher?: ToolDispatcher;
   readonly spawner?: ProviderSpawner;
+  readonly mastraTracing?: MastraTracingFactory;
+  readonly parentTraceId?: string;
+  readonly parentSpanId?: string;
 }
-
-export type ProviderSpawner = (
-  bin: string,
-  args: readonly string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv },
-) => ProviderChildProcess;
-
-export interface ProviderChildProcess {
-  readonly stdin: Writable | null;
-  readonly stdout: Readable | null;
-  readonly stderr: Readable | null;
-  readonly killed: boolean;
-  kill(signal?: NodeJS.Signals): boolean;
-  on(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-  on(event: "error", listener: (err: Error) => void): this;
-}
-
-export class ProviderTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`Provider turn timed out after ${timeoutMs}ms`);
-    this.name = "ProviderTimeoutError";
-  }
-}
-
-const ZERO_TOKENS: TokenUsage = {
-  input: 0,
-  output: 0,
-  cacheReadInput: 0,
-  cacheCreationInput: 0,
-};
-
-const defaultSpawner: ProviderSpawner = (bin, args, opts) =>
-  spawn(bin, args as string[], {
-    cwd: opts.cwd,
-    env: opts.env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
 
 /**
  * Experimental Claude Max provider adapter. Claude Code is used as a
- * model backend through its stream-json event protocol; ordin owns the
- * tool loop and dispatches through ToolDispatcher.
+ * model backend through its stream-json event protocol; ordin owns
+ * the agent loop via Mastra's `Agent` running against
+ * `ClaudeLanguageModelV2` with tools dispatched through
+ * `ToolDispatcher`.
  */
 export class ClaudeCliProviderRuntime implements AgentRuntime {
   readonly name = "claude-cli-provider";
@@ -141,29 +76,32 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     maxContextTokens: 200_000,
   };
 
+  private readonly bin: string;
   private readonly harnessRoot?: string;
+  private readonly timeoutMs?: number;
   private readonly maxSteps: number;
   private readonly protocolDebug: boolean;
   private readonly phaseOverrides: Readonly<Record<string, ClaudeCliProviderPhaseOverride>>;
   private readonly runsDirFallback: string;
-  private readonly provider: ClaudeModelProvider;
   private readonly dispatcher: ToolDispatcher;
+  private readonly spawner: ProviderSpawner | undefined;
+  private readonly mastraTracing: MastraTracingFactory | undefined;
+  private readonly parentTraceId: string | undefined;
+  private readonly parentSpanId: string | undefined;
 
   constructor(opts: ClaudeCliProviderRuntimeOptions) {
+    this.bin = opts.bin;
     this.harnessRoot = opts.harnessRoot;
+    this.timeoutMs = opts.timeoutMs;
     this.maxSteps = opts.maxSteps ?? 40;
     this.protocolDebug = opts.protocolDebug ?? false;
     this.phaseOverrides = opts.phaseOverrides ?? {};
     this.runsDirFallback = opts.runsDirFallback ?? join(homedir(), ".ordin", "runs");
     this.dispatcher = opts.dispatcher ?? new ToolDispatcher();
-    this.provider =
-      opts.provider ??
-      new ClaudeCliStreamProvider({
-        bin: opts.bin,
-        ...(opts.harnessRoot ? { harnessRoot: opts.harnessRoot } : {}),
-        ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
-        spawner: opts.spawner ?? defaultSpawner,
-      });
+    this.spawner = opts.spawner;
+    this.mastraTracing = opts.mastraTracing;
+    this.parentTraceId = opts.parentTraceId;
+    this.parentSpanId = opts.parentSpanId;
   }
 
   static fromConfig(
@@ -196,10 +134,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     if (req.prompt.skills.length > 0 && !toolNames.includes("Skill")) {
       toolNames.push("Skill");
     }
-    const allowedTools = new Set(toolNames);
-    const messages: ProviderMessage[] = [{ role: "user", content: req.prompt.userPrompt }];
-    let tokens = ZERO_TOKENS;
-    let sessionId: string | undefined;
+    const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0 };
 
     const emit = (event: RuntimeEvent): void => {
       transcript.write(`${JSON.stringify({ kind: "event", event })}\n`);
@@ -209,205 +144,102 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
       if (this.protocolDebug) transcript.write(`${JSON.stringify({ kind: "protocol", entry })}\n`);
     };
 
+    const model: MastraModelConfig = new ClaudeLanguageModelV2({
+      bin: this.bin,
+      model: req.prompt.model,
+      ...(override.fallback_model && override.fallback_model !== req.prompt.model
+        ? { fallbackModel: override.fallback_model }
+        : {}),
+      cwd: req.prompt.cwd,
+      tier: req.prompt.tier,
+      ...(this.harnessRoot ? { harnessRoot: this.harnessRoot } : {}),
+      mcpConfigPath: join(runDir, `${req.prompt.phaseId}.provider-mcp.json`),
+      systemPromptFile: (step) => join(runDir, `${req.prompt.phaseId}.provider-system.${step}.md`),
+      ...(this.timeoutMs ? { timeoutMs: this.timeoutMs } : {}),
+      ...(this.spawner ? { spawner: this.spawner } : {}),
+      onRawLine: (line) => debug({ direction: "provider.out", line }),
+      onEvent: emit,
+    });
+
+    const tools = buildDispatcherTools(toolNames, {
+      cwd: req.prompt.cwd,
+      skills: req.prompt.skills,
+      dispatcher: this.dispatcher,
+      onEvent: emit,
+    });
+
+    const mastra = this.mastraTracing?.(emit);
+    const agent = new Agent({
+      id: `ordin.${req.prompt.phaseId}`,
+      name: `ordin.${req.prompt.phaseId}`,
+      instructions: buildProviderSystemPrompt(req, toolNames),
+      model,
+      tools,
+      ...(mastra ? { mastra } : {}),
+    });
+
+    let status: "ok" | "failed" = "ok";
+    let exitCode = 0;
+    let errorText: string | undefined;
     try {
-      for (let step = 1; step <= maxSteps; step++) {
-        if (req.abortSignal?.aborted) throw new Error("aborted");
-        emit({ type: "assistant.thinking" });
-        const turnStarted = Date.now();
-        let turn: ClaudeProviderTurn;
-        try {
-          turn = await this.provider.complete({
-            systemPrompt: buildProviderSystemPrompt(req, toolNames),
-            systemPromptFile: join(runDir, `${req.prompt.phaseId}.provider-system.${step}.md`),
-            mcpConfigFile: join(runDir, `${req.prompt.phaseId}.provider-mcp.json`),
-            messages,
-            model: req.prompt.model,
-            ...(override.fallback_model && override.fallback_model !== req.prompt.model
-              ? { fallbackModel: override.fallback_model }
-              : {}),
-            cwd: req.prompt.cwd,
-            tier: req.prompt.tier,
-            tools: toolNames,
-            ...(sessionId ? { sessionId } : {}),
-            ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-            onRawLine: (line) => debug({ direction: "provider.out", step, line }),
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          emit({
-            type: "timing",
-            name: "ordin.provider.turn",
-            durationMs: Date.now() - turnStarted,
-            status: "error",
-            error: message,
-            attributes: {
-              "ordin.provider.step": step,
-              "ordin.provider.resumed": !!sessionId,
-              "ordin.provider.tool_requested": false,
-            },
-          });
-          throw err;
-        }
-        emit({
-          type: "timing",
-          name: "ordin.provider.turn",
-          durationMs: Date.now() - turnStarted,
-          status: "ok",
-          attributes: {
-            "ordin.provider.step": step,
-            "ordin.provider.resumed": !!sessionId,
-            "ordin.provider.tool_requested": !!turn.toolCall,
+      const output = await agent.stream(req.prompt.userPrompt, {
+        maxSteps,
+        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+        onStepFinish: (step) => {
+          emitStep(step, tokens, emit);
+        },
+        tracingOptions: {
+          metadata: {
+            "ordin.run_id": req.runId,
+            "ordin.phase_id": req.prompt.phaseId,
+            "ordin.model": req.prompt.model,
+            "ordin.runtime": "claude-cli-provider",
+            "langfuse.sessionId": req.runId,
           },
-        });
-        if (turn.sessionId) sessionId = turn.sessionId;
-        tokens = mergeUsage(tokens, turn.tokens);
-        if (tokens.input || tokens.output || tokens.cacheReadInput || tokens.cacheCreationInput) {
-          emit({ type: "tokens", usage: tokens });
-        }
-
-        for (const text of turn.texts) {
-          if (text.trim()) emit({ type: "assistant.text", text });
-        }
-
-        if (!turn.toolCall) {
-          await closeStream(transcript);
-          return {
-            status: "ok",
-            exitCode: 0,
-            transcriptPath,
-            tokens,
-            durationMs: Date.now() - started,
-          };
-        }
-
-        const toolCall = turn.toolCall;
-        const ordinToolName = ordinToolNameFromClaude(toolCall.name);
-        if (!allowedTools.has(ordinToolName)) {
-          throw new Error(`Tool "${ordinToolName}" is not allowed for this phase.`);
-        }
-
-        emit({
-          type: "tool.use",
-          id: toolCall.id,
-          name: ordinToolName,
-          input: toolCall.input,
-        });
-        let result: string;
-        let toolOk = true;
-        const dispatchStarted = Date.now();
-        try {
-          result = await this.dispatcher.dispatch(ordinToolName, toolCall.input, {
-            cwd: req.prompt.cwd,
-            skills: req.prompt.skills,
-          });
-          emit({ type: "tool.result", id: toolCall.id, ok: true, ...(result ? { result } : {}) });
-        } catch (err) {
-          result = err instanceof Error ? err.message : String(err);
-          toolOk = false;
-          emit({ type: "tool.result", id: toolCall.id, ok: false, result });
-        }
-        emit({
-          type: "timing",
-          name: `ordin.tool.${ordinToolName}`,
-          durationMs: Date.now() - dispatchStarted,
-          status: toolOk ? "ok" : "error",
-          ...(toolOk ? {} : { error: result }),
-          attributes: {
-            "ordin.tool.name": ordinToolName,
-          },
-        });
-
-        const assistantText = [
-          ...turn.texts,
-          `Requested tool ${ordinToolName} with id ${toolCall.id}.`,
-        ].join("\n\n");
-        messages.push({ role: "assistant", content: assistantText });
-        messages.push({
-          role: "user",
-          content: [
-            `Tool result for ${ordinToolName} (${toolCall.id}):`,
-            result || "(no output)",
-            "",
-            "Continue. If you need another tool, call exactly one tool. Otherwise provide the final answer.",
-          ].join("\n"),
-        });
+          ...(this.parentTraceId ? { traceId: this.parentTraceId } : {}),
+          ...(this.parentSpanId ? { parentSpanId: this.parentSpanId } : {}),
+        },
+      });
+      await output.consumeStream();
+      const streamErr = output.error;
+      if (streamErr) {
+        throw streamErr;
       }
-      throw new Error(`Exceeded max_steps (${maxSteps}) before final response.`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      emit({ type: "error", message });
-      await closeStream(transcript);
+      status = "failed";
+      exitCode = 1;
+      errorText = err instanceof Error ? err.message : String(err);
+      emit({ type: "error", message: errorText });
+    } finally {
+      transcript.end();
+    }
+
+    if (status === "failed") {
       const failure = classifyFailure({
         exitCode: 1,
         signal: null,
-        stderr: message,
-        timedOut: err instanceof ProviderTimeoutError,
+        stderr: errorText ?? "",
+        timedOut: false,
       });
       return {
-        status: "failed",
-        exitCode: 1,
+        status,
+        exitCode,
         transcriptPath,
-        tokens,
+        tokens: { ...tokens },
         durationMs: Date.now() - started,
         failure,
         error: failure.message,
       };
     }
+
+    return {
+      status,
+      exitCode,
+      transcriptPath,
+      tokens: { ...tokens },
+      durationMs: Date.now() - started,
+    };
   }
-}
-
-export function interpretClaudeStreamLine(line: string): {
-  readonly texts: readonly string[];
-  readonly thinking: boolean;
-  readonly toolCall?: ClaudeToolCall;
-  readonly tokens?: TokenUsage;
-  readonly sessionId?: string;
-} {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Malformed Claude stream-json line: ${message}`);
-  }
-  if (!parsed || typeof parsed !== "object") return { texts: [], thinking: false };
-
-  const event = parsed as ClaudeStreamEvent;
-  const texts: string[] = [];
-  let thinking = false;
-  let toolCall: ClaudeToolCall | undefined;
-  let tokens: TokenUsage | undefined;
-  let sessionId: string | undefined;
-
-  if (event.type === "system" && event.subtype === "init" && event.session_id) {
-    sessionId = event.session_id;
-  } else if (event.type === "assistant" && event.message?.content) {
-    for (const block of event.message.content) {
-      if (block.type === "text" && typeof block.text === "string") {
-        texts.push(block.text);
-      } else if (block.type === "thinking") {
-        thinking = true;
-      } else if (block.type === "tool_use" && block.id && block.name) {
-        const input =
-          block.input && typeof block.input === "object" && !Array.isArray(block.input)
-            ? (block.input as Record<string, unknown>)
-            : {};
-        toolCall = { id: block.id, name: block.name, input };
-      }
-    }
-    if (event.message.usage) tokens = usageFromClaude(event.message.usage);
-  } else if (event.type === "result" && event.usage) {
-    tokens = usageFromClaude(event.usage);
-    if (event.session_id) sessionId = event.session_id;
-  }
-
-  return {
-    texts,
-    thinking,
-    ...(toolCall ? { toolCall } : {}),
-    ...(tokens ? { tokens } : {}),
-    ...(sessionId ? { sessionId } : {}),
-  };
 }
 
 function buildProviderSystemPrompt(req: InvokeRequest, allowedTools: readonly string[]): string {
@@ -424,272 +256,31 @@ function buildProviderSystemPrompt(req: InvokeRequest, allowedTools: readonly st
   ].join("\n");
 }
 
-interface ClaudeCliStreamProviderOptions {
-  readonly bin: string;
-  readonly harnessRoot?: string;
-  readonly timeoutMs?: number;
-  readonly spawner: ProviderSpawner;
-}
-
-class ClaudeCliStreamProvider implements ClaudeModelProvider {
-  private readonly bin: string;
-  private readonly harnessRoot?: string;
-  private readonly timeoutMs?: number;
-  private readonly spawner: ProviderSpawner;
-
-  constructor(opts: ClaudeCliStreamProviderOptions) {
-    this.bin = opts.bin;
-    this.harnessRoot = opts.harnessRoot;
-    this.timeoutMs = opts.timeoutMs;
-    this.spawner = opts.spawner;
-  }
-
-  async complete(req: {
-    readonly systemPrompt: string;
-    readonly systemPromptFile?: string;
-    readonly mcpConfigFile?: string;
-    readonly messages: readonly ProviderMessage[];
-    readonly model: string;
-    readonly fallbackModel?: string;
-    readonly cwd: string;
-    readonly tier: "S" | "M" | "L";
-    readonly tools: readonly string[];
-    readonly sessionId?: string;
-    readonly abortSignal?: AbortSignal;
-    readonly onRawLine?: (line: string) => void;
-  }): Promise<ClaudeProviderTurn> {
-    if (req.systemPromptFile) await writeFile(req.systemPromptFile, req.systemPrompt, "utf8");
-    const mcpConfigFile = await this.writeMcpConfig(req);
-    const child = this.spawner(this.bin, this.buildArgs({ ...req, mcpConfigFile }), {
-      cwd: req.cwd,
-      env: process.env,
-    });
-    child.stdin?.end(renderMessages(messagesForTurn(req.messages, !!req.sessionId)));
-    const stdout = child.stdout;
-    const stderr = child.stderr;
-    if (!stdout || !stderr) {
-      throw new Error("Failed to capture stdio from claude provider subprocess");
-    }
-
-    const texts: string[] = [];
-    let toolCall: ClaudeToolCall | undefined;
-    let tokens = ZERO_TOKENS;
-    let sessionId = req.sessionId;
-    const stderrChunks: string[] = [];
-    let closed = false;
-
-    let timedOut = false;
-    const kill = (): void => {
-      terminateChild(child, () => closed);
-    };
-    const abortHandler = (): void => kill();
-    req.abortSignal?.addEventListener("abort", abortHandler, { once: true });
-    const timer = this.timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          kill();
-        }, this.timeoutMs)
-      : undefined;
-
-    const rl = createInterface({ input: stdout, crlfDelay: Number.POSITIVE_INFINITY });
-    rl.on("line", (line) => {
-      if (!line.trim()) return;
-      req.onRawLine?.(line);
-      const interpreted = interpretClaudeStreamLine(line);
-      texts.push(...interpreted.texts);
-      if (interpreted.tokens) tokens = mergeUsage(tokens, interpreted.tokens);
-      if (interpreted.sessionId) sessionId = interpreted.sessionId;
-      if (interpreted.toolCall && !toolCall) {
-        toolCall = interpreted.toolCall;
-        kill();
-      }
-    });
-
-    stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
-      for (const line of text.split(/\r?\n/)) {
-        if (line.trim()) stderrChunks.push(line);
-      }
-    });
-
-    const exitInfo: { code: number; signal: NodeJS.Signals | null } = await new Promise(
-      (resolveExit) => {
-        child.on("close", (code, signal) => {
-          closed = true;
-          resolveExit({ code: code ?? -1, signal });
-        });
-        child.on("error", (err) => {
-          stderrChunks.push(err.message);
-          resolveExit({ code: -1, signal: null });
-        });
-      },
-    );
-
-    if (timer) clearTimeout(timer);
-    req.abortSignal?.removeEventListener("abort", abortHandler);
-
-    if (timedOut) throw new ProviderTimeoutError(this.timeoutMs ?? 0);
-    if (req.abortSignal?.aborted) throw new Error("aborted");
-    if (!toolCall && exitInfo.code !== 0) {
-      const stderr = stderrChunks.join("\n").trim();
-      throw new Error(
-        stderr || (exitInfo.signal ? `killed by ${exitInfo.signal}` : `exit ${exitInfo.code}`),
-      );
-    }
-
-    return {
-      texts,
-      ...(toolCall ? { toolCall } : {}),
-      tokens,
-      ...(sessionId ? { sessionId } : {}),
-    };
-  }
-
-  private buildArgs(req: {
-    readonly systemPrompt: string;
-    readonly systemPromptFile?: string;
-    readonly mcpConfigFile?: string;
-    readonly messages: readonly ProviderMessage[];
-    readonly model: string;
-    readonly fallbackModel?: string;
-    readonly tier: "S" | "M" | "L";
-    readonly tools: readonly string[];
-    readonly sessionId?: string;
-  }): string[] {
-    const mcpToolNames = req.tools.map((name) => claudeMcpToolName(name));
-    const args = [
-      "-p",
-      "--input-format",
-      "text",
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      ...(req.systemPromptFile
-        ? ["--system-prompt-file", req.systemPromptFile]
-        : ["--system-prompt", req.systemPrompt]),
-      "--model",
-      req.model,
-      "--effort",
-      effortForTier(req.tier),
-      "--permission-mode",
-      "default",
-      "--setting-sources",
-      "project",
-      "--strict-mcp-config",
-    ];
-    if (req.fallbackModel) {
-      args.push("--fallback-model", req.fallbackModel);
-    }
-    if (req.sessionId) {
-      args.push("--resume", req.sessionId);
-    }
-    if (req.mcpConfigFile) {
-      args.push("--mcp-config", req.mcpConfigFile);
-    }
-    args.push("--tools", "");
-    if (mcpToolNames.length > 0) {
-      args.push("--allowed-tools", ...mcpToolNames);
-    }
-    return args;
-  }
-
-  private async writeMcpConfig(req: {
-    readonly tools: readonly string[];
-    readonly mcpConfigFile?: string;
-  }): Promise<string | undefined> {
-    if (!this.harnessRoot || !req.mcpConfigFile) return undefined;
-    const toolsFile = req.mcpConfigFile.replace(/\.json$/, ".tools.json");
-    await writeFile(toolsFile, JSON.stringify(req.tools), "utf8");
-    const config = {
-      mcpServers: {
-        ordin: {
-          command: process.execPath,
-          args: [
-            join(this.harnessRoot, "src", "worker", "runtimes", "claude-provider-mcp.ts"),
-            "--tools-json",
-            toolsFile,
-          ],
-        },
-      },
-    };
-    await writeFile(req.mcpConfigFile, JSON.stringify(config), "utf8");
-    return req.mcpConfigFile;
-  }
-}
-
-function renderMessages(messages: readonly ProviderMessage[]): string {
-  return messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n");
-}
-
-function messagesForTurn(
-  messages: readonly ProviderMessage[],
-  resumed: boolean,
-): readonly ProviderMessage[] {
-  if (!resumed) return messages;
-  const latest = messages[messages.length - 1];
-  return latest ? [latest] : [];
-}
-
-function claudeMcpToolName(name: string): string {
-  return `mcp__ordin__${name}`;
-}
-
-function ordinToolNameFromClaude(name: string): string {
-  const match = /^mcp__ordin__(.+)$/.exec(name);
-  return match?.[1] ?? name;
-}
-
-function terminateChild(child: ProviderChildProcess, isClosed: () => boolean): void {
-  if (isClosed() || child.killed) return;
-  child.kill("SIGTERM");
-  setTimeout(() => {
-    if (!isClosed()) child.kill("SIGKILL");
-  }, 1_000).unref();
-}
-
-function usageFromClaude(usage: ClaudeUsage): TokenUsage {
-  return {
-    input: usage.input_tokens ?? 0,
-    output: usage.output_tokens ?? 0,
-    cacheReadInput: usage.cache_read_input_tokens ?? 0,
-    cacheCreationInput: usage.cache_creation_input_tokens ?? 0,
+interface MastraStepLike {
+  readonly text?: string;
+  readonly content?: ReadonlyArray<{ type: string }>;
+  readonly usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
   };
 }
 
-function mergeUsage(current: TokenUsage, next: TokenUsage): TokenUsage {
-  return {
-    input: Math.max(current.input, next.input),
-    output: current.output + next.output,
-    cacheReadInput: Math.max(current.cacheReadInput, next.cacheReadInput),
-    cacheCreationInput: Math.max(current.cacheCreationInput, next.cacheCreationInput),
-  };
-}
-
-function closeStream(stream: NodeJS.WritableStream): Promise<void> {
-  return new Promise((resolveClose, rejectClose) => {
-    stream.once("finish", () => resolveClose());
-    stream.once("error", rejectClose);
-    stream.end();
-  });
-}
-
-interface ClaudeStreamEvent {
-  type?: string;
-  subtype?: string;
-  session_id?: string;
-  message?: { content?: ClaudeContentBlock[]; usage?: ClaudeUsage };
-  usage?: ClaudeUsage;
-}
-interface ClaudeContentBlock {
-  type?: string;
-  id?: string;
-  text?: string;
-  name?: string;
-  input?: unknown;
-}
-interface ClaudeUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
+function emitStep(
+  step: MastraStepLike,
+  tokens: { input: number; output: number; cacheReadInput: number; cacheCreationInput: number },
+  emit: (e: RuntimeEvent) => void,
+): void {
+  if (step.text?.trim()) {
+    emit({ type: "assistant.text", text: step.text });
+  }
+  const u = step.usage;
+  if (u) {
+    tokens.input = Math.max(tokens.input, u.inputTokens ?? 0);
+    tokens.output += u.outputTokens ?? 0;
+    tokens.cacheReadInput = Math.max(tokens.cacheReadInput, u.cachedInputTokens ?? 0);
+    if (tokens.input || tokens.output || tokens.cacheReadInput) {
+      emit({ type: "tokens", usage: { ...tokens } });
+    }
+  }
 }

@@ -83,6 +83,9 @@ export async function buildRuntime(
       return ClaudeCliProviderRuntime.fromConfig(configSlice, {
         harnessRoot: ctx.harnessRoot,
         runsDirFallback: ctx.runsDir,
+        ...(ctx.mastraTracing ? { mastraTracing: ctx.mastraTracing } : {}),
+        ...(ctx.parentTraceId ? { parentTraceId: ctx.parentTraceId } : {}),
+        ...(ctx.parentSpanId ? { parentSpanId: ctx.parentSpanId } : {}),
       });
     }
     case "scripted": {

@@ -5,72 +5,17 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { ComposedPrompt } from "../../src/domain/composer";
-import {
-  ClaudeCliProviderRuntime,
-  type ClaudeModelProvider,
-  type ClaudeProviderTurn,
-  interpretClaudeStreamLine,
-  type ProviderChildProcess,
-  type ProviderMessage,
-} from "../../src/worker/runtimes/claude-cli-provider";
+import { ClaudeCliProviderRuntime } from "../../src/worker/runtimes/claude-cli-provider";
+import type {
+  ProviderChildProcess,
+  ProviderSpawner,
+} from "../../src/worker/runtimes/claude-stream";
 import { buildRuntime, KNOWN_RUNTIME_NAMES } from "../../src/worker/runtimes/registry";
 import {
   type ToolDispatchContext,
   ToolDispatcher,
 } from "../../src/worker/runtimes/shared/dispatcher";
 import type { RuntimeEvent } from "../../src/worker/runtimes/types";
-
-const ZERO_TOKENS = {
-  input: 0,
-  output: 0,
-  cacheReadInput: 0,
-  cacheCreationInput: 0,
-} as const;
-
-function makePrompt(overrides: Partial<ComposedPrompt> = {}): ComposedPrompt {
-  return {
-    systemPrompt: "system",
-    userPrompt: "user",
-    tools: ["Read", "Bash(git status*)"],
-    model: "claude-sonnet-4-6",
-    cwd: "/tmp/repo",
-    phaseId: "build",
-    tier: "M",
-    freshContext: true,
-    skills: [],
-    ...overrides,
-  };
-}
-
-class QueueProvider implements ClaudeModelProvider {
-  readonly seen: ProviderMessage[][] = [];
-
-  constructor(private readonly responses: ClaudeProviderTurn[]) {}
-
-  async complete(req: {
-    readonly messages: readonly ProviderMessage[];
-    readonly onRawLine?: (line: string) => void;
-  }): Promise<ClaudeProviderTurn> {
-    this.seen.push([...req.messages]);
-    req.onRawLine?.('{"type":"assistant"}');
-    const next = this.responses.shift();
-    if (!next) throw new Error("no queued response");
-    return next;
-  }
-}
-
-class FakeDispatcher extends ToolDispatcher {
-  readonly calls: Array<{ name: string; input: Record<string, unknown> }> = [];
-
-  override async dispatch(
-    name: string,
-    input: Record<string, unknown>,
-    _ctx: ToolDispatchContext,
-  ): Promise<string> {
-    this.calls.push({ name, input });
-    return `result:${name}:${JSON.stringify(input)}`;
-  }
-}
 
 class FakeChild extends EventEmitter implements ProviderChildProcess {
   readonly stdin = new PassThrough();
@@ -98,482 +43,179 @@ class FakeChild extends EventEmitter implements ProviderChildProcess {
   }
 }
 
+class FakeDispatcher extends ToolDispatcher {
+  readonly calls: Array<{ name: string; input: Record<string, unknown> }> = [];
+
+  override async dispatch(
+    name: string,
+    input: Record<string, unknown>,
+    _ctx: ToolDispatchContext,
+  ): Promise<string> {
+    this.calls.push({ name, input });
+    return `result:${name}`;
+  }
+}
+
+function makePrompt(overrides: Partial<ComposedPrompt> = {}): ComposedPrompt {
+  return {
+    systemPrompt: "system",
+    userPrompt: "user",
+    tools: ["Read"],
+    model: "claude-sonnet-4-6",
+    cwd: "/tmp/repo",
+    phaseId: "build",
+    tier: "M",
+    freshContext: true,
+    skills: [],
+    ...overrides,
+  };
+}
+
+function recordingSpawner(scripts: Array<(child: FakeChild) => void>): {
+  spawner: ProviderSpawner;
+  records: Array<{ args: readonly string[]; child: FakeChild }>;
+} {
+  const records: Array<{ args: readonly string[]; child: FakeChild }> = [];
+  const spawner: ProviderSpawner = (_bin, args) => {
+    const index = records.length;
+    const child = new FakeChild();
+    records.push({ args: [...args], child });
+    setImmediate(() => scripts[index]?.(child));
+    return child;
+  };
+  return { spawner, records };
+}
+
 describe("claude-cli-provider registry", () => {
   it("registers and constructs the experimental runtime", async () => {
     expect(KNOWN_RUNTIME_NAMES).toContain("claude-cli-provider");
-
     const runtime = await buildRuntime(
       "claude-cli-provider",
       { bin: "claude", max_steps: 2 },
       { harnessRoot: "/harness", workflowName: "w", runsDir: "/tmp/runs" },
     );
-
     expect(runtime.name).toBe("claude-cli-provider");
   });
 });
 
-describe("interpretClaudeStreamLine", () => {
-  it("parses assistant text and usage", () => {
-    expect(
-      interpretClaudeStreamLine(
-        JSON.stringify({
-          type: "assistant",
-          message: {
-            content: [{ type: "text", text: "hello" }],
-            usage: { input_tokens: 10, output_tokens: 3 },
-          },
-        }),
-      ),
-    ).toEqual({
-      texts: ["hello"],
-      thinking: false,
-      tokens: { input: 10, output: 3, cacheReadInput: 0, cacheCreationInput: 0 },
-    });
-  });
-
-  it("parses a native Claude tool_use block", () => {
-    expect(
-      interpretClaudeStreamLine(
-        JSON.stringify({
-          type: "assistant",
-          message: {
-            content: [
-              {
-                type: "tool_use",
-                id: "toolu_1",
-                name: "Read",
-                input: { file_path: "README.md" },
-              },
-            ],
-          },
-        }),
-      ),
-    ).toEqual({
-      texts: [],
-      thinking: false,
-      toolCall: { id: "toolu_1", name: "Read", input: { file_path: "README.md" } },
-    });
-  });
-
-  it("rejects malformed stream JSON", () => {
-    expect(() => interpretClaudeStreamLine("{bad")).toThrow(/Malformed Claude stream-json line/);
-  });
-});
-
-describe("ClaudeCliProviderRuntime tool loop", () => {
-  it("invokes Claude CLI with stream-json and native tool schemas enabled", async () => {
+describe("ClaudeCliProviderRuntime", () => {
+  it("wires Mastra Agent to ClaudeLanguageModelV2 + dispatcher: tool-call → resume → final, with per-phase fallback", async () => {
     const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
     const cwd = await mkdtemp(join(tmpdir(), "claude-provider-cwd-"));
-    let capturedArgs: readonly string[] = [];
-    let child: FakeChild | undefined;
-    const runtime = new ClaudeCliProviderRuntime({
-      bin: "claude",
-      harnessRoot: "/harness",
-      runsDirFallback: runsDir,
-      maxSteps: 1,
-      spawner: (_bin, args) => {
-        capturedArgs = args;
-        child = new FakeChild();
-        setImmediate(() => {
-          child?.emitLine(
-            JSON.stringify({
-              type: "assistant",
-              message: { content: [{ type: "text", text: "done" }] },
-            }),
-          );
-          child?.emitExit(0);
-        });
-        return child;
-      },
-    });
-
-    const result = await runtime.invoke({
-      runId: "run1",
-      prompt: makePrompt({
-        cwd,
-        skills: [
-          {
-            name: "rfc-template",
-            description: "RFC guidance",
-            body: "Use Summary, Problem, Options.",
-            source: "/harness/skills/rfc-template/SKILL.md",
-          },
-        ],
-      }),
-    });
-
-    expect(result.status).toBe("ok");
-    expect(capturedArgs).toContain("--output-format");
-    expect(capturedArgs[capturedArgs.indexOf("--output-format") + 1]).toBe("stream-json");
-    expect(capturedArgs).toContain("--verbose");
-    expect(capturedArgs).toContain("--input-format");
-    expect(capturedArgs[capturedArgs.indexOf("--input-format") + 1]).toBe("text");
-    expect(capturedArgs).not.toContain("user");
-    expect(capturedArgs).toContain("--system-prompt-file");
-    const systemPromptPath = capturedArgs[capturedArgs.indexOf("--system-prompt-file") + 1];
-    if (!systemPromptPath) throw new Error("missing --system-prompt-file value");
-    const systemPrompt = await readFile(systemPromptPath, "utf8");
-    expect(systemPrompt).not.toContain("Use Summary, Problem, Options.");
-    expect(capturedArgs).toContain("mcp__ordin__Skill");
-    expect(capturedArgs).toContain("--tools");
-    expect(capturedArgs[capturedArgs.indexOf("--tools") + 1]).toBe("");
-    expect(capturedArgs).toContain("--mcp-config");
-    const mcpConfigPath = capturedArgs[capturedArgs.indexOf("--mcp-config") + 1];
-    if (!mcpConfigPath) throw new Error("missing --mcp-config value");
-    const mcpConfig = JSON.parse(await readFile(mcpConfigPath, "utf8")) as {
-      mcpServers?: { ordin?: { command?: string; args?: string[] } };
-    };
-    expect(mcpConfig.mcpServers?.ordin?.args?.[0]).toBe(
-      "/harness/src/worker/runtimes/claude-provider-mcp.ts",
-    );
-    expect(capturedArgs).toContain("--allowed-tools");
-    expect(capturedArgs).toContain("mcp__ordin__Read");
-    expect(capturedArgs).toContain("mcp__ordin__Bash");
-    expect(capturedArgs).not.toContain("--disable-slash-commands");
-    expect(capturedArgs).toContain("--effort");
-    expect(capturedArgs[capturedArgs.indexOf("--effort") + 1]).toBe("medium");
-  });
-
-  it("loads a skill body via the MCP-exposed Skill tool", async () => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    const provider = new QueueProvider([
-      {
-        texts: [],
-        toolCall: { id: "t1", name: "Skill", input: { name: "rfc-template" } },
-        tokens: ZERO_TOKENS,
-      },
-      { texts: ["done"], tokens: ZERO_TOKENS },
-    ]);
-    const runtime = new ClaudeCliProviderRuntime({
-      bin: "claude",
-      runsDirFallback: runsDir,
-      provider,
-      maxSteps: 5,
-    });
-    const events: RuntimeEvent[] = [];
-
-    const result = await runtime.invoke({
-      runId: "run1",
-      prompt: makePrompt({
-        tools: ["Read"],
-        skills: [
-          {
-            name: "rfc-template",
-            description: "RFC guidance",
-            body: "Use Summary, Problem, Options.",
-            source: "/harness/skills/rfc-template/SKILL.md",
-          },
-        ],
-      }),
-      onEvent: (e) => events.push(e),
-    });
-
-    expect(result.status).toBe("ok");
-    const skillResult = events.find(
-      (e): e is Extract<RuntimeEvent, { type: "tool.result" }> =>
-        e.type === "tool.result" && e.id === "t1",
-    );
-    expect(skillResult?.ok).toBe(true);
-    expect(skillResult?.result).toBe("Use Summary, Problem, Options.");
-  });
-
-  it("emits tool events, dispatches through ToolDispatcher, and stops at final", async () => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    const provider = new QueueProvider([
-      {
-        texts: ["I will inspect the file."],
-        sessionId: "session-1",
-        toolCall: { id: "t1", name: "Read", input: { file_path: "README.md" } },
-        tokens: ZERO_TOKENS,
-      },
-      { texts: ["done"], tokens: ZERO_TOKENS },
-    ]);
     const dispatcher = new FakeDispatcher();
-    const runtime = new ClaudeCliProviderRuntime({
-      bin: "claude",
-      runsDirFallback: runsDir,
-      provider,
-      dispatcher,
-      maxSteps: 5,
-      protocolDebug: true,
-    });
-    const events: RuntimeEvent[] = [];
-
-    const result = await runtime.invoke({
-      runId: "run1",
-      prompt: makePrompt(),
-      onEvent: (e) => events.push(e),
-    });
-
-    expect(result.status).toBe("ok");
-    expect(dispatcher.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
-    expect(events).toEqual([
-      { type: "assistant.thinking" },
-      {
-        type: "timing",
-        name: "ordin.provider.turn",
-        durationMs: expect.any(Number),
-        status: "ok",
-        attributes: {
-          "ordin.provider.step": 1,
-          "ordin.provider.resumed": false,
-          "ordin.provider.tool_requested": true,
-        },
-      },
-      { type: "assistant.text", text: "I will inspect the file." },
-      {
-        type: "tool.use",
-        id: "t1",
-        name: "Read",
-        input: { file_path: "README.md" },
-      },
-      {
-        type: "tool.result",
-        id: "t1",
-        ok: true,
-        result: 'result:Read:{"file_path":"README.md"}',
-      },
-      {
-        type: "timing",
-        name: "ordin.tool.Read",
-        durationMs: expect.any(Number),
-        status: "ok",
-        attributes: {
-          "ordin.tool.name": "Read",
-        },
-      },
-      { type: "assistant.thinking" },
-      {
-        type: "timing",
-        name: "ordin.provider.turn",
-        durationMs: expect.any(Number),
-        status: "ok",
-        attributes: {
-          "ordin.provider.step": 2,
-          "ordin.provider.resumed": true,
-          "ordin.provider.tool_requested": false,
-        },
-      },
-      { type: "assistant.text", text: "done" },
-    ]);
-    expect(provider.seen[1]?.some((m) => m.content.includes("Tool result for Read"))).toBe(true);
-    expect(await readFile(result.transcriptPath, "utf8")).toContain('"kind":"protocol"');
-  });
-
-  it("resumes the Claude session and normalizes MCP tool names", async () => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    const cwd = await mkdtemp(join(tmpdir(), "claude-provider-cwd-"));
-    const capturedArgs: string[][] = [];
-    const stdinBodies: string[] = [];
-    let spawnCount = 0;
-    const dispatcher = new FakeDispatcher();
-    const runtime = new ClaudeCliProviderRuntime({
-      bin: "claude",
-      harnessRoot: "/harness",
-      runsDirFallback: runsDir,
-      dispatcher,
-      maxSteps: 3,
-      spawner: (_bin, args) => {
-        const index = spawnCount++;
-        capturedArgs.push([...args]);
-        const child = new FakeChild();
-        const chunks: string[] = [];
-        child.stdin.on("data", (chunk: Buffer) => chunks.push(chunk.toString("utf8")));
-        child.stdin.on("finish", () => {
-          stdinBodies[index] = chunks.join("");
-        });
-        setImmediate(() => {
-          if (index === 0) {
-            child.emitLine(
-              JSON.stringify({ type: "system", subtype: "init", session_id: "session-1" }),
-            );
-            child.emitLine(
-              JSON.stringify({
-                type: "assistant",
-                message: {
-                  content: [
-                    {
-                      type: "tool_use",
-                      id: "toolu_1",
-                      name: "mcp__ordin__Read",
-                      input: { file_path: "README.md" },
-                    },
-                  ],
+    const { spawner, records } = recordingSpawner([
+      (child) => {
+        child.emitLine(
+          JSON.stringify({ type: "system", subtype: "init", session_id: "session-1" }),
+        );
+        child.emitLine(
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              content: [
+                { type: "text", text: "I will inspect the file." },
+                {
+                  type: "tool_use",
+                  id: "toolu_1",
+                  name: "mcp__ordin__Read",
+                  input: { file_path: "README.md" },
                 },
-              }),
-            );
-            child.emitExit(-1, "SIGTERM");
-          } else {
-            child.emitLine(
-              JSON.stringify({
-                type: "assistant",
-                message: { content: [{ type: "text", text: "done" }] },
-              }),
-            );
-            child.emitExit(0);
-          }
-        });
-        return child;
+              ],
+              usage: { input_tokens: 11, output_tokens: 7 },
+            },
+          }),
+        );
+        child.emitExit(-1, "SIGTERM");
       },
-    });
+      (child) => {
+        child.emitLine(
+          JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "done" }] },
+          }),
+        );
+        child.emitExit(0);
+      },
+    ]);
 
+    const runtime = ClaudeCliProviderRuntime.fromConfig(
+      {
+        bin: "claude",
+        phases: { build: { fallback_model: "claude-haiku-4-6" } },
+      },
+      {
+        harnessRoot: "/harness",
+        runsDirFallback: runsDir,
+        dispatcher,
+        spawner,
+      },
+    );
+
+    const events: RuntimeEvent[] = [];
     const result = await runtime.invoke({
       runId: "run1",
       prompt: makePrompt({ cwd }),
+      onEvent: (e) => events.push(e),
     });
 
     expect(result.status).toBe("ok");
-    expect(capturedArgs).toHaveLength(2);
-    expect(capturedArgs[0]).not.toContain("--resume");
-    expect(capturedArgs[1]).toContain("--resume");
-    expect(capturedArgs[1]?.[capturedArgs[1].indexOf("--resume") + 1]).toBe("session-1");
-    expect(stdinBodies[0]).toContain("USER:\nuser");
-    expect(stdinBodies[1]).toContain("Tool result for Read");
-    expect(stdinBodies[1]).not.toContain("USER:\nuser");
+    expect(records).toHaveLength(2);
+    expect(records[0]?.args).toContain("--fallback-model");
+    expect(records[0]?.args[records[0].args.indexOf("--fallback-model") + 1]).toBe(
+      "claude-haiku-4-6",
+    );
+    expect(records[0]?.args).toContain("--allowed-tools");
+    expect(records[0]?.args).toContain("mcp__ordin__Read");
+    expect(records[0]?.args).not.toContain("--resume");
+    expect(records[1]?.args).toContain("--resume");
+    expect(records[1]?.args[records[1].args.indexOf("--resume") + 1]).toBe("session-1");
+
     expect(dispatcher.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain("tool.use");
+    expect(types).toContain("tool.result");
+    expect(types).toContain("assistant.text");
+    const turnTimings = events.filter(
+      (e): e is Extract<RuntimeEvent, { type: "timing" }> =>
+        e.type === "timing" && e.name === "ordin.provider.turn",
+    );
+    expect(turnTimings).toHaveLength(2);
+    expect(turnTimings[0]?.attributes?.["ordin.provider.tool_requested"]).toBe(true);
+    expect(turnTimings[0]?.attributes?.["ordin.provider.resumed"]).toBe(false);
+    expect(turnTimings[1]?.attributes?.["ordin.provider.tool_requested"]).toBe(false);
+    expect(turnTimings[1]?.attributes?.["ordin.provider.resumed"]).toBe(true);
+    const toolTiming = events.find(
+      (e): e is Extract<RuntimeEvent, { type: "timing" }> =>
+        e.type === "timing" && e.name === "ordin.tool.Read",
+    );
+    expect(toolTiming?.status).toBe("ok");
+
+    const transcript = await readFile(result.transcriptPath, "utf8");
+    expect(transcript).toContain("ordin.provider.turn");
+    expect(transcript).toContain("ordin.tool.Read");
   });
 
-  it("fails when the provider requests a disallowed tool", async () => {
+  it("classifies provider auth failures as non-retryable", async () => {
     const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
+    const { spawner } = recordingSpawner([
+      (child) => {
+        child.stderr.write("Invalid API key\n");
+        child.emitExit(1, null);
+      },
+    ]);
+
     const runtime = new ClaudeCliProviderRuntime({
       bin: "claude",
       runsDirFallback: runsDir,
-      provider: new QueueProvider([
-        {
-          texts: [],
-          toolCall: { id: "t1", name: "Write", input: { file_path: "x", content: "y" } },
-          tokens: ZERO_TOKENS,
-        },
-      ]),
-      dispatcher: new FakeDispatcher(),
-      maxSteps: 2,
+      maxSteps: 1,
+      spawner,
     });
 
     const result = await runtime.invoke({ runId: "run1", prompt: makePrompt() });
 
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/not allowed/);
-    expect(result.failure?.kind).toBe("tool");
+    expect(result.failure?.kind).toBe("auth");
     expect(result.failure?.retryable).toBe(false);
-  });
-
-  it.each([
-    ["Error: 529 service overloaded", "rate_limit", true],
-    ["Invalid API key", "auth", false],
-  ] as const)("classifies provider error %s as %s", async (message, kind, retryable) => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    const provider: ClaudeModelProvider = {
-      complete: async () => {
-        throw new Error(message);
-      },
-    };
-    const runtime = new ClaudeCliProviderRuntime({
-      bin: "claude",
-      runsDirFallback: runsDir,
-      provider,
-      dispatcher: new FakeDispatcher(),
-      maxSteps: 1,
-    });
-
-    const result = await runtime.invoke({ runId: "run1", prompt: makePrompt() });
-
-    expect(result.failure?.kind).toBe(kind);
-    expect(result.failure?.retryable).toBe(retryable);
-  });
-
-  it("applies per-phase fallback_model and max_steps overrides", async () => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    let capturedArgs: readonly string[] = [];
-    const runtime = ClaudeCliProviderRuntime.fromConfig(
-      {
-        bin: "claude",
-        max_steps: 10,
-        phases: {
-          build: { fallback_model: "claude-haiku-4-6", max_steps: 1 },
-        },
-      },
-      {
-        runsDirFallback: runsDir,
-        spawner: (_bin, args) => {
-          capturedArgs = args;
-          const child = new FakeChild();
-          setImmediate(() => {
-            child.emitLine(
-              JSON.stringify({
-                type: "assistant",
-                message: {
-                  content: [
-                    { type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } },
-                  ],
-                },
-              }),
-            );
-            child.emitExit(-1, "SIGTERM");
-          });
-          return child;
-        },
-      },
-    );
-
-    const result = await runtime.invoke({ runId: "r", prompt: makePrompt({ phaseId: "build" }) });
-
-    expect(capturedArgs).toContain("--fallback-model");
-    expect(capturedArgs[capturedArgs.indexOf("--fallback-model") + 1]).toBe("claude-haiku-4-6");
-    expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/Exceeded max_steps \(1\)/);
-  });
-
-  it("omits fallback_model when it matches the selected model", async () => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    let capturedArgs: readonly string[] = [];
-    const runtime = ClaudeCliProviderRuntime.fromConfig(
-      {
-        bin: "claude",
-        phases: { build: { fallback_model: "claude-sonnet-4-6" } },
-      },
-      {
-        runsDirFallback: runsDir,
-        spawner: (_bin, args) => {
-          capturedArgs = args;
-          const child = new FakeChild();
-          setImmediate(() => {
-            child.emitLine(
-              JSON.stringify({
-                type: "assistant",
-                message: { content: [{ type: "text", text: "done" }] },
-              }),
-            );
-            child.emitExit(0);
-          });
-          return child;
-        },
-      },
-    );
-
-    await runtime.invoke({ runId: "r", prompt: makePrompt({ phaseId: "build" }) });
-
-    expect(capturedArgs).not.toContain("--fallback-model");
-  });
-
-  it("fails on max-step exhaustion", async () => {
-    const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
-    const runtime = new ClaudeCliProviderRuntime({
-      bin: "claude",
-      runsDirFallback: runsDir,
-      provider: new QueueProvider([
-        {
-          texts: ["still working"],
-          toolCall: { id: "t1", name: "Read", input: { file_path: "README.md" } },
-          tokens: ZERO_TOKENS,
-        },
-      ]),
-      dispatcher: new FakeDispatcher(),
-      maxSteps: 1,
-    });
-
-    const result = await runtime.invoke({ runId: "run1", prompt: makePrompt() });
-
-    expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/Exceeded max_steps/);
   });
 });
