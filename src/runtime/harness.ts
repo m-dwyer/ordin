@@ -7,6 +7,9 @@ import { context, trace } from "@opentelemetry/api";
 import { Broker } from "../broker";
 import { type VerifyResult, verifyChainText } from "../broker/audit-chain";
 import { AuditService } from "../broker/audit-service";
+import { InProcessBrokerClient } from "../broker/client/in-process";
+import type { BrokerClient } from "../broker/client/types";
+import { BrokerDispatch } from "../broker/dispatch";
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
@@ -38,7 +41,7 @@ import { type RunMeta, RunStore } from "../orchestrator/run-store";
 import { type SandboxMode, selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
 import { workerArgv } from "../worker/locator";
-import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
+import { buildRuntime, KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
 import type { InvokeRequest, InvokeResult, RuntimeEvent } from "../worker/runtimes/types";
 import { resolveClaudeBin } from "./resolve-claude-bin";
 import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
@@ -246,11 +249,41 @@ export class HarnessRuntime {
     state: LoadedState,
   ): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
     if (this.dispatchPhaseOverride) return this.dispatchPhaseOverride;
-    const sandbox = infra.sandbox;
     const harnessRoot = this.root;
     const workflowName = this.workflowName;
     const scriptPath = this.scriptPathOverride;
     const config = state.config;
+    const inProcess = infra.kind === "managed" && infra.mode === "passthrough";
+    if (inProcess) {
+      const brokerClient = infra.kind === "managed" ? infra.brokerClient : undefined;
+      // ADR-018: passthrough runs the agent in the harness process,
+      // dispatching tool calls through `InProcessBrokerClient` —
+      // direct method calls, no IPC. Trust separation is logical.
+      return async (req) => {
+        const runtimeConfig = resolveRuntimeConfig(
+          req.runtimeName,
+          config.runtimeConfig(req.runtimeName),
+        );
+        return new PhaseRunner().run({
+          preview: req.preview,
+          runtimeName: req.runtimeName,
+          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+          emit: req.emit,
+          invoke: async (invokeReq) => {
+            const runtime = await buildRuntime(req.runtimeName, runtimeConfig, {
+              harnessRoot,
+              workflowName,
+              runsDir: config.runStoreDir(),
+              ...(scriptPath ? { scriptPath } : {}),
+              ...(brokerClient ? { broker: brokerClient } : {}),
+            });
+            return runtime.invoke(invokeReq);
+          },
+          ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+        });
+      };
+    }
+    const sandbox = infra.sandbox;
     const workerEnv = buildWorkerEnv(infra, process.env);
     return async (req) => {
       const planPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.plan.json`);
@@ -464,11 +497,21 @@ export class HarnessRuntime {
       onEgress: audit.egressSink(),
       ...(this.egressGatePrompter ? { onEgressGate: this.egressGatePrompter } : {}),
     });
+    // Tool-dispatch authority lives broker-side (ADR-016). The
+    // `InProcessBrokerClient` is the Phase A transport: direct method
+    // calls into `BrokerDispatch`, ACL + audit-chain enforced in the
+    // same address space as the agent. Phase B introduces the HTTP
+    // transport for sandboxed runs.
+    const brokerDispatch = new BrokerDispatch({
+      audit: { append: (ev) => audit.appendEvent(ev) },
+    });
+    const brokerClient = new InProcessBrokerClient(brokerDispatch);
     return {
       kind: "managed",
       mode,
       sandbox: selectSandbox(mode, { broker }),
       broker,
+      brokerClient,
       audit,
       services,
     };
@@ -560,6 +603,7 @@ type RunInfra =
       readonly mode: SandboxMode;
       readonly sandbox: Sandbox;
       readonly broker: Broker;
+      readonly brokerClient: BrokerClient;
       readonly audit: AuditService;
       readonly services: Readonly<Record<string, unknown>>;
     };

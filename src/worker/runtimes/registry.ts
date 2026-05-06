@@ -1,3 +1,4 @@
+import type { BrokerClient } from "../../broker/client/types";
 import type { MastraTracingFactory } from "../observability/mastra-tracing";
 import type { AgentRuntime } from "./types";
 
@@ -32,6 +33,13 @@ export interface RuntimeBuildContext {
    */
   readonly parentTraceId?: string;
   readonly parentSpanId?: string;
+  /**
+   * Broker client passed to runtimes that route tool dispatch through
+   * the broker (ADR-016). `claude-cli` ignores it (Claude Code's own
+   * tools execute inside that subprocess). Required for the others
+   * because tool dispatch authority lives broker-side.
+   */
+  readonly broker?: BrokerClient;
 }
 
 /**
@@ -66,6 +74,7 @@ export async function buildRuntime(
       const { AiSdkRuntime } = await import("./ai-sdk");
       return AiSdkRuntime.fromConfig(configSlice, {
         runsDir: ctx.runsDir,
+        broker: requireBroker(ctx, "ai-sdk"),
         ...(ctx.mastraTracing ? { mastraTracing: ctx.mastraTracing } : {}),
         ...(ctx.parentTraceId ? { parentTraceId: ctx.parentTraceId } : {}),
         ...(ctx.parentSpanId ? { parentSpanId: ctx.parentSpanId } : {}),
@@ -83,6 +92,7 @@ export async function buildRuntime(
       return ClaudeCliProviderRuntime.fromConfig(configSlice, {
         harnessRoot: ctx.harnessRoot,
         runsDirFallback: ctx.runsDir,
+        broker: requireBroker(ctx, "claude-cli-provider"),
         ...(ctx.mastraTracing ? { mastraTracing: ctx.mastraTracing } : {}),
         ...(ctx.parentTraceId ? { parentTraceId: ctx.parentTraceId } : {}),
         ...(ctx.parentSpanId ? { parentSpanId: ctx.parentSpanId } : {}),
@@ -94,10 +104,22 @@ export async function buildRuntime(
         workflowName: ctx.workflowName,
         harnessRoot: ctx.harnessRoot,
         runsDirFallback: ctx.runsDir,
+        broker: requireBroker(ctx, "scripted"),
         ...(ctx.scriptPath ? { scriptPath: ctx.scriptPath } : {}),
       });
     }
     default:
       throw new Error(`Unknown runtime: "${name}"`);
   }
+}
+
+function requireBroker(ctx: RuntimeBuildContext, runtimeName: string): BrokerClient {
+  if (!ctx.broker) {
+    throw new Error(
+      `Runtime "${runtimeName}" requires a BrokerClient (ADR-016). ` +
+        "Phase A wires `InProcessBrokerClient` for `--sandbox passthrough`; " +
+        "`--sandbox seatbelt` is unsupported until Phase B HTTP transport ships.",
+    );
+  }
+  return ctx.broker;
 }

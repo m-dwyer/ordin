@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
+import type { BrokerClient, ToolIntent, ToolResult } from "../../src/broker/client/types";
 import type { ComposedPrompt } from "../../src/domain/composer";
 import { ClaudeCliProviderRuntime } from "../../src/worker/runtimes/claude-cli-provider";
 import type {
@@ -11,10 +12,6 @@ import type {
   ProviderSpawner,
 } from "../../src/worker/runtimes/claude-stream";
 import { buildRuntime, KNOWN_RUNTIME_NAMES } from "../../src/worker/runtimes/registry";
-import {
-  type ToolDispatchContext,
-  ToolDispatcher,
-} from "../../src/worker/runtimes/shared/dispatcher";
 import type { RuntimeEvent } from "../../src/worker/runtimes/types";
 
 class FakeChild extends EventEmitter implements ProviderChildProcess {
@@ -43,16 +40,12 @@ class FakeChild extends EventEmitter implements ProviderChildProcess {
   }
 }
 
-class FakeDispatcher extends ToolDispatcher {
+class FakeBrokerClient implements BrokerClient {
   readonly calls: Array<{ name: string; input: Record<string, unknown> }> = [];
 
-  override async dispatch(
-    name: string,
-    input: Record<string, unknown>,
-    _ctx: ToolDispatchContext,
-  ): Promise<string> {
-    this.calls.push({ name, input });
-    return `result:${name}`;
+  async dispatchTool(intent: ToolIntent): Promise<ToolResult> {
+    this.calls.push({ name: intent.tool, input: intent.input });
+    return { ok: true, output: `result:${intent.tool}` };
   }
 }
 
@@ -89,10 +82,11 @@ function recordingSpawner(scripts: Array<(child: FakeChild) => void>): {
 describe("claude-cli-provider registry", () => {
   it("registers and constructs the experimental runtime", async () => {
     expect(KNOWN_RUNTIME_NAMES).toContain("claude-cli-provider");
+    const broker = new FakeBrokerClient();
     const runtime = await buildRuntime(
       "claude-cli-provider",
       { bin: "claude", max_steps: 2 },
-      { harnessRoot: "/harness", workflowName: "w", runsDir: "/tmp/runs" },
+      { harnessRoot: "/harness", workflowName: "w", runsDir: "/tmp/runs", broker },
     );
     expect(runtime.name).toBe("claude-cli-provider");
   });
@@ -102,7 +96,7 @@ describe("ClaudeCliProviderRuntime", () => {
   it("wires Mastra Agent to ClaudeLanguageModelV2 + dispatcher: tool-call → resume → final, with per-phase fallback", async () => {
     const runsDir = await mkdtemp(join(tmpdir(), "claude-provider-"));
     const cwd = await mkdtemp(join(tmpdir(), "claude-provider-cwd-"));
-    const dispatcher = new FakeDispatcher();
+    const broker = new FakeBrokerClient();
     const { spawner, records } = recordingSpawner([
       (child) => {
         child.emitLine(
@@ -146,7 +140,7 @@ describe("ClaudeCliProviderRuntime", () => {
       {
         harnessRoot: "/harness",
         runsDirFallback: runsDir,
-        dispatcher,
+        broker,
         spawner,
       },
     );
@@ -170,7 +164,7 @@ describe("ClaudeCliProviderRuntime", () => {
     expect(records[1]?.args).toContain("--resume");
     expect(records[1]?.args[records[1].args.indexOf("--resume") + 1]).toBe("session-1");
 
-    expect(dispatcher.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
+    expect(broker.calls).toEqual([{ name: "Read", input: { file_path: "README.md" } }]);
 
     const types = events.map((e) => e.type);
     expect(types).toContain("tool.use");
@@ -210,6 +204,7 @@ describe("ClaudeCliProviderRuntime", () => {
       runsDirFallback: runsDir,
       maxSteps: 1,
       spawner,
+      broker: new FakeBrokerClient(),
     });
 
     const result = await runtime.invoke({ runId: "run1", prompt: makePrompt() });

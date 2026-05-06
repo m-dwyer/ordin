@@ -1,0 +1,23 @@
+# Phase A fixture for the broker tool-dispatch ACL (ADR-016 / ADR-018).
+#
+# Pairs with `scripts/broker-acl-probe.yaml` and
+# `test/integration/broker-acl-probe.test.ts`. The phase allows only
+# `Read`; the scripted plan reads a file (allow envelope) and then
+# attempts `Edit` (deny envelope). The run fails on the deny.
+
+name: broker-acl-probe
+version: 1
+runtime: scripted
+model: scripted
+description: >
+  Deterministic broker-ACL probe. Exercises one allow + one deny tool
+  dispatch in a single phase so the audit chain pins both envelope
+  shapes end-to-end. No LLM call.
+
+phases:
+  - id: probe
+    agent: probe-agent
+    gate: auto
+    allowed_tools:
+      - Read
+    fresh_context: true

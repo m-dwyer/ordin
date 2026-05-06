@@ -4,9 +4,12 @@ import { join } from "node:path";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
+import { BrokerDispatch } from "../../src/broker/dispatch";
 import type { ComposedPrompt } from "../../src/domain/composer";
 import { AiSdkRuntime } from "../../src/worker/runtimes/ai-sdk";
 import type { InvokeRequest, RuntimeEvent } from "../../src/worker/runtimes/types";
+
+const noopBroker = (): BrokerDispatch => new BrokerDispatch({ audit: { append: () => {} } });
 
 /**
  * Phase A parity check for the Mastra-Agent migration. Mastra owns the
@@ -81,18 +84,23 @@ describe("AiSdkRuntime.fromConfig", () => {
 
   it("accepts local OpenAI-compatible provider config", () => {
     process.env["ORDIN_TEST_LITELLM_KEY"] = "test-key";
-    const runtime = AiSdkRuntime.fromConfig({
-      base_url: "http://localhost:4000",
-      api_key_env: "ORDIN_TEST_LITELLM_KEY",
-      max_steps: 12,
-      bypass_cache: true,
-    });
+    const runtime = AiSdkRuntime.fromConfig(
+      {
+        base_url: "http://localhost:4000",
+        api_key_env: "ORDIN_TEST_LITELLM_KEY",
+        max_steps: 12,
+        bypass_cache: true,
+      },
+      { broker: noopBroker() },
+    );
     expect(runtime.name).toBe("ai-sdk");
   });
 
   it("rejects invalid config shapes", () => {
-    expect(() => AiSdkRuntime.fromConfig({ base_url: "not-a-url" })).toThrow();
-    expect(() => AiSdkRuntime.fromConfig({ max_steps: 0 })).toThrow();
+    expect(() =>
+      AiSdkRuntime.fromConfig({ base_url: "not-a-url" }, { broker: noopBroker() }),
+    ).toThrow();
+    expect(() => AiSdkRuntime.fromConfig({ max_steps: 0 }, { broker: noopBroker() })).toThrow();
   });
 });
 
@@ -111,7 +119,7 @@ describe("AiSdkRuntime.invoke event mapping", () => {
       }),
     });
 
-    const runtime = new AiSdkRuntime({ model });
+    const runtime = new AiSdkRuntime({ model, broker: noopBroker() });
     const { request, events } = makeRequest();
     const result = await runtime.invoke(request);
 
@@ -159,7 +167,7 @@ describe("AiSdkRuntime.invoke event mapping", () => {
       },
     });
 
-    const runtime = new AiSdkRuntime({ model });
+    const runtime = new AiSdkRuntime({ model, broker: noopBroker() });
     const { request, events } = makeRequest(makePrompt({ cwd, tools: ["Bash"] }));
     const result = await runtime.invoke(request);
 

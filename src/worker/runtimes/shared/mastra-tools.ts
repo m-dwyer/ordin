@@ -1,26 +1,34 @@
 import type { ToolsInput } from "@mastra/core/agent";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import type { BrokerClient } from "../../../broker/client/types";
 import type { Skill } from "../../../domain/skill";
 import type { RuntimeEvent } from "../types";
-import type { ToolDispatcher } from "./dispatcher";
 
 /**
- * Mastra/Vercel tool builder that routes every tool call through
- * `ToolDispatcher.dispatch` and emits the harness's tool events
- * (`tool.use` / `tool.result` / `ordin.tool.<name>` timing) for
- * observability. The dispatcher is the single executor for both
- * Mastra-Agent runtimes once `AiSdkRuntime` migrates onto this
- * builder (planned follow-up).
+ * Mastra/Vercel tool builder that emits a `ToolIntent` per call into a
+ * `BrokerClient`. The broker enforces the per-phase ACL, appends the
+ * audit-chain envelopes (intent + result), and runs the executor; the
+ * runtime adapter is now just an event emitter.
  *
- * Tool input schemas mirror the canonical executors in
- * `./tools.ts`; the dispatcher coerces to the same input shapes.
+ * ADR-016 / ADR-018 — the BrokerClient is `InProcessBrokerClient` in
+ * default `--sandbox passthrough` runs (direct method calls) and
+ * `HttpBrokerClient` in sandboxed runs (Phase B). The runtime never
+ * sees which transport it has.
+ *
+ * Worker isolation: `BrokerClient` and `ToolIntent` are imported as
+ * type-only edges so this module honours the `worker-isolation`
+ * dependency rule. The concrete client is constructed parent-side and
+ * threaded through `DispatcherToolsContext`.
  */
 
 export interface DispatcherToolsContext {
   readonly cwd: string;
   readonly skills: readonly Skill[];
-  readonly dispatcher: ToolDispatcher;
+  readonly broker: BrokerClient;
+  readonly runId: string;
+  readonly phaseId: string;
+  readonly allowedTools: readonly string[];
   readonly onEvent: (event: RuntimeEvent) => void;
 }
 
@@ -99,16 +107,21 @@ function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsCont
       const callId = randomCallId(name);
       ctx.onEvent({ type: "tool.use", id: callId, name, input });
       const started = Date.now();
-      try {
-        const result = await ctx.dispatcher.dispatch(name, input, {
-          cwd: ctx.cwd,
-          skills: ctx.skills,
-        });
+      const result = await ctx.broker.dispatchTool({
+        tool: name,
+        input,
+        runId: ctx.runId,
+        phaseId: ctx.phaseId,
+        cwd: ctx.cwd,
+        allowedTools: ctx.allowedTools,
+        skills: ctx.skills,
+      });
+      if (result.ok) {
         ctx.onEvent({
           type: "tool.result",
           id: callId,
           ok: true,
-          ...(result ? { result } : {}),
+          ...(result.output ? { result: result.output } : {}),
         });
         ctx.onEvent({
           type: "timing",
@@ -117,20 +130,19 @@ function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsCont
           status: "ok",
           attributes: { "ordin.tool.name": name },
         });
-        return result;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
-        ctx.onEvent({
-          type: "timing",
-          name: `ordin.tool.${name}`,
-          durationMs: Date.now() - started,
-          status: "error",
-          error: message,
-          attributes: { "ordin.tool.name": name },
-        });
-        throw err;
+        return result.output;
       }
+      const message = result.error.message;
+      ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
+      ctx.onEvent({
+        type: "timing",
+        name: `ordin.tool.${name}`,
+        durationMs: Date.now() - started,
+        status: "error",
+        error: message,
+        attributes: { "ordin.tool.name": name, "ordin.tool.error_kind": result.error.kind },
+      });
+      throw new Error(message);
     },
   });
 }

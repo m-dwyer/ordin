@@ -3,7 +3,8 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { ToolDispatcher } from "../shared/dispatcher";
+import type { BrokerClient } from "../../../broker/client/types";
+import { parseToolSpec } from "../shared/tools";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -46,8 +47,12 @@ export interface ScriptedRuntimeOptions {
   readonly planLoader?: () => Promise<ScriptedPlan>;
   /** Fallback transcript dir when `InvokeRequest.runDir` is unset. */
   readonly runsDirFallback?: string;
-  /** Inject for tests; defaults to a fresh `ToolDispatcher`. */
-  readonly dispatcher?: ToolDispatcher;
+  /**
+   * Tool execution surface (ADR-016). Each step's `tool` invocation
+   * routes through `broker.dispatchTool` so ACL + audit cover scripted
+   * runs identically to model-driven ones.
+   */
+  readonly broker: BrokerClient;
 }
 
 /**
@@ -77,6 +82,8 @@ export interface ScriptedRuntimeFromConfigExtras {
    * `config.script_path` and the auto-detected location.
    */
   readonly scriptPath?: string;
+  /** Broker client for tool dispatch (ADR-016). */
+  readonly broker: BrokerClient;
 }
 
 export class ScriptedRuntime implements AgentRuntime {
@@ -91,13 +98,13 @@ export class ScriptedRuntime implements AgentRuntime {
   private plan?: ScriptedPlan;
   private readonly planLoader?: () => Promise<ScriptedPlan>;
   private readonly runsDirFallback: string;
-  private readonly dispatcher: ToolDispatcher;
+  private readonly broker: BrokerClient;
 
-  constructor(opts: ScriptedRuntimeOptions = {}) {
+  constructor(opts: ScriptedRuntimeOptions) {
     this.plan = opts.plan;
     this.planLoader = opts.planLoader;
     this.runsDirFallback = opts.runsDirFallback ?? join(homedir(), ".ordin", "runs");
-    this.dispatcher = opts.dispatcher ?? new ToolDispatcher();
+    this.broker = opts.broker;
   }
 
   /**
@@ -117,6 +124,7 @@ export class ScriptedRuntime implements AgentRuntime {
     const loader = new ScriptedPlanLoader();
     return new ScriptedRuntime({
       planLoader: () => loader.load(planPath),
+      broker: extras.broker,
       ...(extras.runsDirFallback ? { runsDirFallback: extras.runsDirFallback } : {}),
     });
   }
@@ -144,6 +152,7 @@ export class ScriptedRuntime implements AgentRuntime {
       req.onEvent?.(event);
     };
 
+    const allowedTools = req.prompt.tools.map((spec) => parseToolSpec(spec).name);
     let toolCounter = 0;
 
     try {
@@ -155,21 +164,26 @@ export class ScriptedRuntime implements AgentRuntime {
           const id = `scripted-${++toolCounter}`;
           const expanded = substituteInput(step.tool.input, subs);
           emit({ type: "tool.use", id, name: step.tool.name, input: expanded });
-          try {
-            const result = await this.dispatcher.dispatch(step.tool.name, expanded, {
-              cwd: req.prompt.cwd,
-              skills: req.prompt.skills,
-            });
+          const dispatched = await this.broker.dispatchTool({
+            tool: step.tool.name,
+            input: expanded,
+            runId: req.runId,
+            phaseId: req.prompt.phaseId,
+            cwd: req.prompt.cwd,
+            allowedTools,
+            skills: req.prompt.skills,
+          });
+          if (dispatched.ok) {
             emit({
               type: "tool.result",
               id,
               ok: true,
-              ...(result ? { result } : {}),
+              ...(dispatched.output ? { result: dispatched.output } : {}),
             });
-          } catch (err) {
-            const message = (err as Error).message;
+          } else {
+            const message = dispatched.error.message;
             emit({ type: "tool.result", id, ok: false, result: message });
-            throw err;
+            throw new Error(message);
           }
         }
       }
