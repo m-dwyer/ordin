@@ -339,3 +339,153 @@ ADR-002's risk envelope was much wider than appreciated: `~/Documents`, `~/Deskt
 - Phase 6 probe tests gain real meaning: deny-by-default means probes for `~/Documents/anything`, `~/Library/Messages`, `~/.docker/config.json` all assert deny — and they'd fail if anyone accidentally widens the allow list.
 - Profile is longer than ADR-002's version — soft auditability budget (ADR-001) accommodates it well within ≤400 lines for the rendered profile.
 - ADR-002 is preserved as the superseded record; the trail of "we considered this and reversed" is intact.
+
+---
+
+## ADR-015 — Broker as canonical worker-egress boundary, independent of sandbox mode
+
+**Status:** Accepted (formalises shipped behaviour)
+
+**Context:** ADR-001 deferred B-worker to v3+. In practice, the broker (`src/broker/`) shipped early — wired as srt's `parentProxy` to satisfy credential isolation (Langfuse `pk:sk` never reaches the worker) and audit-chain requirements (sha256-chained envelopes for every forward). The architecture diagram describes the broker as a sandbox-coupled component; on review its responsibilities — credential injection, per-host allowlist, audit chain, virtual hostname mapping (`http://otel/...` → `127.0.0.1:3000`) — are independent of whether kernel sandboxing is active.
+
+In `--sandbox seatbelt` runs, srt enforces "egress only via broker" at the kernel layer. In `--sandbox passthrough` runs, the worker has no kernel enforcement; the broker still gates traffic the worker chooses to route through it (`HTTP_PROXY` env), still injects credentials, still audits. Two enforcement layers, one transport pattern.
+
+**Decision:** The broker is the harness's trust boundary, not a sandbox component. Kernel sandboxing is one mechanism that elevates "broker-routed by discipline" to "broker-routed by enforcement"; the value of the broker survives without it.
+
+- Broker accepts traffic from any worker (sandboxed or not) — one API, no mode-specific code paths.
+- Per-mode wiring of `HTTP_PROXY` stays as is: srt mode injects via `parentProxy` (worker env clean of secrets); non-srt mode injects via worker env directly (`src/runtime/worker-policy.ts:39`).
+- All worker-originated egress (model traffic, telemetry, audit endpoints, future tool dispatch per ADR-016) flows through the broker regardless of mode.
+
+**Consequences:**
+
+- Audit, credential isolation, and (with ADR-016) tool-dispatch enforcement work in unsandboxed dev runs too — useful where srt isn't available (current Linux story) or already-isolated outer environments (`ordin serve` inside a hosted container).
+- Removes the implicit "broker is for sandbox" coupling in the architecture diagram. Broker = trust boundary; sandbox = kernel enforcement; both compose, neither requires the other.
+- Test surface stays small: no `if (sandboxed) ... else ...` branches inside the broker.
+
+---
+
+## ADR-016 — Tool dispatch via broker (B-worker tool boundary)
+
+**Status:** Provisional (v3 — completes B-worker per ADR-001 trigger list)
+
+**Context:** ADR-001 reserved B-worker. ADR-012 deferred a pre-execution pattern scanner. Both decisions converge on the same gap: today `ToolDispatcher.dispatch(name, input, ctx)` runs in-process inside the worker (`src/worker/runtimes/shared/dispatcher.ts`). A pattern scanner inserted at that point runs in the same trust domain as the agent. A sandbox escape — or a clever prompt injection that causes the dispatcher to be bypassed — defeats the scanner along with the rest of the worker code.
+
+ADR-015 formalised the broker as the canonical worker-egress boundary. This ADR extends that boundary to include tool dispatch — completing the B-worker trust separation that ADR-001 reserved.
+
+**Decision:** Tool dispatch becomes RPC over the broker.
+
+- Worker emits tool **intents** (`{tool, input, run_id, phase_id, span_context}`) over HTTP to the broker.
+- Broker enforces:
+  - Per-phase ACL derived from the workflow's `allowed_tools`.
+  - Pre-execution pattern scanner (ADR-012) — denied patterns rejected at the boundary, audit-logged.
+  - Audit-chain entry per attempt (allowed *and* denied).
+- Broker (or a separately-trusted tool-runner process) executes the tool and returns the result.
+- Worker no longer makes filesystem or subprocess syscalls for tool execution. Its role reduces to model orchestration + tool-intent emission.
+
+**Consequences:**
+
+- **Trust separation in multi-process modes.** When the broker runs in a separate process from the agent (sandboxed runs, hosted runs), process-level RCE in the worker no longer grants tool access; the attacker would need to compromise the broker too.
+- **Policy enforcement in single-process mode.** Default `--sandbox passthrough` runs use the in-process `BrokerClient` (per ADR-018). The trust boundary is logical, not physical: ACL, pattern scanner, and audit chain all run, but the agent and the broker share an address space. This is the same posture as today's in-worker dispatcher, with the policy code consolidated.
+- **Pattern scanner is implementable.** ADR-012's defense-in-depth surface is meaningful in both modes — strongest when the scanner runs in a separate process from the agent.
+- **Audit unifies.** Today's chain captures broker forwards (network) but not in-worker tool calls. After this ADR, every tool intent — allowed, denied, executed, errored — is in the chain regardless of transport.
+- **Per-phase ACL enforced at the trust boundary**, not inside the agent code path. The agent can declare any tool intent it wants; the broker authorises against the workflow declaration.
+- **Latency cost (multi-process only).** HTTP-transport mode pays ~1–10 ms per tool call vs in-process function calls. Phases issuing dozens of bash calls pay spawn-equivalent overhead. Acceptable for sandboxed runs; in-process mode (default) avoids this entirely.
+- **Audit budget.** ADR-001's 1500-LOC budget for `src/sandbox/` doesn't cover `src/broker/` directly; this ADR extends the discipline — treat the budget as inclusive of trust-critical code regardless of directory. Pattern scanner + dispatch handler must fit alongside existing broker code.
+- **New failure mode.** Broker wedge → no tool execution. Existing audit-broker failure modes apply equivalently.
+
+**Containerization considered.** The standard pattern for "agent does anything destructive" is "run the whole agent in a container". Container/VM tech has improved — Apple Containers (macOS 15+, microVM-per-container via Apple Virtualization Framework) and OrbStack close the filesystem-performance gap that Docker Desktop's bind mounts left open. Native arm64 Linux containers on Apple Silicon are no longer the perf disaster they were two years ago.
+
+The remaining objections aren't about FS perf:
+
+- *Credential mounting paradox.* Containers hide secrets from the host but not from the agent inside. To do anything useful (`git push`, `aws s3 cp`, `gh pr create`), users mount `~/.ssh`, `~/.aws`, `~/.config/gh` into the container — defeating the trust boundary. Most teams shrug and mount; the resulting trust model is theatre. The microVM doesn't fix this; only an in-container credential broker does (and at that point you've reimplemented the broker pattern).
+- *Tool installation matrix.* Container is a Linux environment. macOS-installed binaries (Mach-O) don't execute under a Linux kernel even when the FS is mounted in. Users have to maintain a parallel Linux toolchain — `mise`/`asdf` inside, separate from their host one. Cache-friendly (subsequent installs hit layers) but a real config commitment.
+- *Native macOS integrations.* `claude -p` with macOS Keychain auth, `gh` with macOS-stored OAuth, GPG signing via Keychain, browser-driven OAuth flows — none of these reach into a Linux container. Agents that depend on them have to be reauthenticated separately inside.
+- *Local services.* Agent talks to `localhost:4000` (LiteLLM), `localhost:3000` (Langfuse). From inside a container, networking is `host.docker.internal` (mac), `172.17.0.1` (Linux without `--network=host`), or `localhost` (with `--network=host`). Cross-platform code juggles all three.
+- *Docker-in-Docker.* If the agent's tools include building/running containers, DinD is heavy and slow; mounting the host Docker socket is convenient but a container-escape vector.
+
+In short: microVM tech fixes the *performance* objection but not the *credential / tool-matrix / OS-integration* objections. Those are properties of the OS boundary, not the FS-sync mechanism.
+
+ordin's in-process kernel sandbox + broker model keeps the host's toolchain and credentials visible to the agent (no OS boundary to cross), and gives container-grade isolation properties (egress allowlist, credential isolation, audit) via the broker. ADR-016 closes the in-process tool-execution gap that the kernel sandbox alone doesn't address — and ADR-018 makes the transport mode pluggable so the *physical* trust separation is available exactly when the user opts into it (sandboxed / hosted), without imposing process / RPC overhead on the default dev loop.
+
+For multi-tenant hosted contexts (v3+; see ADR-001 trigger list item 4), containerization or microVMs remain the right *outer* layer — one container/VM per tenant — but the agent inside that container still benefits from broker-mediated tool dispatch for the same credential / audit / ACL reasons it does on a developer's laptop. Apple Containers / Firecracker compose with the broker pattern; they don't replace it.
+
+**Migration path:**
+
+1. Define the broker's tool-dispatch surface (`POST http://tools/dispatch`); add the broker hostname-map entry as an `internal` service.
+2. Move `executeBash`, `executeWrite`, etc. from `src/worker/runtimes/shared/tools.ts` into a broker-side handler. Keep input shapes identical to ease the move.
+3. Replace `ToolDispatcher.dispatch(...)` in `buildDispatcherTools.execute` with an HTTP call to the broker.
+4. Implement the pattern scanner as a broker-side `before` hook on the dispatch handler (ADR-012's hook surface).
+5. Audit-chain integration: every dispatch attempt produces an envelope.
+
+Out of scope for this ADR: specific RPC framing (HTTP+JSON vs gRPC vs UDS), pattern-file location, and tool-runner process boundary (broker vs sibling). All resolved during implementation.
+
+---
+
+## ADR-017 — OTel telemetry direct from worker
+
+**Status:** Provisional (v2 — observability transport)
+
+**Context:** Mastra's Agent emits its own observability events (chat span, tool span, etc.). Today these are translated worker-side to `RuntimeEvent.timing` entries on stdout; the parent's OTel SDK creates spans on receipt (`src/orchestrator/phase-runner.ts:83-101`). Data is correct but hierarchy is flat — Mastra's spans land as siblings under `ordin.phase.<id>` instead of nesting properly. A 21-step run shows ~140 sibling spans in Langfuse instead of 21 expandable groups.
+
+The original choice avoided `@mastra/langfuse`'s `LangfuseExporter` because `@langfuse/client` writes to stdout via init-time singletons we can't reliably mute before they corrupt the JSONL channel. This concern is specific to that vendor SDK; `@opentelemetry/exporter-trace-otlp-http` doesn't have it (its only stdout risk is OTel's `diag` logger, already silenced in the parent's bootstrap and trivially silenceable in the worker).
+
+**Decision:** Bootstrap an OpenTelemetry SDK in the worker. Mastra's `Observability` container exports OTel spans via `OTLPTraceExporter` pointed at `http://otel/api/public/otel/v1/traces` — the broker hostname per ADR-015. Trace context propagates from parent to worker via `TRACEPARENT` (already in the worker env allowlist, `src/runtime/worker-policy.ts:30`).
+
+**Consequences:**
+
+- Mastra spans nest natively in OTel hierarchy. `ordin.phase.<id>` → `chat` → `chat <model>` / `tool: 'X'` reads correctly in Langfuse without parent-side reconstruction.
+- ordin's per-turn / per-tool spans (`ordin.provider.turn`, `ordin.tool.<name>`) move into the worker as real OTel spans — created in-process so they nest inside the relevant Mastra spans naturally.
+- Parent stops translating timing events into spans for the Mastra-derived stream. Parent OTel SDK retains responsibility for `ordin.run` / `ordin.phase.*` (lifecycle outside the worker).
+- Worker OTel SDK uses `instrumentations: []` — no auto-instrumentation, no `http`/`dns`/`fs` hooks added behind our backs.
+- Worker shutdown bounds `sdk.shutdown()` at 5s (matching the parent) so Langfuse outages don't hang worker exit.
+- OTLP/HTTP transport flows through the broker per ADR-015 — credential injection (`Authorization: Basic <pk:sk>`) and audit chain unchanged.
+- Sandbox compatibility: srt's transparent redirection routes `http://otel/...` to the broker; if it requires `HTTP_PROXY` in the worker env, only the non-secret broker proxy URL is added (the per-run secret stays in srt's `parentProxy.http`).
+
+**Alternative considered: parent-side state machine reconstructing hierarchy from after-the-fact timing events.** ~50 LOC parent change; no worker bundle growth. Rejected because it reconstructs hierarchy that OTel already provides natively when used as designed. The "vendor-neutral via timing events" argument holds for runtime-internal telemetry (tools we own), not for vendor framework telemetry (Mastra spans).
+
+---
+
+## ADR-018 — Pluggable broker transport: in-process by default, HTTP under sandbox
+
+**Status:** Provisional (v3 — paired with ADR-016)
+
+**Context:** ADR-016 makes the broker the single dispatch point for tool execution. The naïve implementation forces every tool call through HTTP-over-localhost in every mode — including the default `--sandbox passthrough` dev loop, which gains no trust-separation benefit from a process boundary it doesn't have. ADR-001's B-process vs B-worker dichotomy was framed as a static architectural choice; in practice the transport between agent and broker can be a runtime selection, picked per the sandbox-mode UX defined in ADR-007.
+
+**Decision:** Define the broker dispatch surface as an interface; provide two implementations, selected by sandbox mode.
+
+```ts
+interface BrokerClient {
+  dispatchTool(intent: ToolIntent): Promise<ToolResult>;
+  forwardTrace(span: SpanData): Promise<void>;
+  forwardEgress(req: HttpRequest): Promise<HttpResponse>;
+}
+
+class InProcessBrokerClient implements BrokerClient { /* direct method calls into Broker */ }
+class HttpBrokerClient implements BrokerClient { /* HTTP over localhost via broker */ }
+```
+
+Mode selection:
+
+| Sandbox mode | Worker process | Transport | Trust boundary |
+|---|---|---|---|
+| `--sandbox passthrough` (default) | none — agent runs in harness | `InProcessBrokerClient` | logical (code discipline) |
+| `--sandbox seatbelt` | spawned via srt | `HttpBrokerClient` over broker | physical (kernel + process) |
+| `ordin serve` (v3+) | per-run worker | `HttpBrokerClient` | physical (process + outer container) |
+
+The `Broker` class itself does not vary — ACL evaluation, pattern scanner, audit-chain append, credential injection all run identically regardless of how `dispatchTool` was invoked. Transport is a layer above policy.
+
+**Consequences:**
+
+- **Default mode is fast.** No process spawn, no HTTP serialization tax, no JSONL framing for the dev-loop case. Tool dispatch is a function call.
+- **Sandboxed mode is strict.** The `HttpBrokerClient` + multi-process layout gives the trust-separation property — sandbox escape on the worker no longer grants tool access. The `InProcessBrokerClient` mode does not claim this property; ADR-016's "sandbox-escape resistance" applies only to multi-process transports.
+- **One policy code path.** ACL, pattern scanner, audit-chain logic lives once in `src/broker/`. Tests run against both transports through a shared contract test ("same intent → same audit envelope, same decision, regardless of transport").
+- **TUI lifecycle coupling avoided.** ADR-001 trigger 1 (TUI capability-query leakage during sandboxed reexec) only matters when there's a sandboxed reexec. In-process mode has no reexec; HTTP-transport mode is the B-worker variant where the host stays unsandboxed. The B-process variant ADR-001 originally chose — which has the coupling — is no longer needed.
+- **Server modes resolve cleanly.** ADR-008 noted that `ordin serve` and `ordin mcp` cannot reexec mid-flight; B-worker is the only path. With pluggable transport, server modes always pick `HttpBrokerClient` regardless of sandbox-mode-the-user-asked-for, because crash isolation is a hard requirement for long-lived processes.
+- **Test matrix doubles.** Each transport has its own integration tests for serialization / error semantics. Mitigation: keep the broker dispatch surface narrow, define typed errors that serialize cleanly, run a contract test that exercises both transports against the same broker policy code.
+- **Audit-chain semantics must be identical across transports.** The contract test enforces this; any divergence is a bug, not a transport-specific quirk.
+
+**Alternative considered: always-multi-process.** Always run a separate worker, always speak HTTP. Simpler model, one code path, predictable latency. Rejected because the default dev loop pays a measurable per-tool-call overhead for trust separation it isn't getting (no kernel sandbox in passthrough), and the in-process case is the most-trafficked path. The cost of two implementations is bounded; the cost of slower default-mode runs compounds across every dev-loop iteration.
+
+**Alternative considered: always-in-process.** Drop the HTTP transport entirely; never spawn a separate worker. Rejected because it forecloses sandboxed-run trust separation (ADR-016's primary security property) and server-mode crash isolation (ADR-008's blocker). The HTTP transport is mandatory for those use cases; making it optional in the default dev loop is the right asymmetry.
+
+**Relationship to ADR-001.** ADR-001 chose B-process for v1 and reserved B-worker. ADR-018 supersedes that framing implicitly: B-process and B-worker are no longer alternatives but transport modes selected per run. The B-process reexec-of-the-whole-CLI mechanism is retired (TUI coupling, server-mode incompatibility); single-process mode here means the agent runs in the harness process directly, with no kernel sandbox. Sandboxing always implies multi-process.
