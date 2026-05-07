@@ -911,16 +911,12 @@ function EgressGateCard(props: { egress: EgressGateState }) {
       paddingBottom={1}
       marginTop={1}
     >
-      <box width="100%">
-        <text fg={PALETTE.text} wrapMode="word" content={`agent wants to reach ${target()}`} />
-      </box>
-      <box width="100%">
-        <text
-          fg={PALETTE.hint}
-          wrapMode="word"
-          content="approve to allow (saved for this project) or reject to deny"
-        />
-      </box>
+      <text
+        flexShrink={1}
+        fg={PALETTE.text}
+        wrapMode="word"
+        content={`agent wants to reach ${target()}\napprove to allow (saved for this project) or reject to deny`}
+      />
     </box>
   );
 }
