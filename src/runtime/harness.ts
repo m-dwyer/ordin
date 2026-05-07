@@ -44,6 +44,7 @@ import type { Sandbox } from "../sandbox/types";
 import { workerArgv } from "../worker/locator";
 import { buildRuntime, KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
 import type { InvokeRequest, InvokeResult, RuntimeEvent } from "../worker/runtimes/types";
+import { type EgressApproval, EgressApprovalStore } from "./egress-store";
 import { resolveClaudeBin } from "./resolve-claude-bin";
 import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
 
@@ -184,7 +185,8 @@ export class HarnessRuntime {
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
-    const infra = this.buildInfra(state, input);
+    const egress = await this.prepareEgressStore(state, input, workspaceRoot);
+    const infra = this.buildInfra(state, input, egress);
     let tracingStarted = false;
     try {
       // Broker must be listening before the sandbox initialises — srt
@@ -469,6 +471,43 @@ export class HarnessRuntime {
   }
 
   /**
+   * Load the per-project egress approval store (ADR-013) and assemble
+   * the binding the broker needs: pre-approved hosts pulled from disk,
+   * and a wrapped prompter that persists every fresh approval back to
+   * disk. Runs without a CLI prompter (headless / CI) skip the wrap —
+   * the broker denies un-mapped hosts as before.
+   */
+  private async prepareEgressStore(
+    state: LoadedState,
+    input: StartRunInput,
+    workspaceRoot: string,
+  ): Promise<EgressBinding> {
+    if (this.sandboxOverride) return { preApprovedHosts: [] };
+    const ordinDir = dirname(state.config.runStoreDir());
+    const projectKey = EgressApprovalStore.projectKeyForWorkspace(workspaceRoot, input.projectName);
+    const store = new EgressApprovalStore({ ordinDir, projectKey });
+    const preApprovedHosts = await store.load();
+    const userPrompter = this.egressGatePrompter;
+    if (!userPrompter) return { preApprovedHosts };
+    const prompter: NonNullable<HarnessRuntimeOptions["egressGatePrompter"]> = async (req) => {
+      const approved = await userPrompter(req);
+      if (approved) {
+        try {
+          await store.add(req.host, req.port);
+        } catch (err) {
+          console.warn(
+            `[harness] failed to persist egress approval for ${req.host}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      return approved;
+    };
+    return { preApprovedHosts, prompter };
+  }
+
+  /**
    * Build the per-run infra bundle: the `Sandbox`, the `Broker`, and the
    * `AuditService`. The broker is wired regardless of mode — srt uses it
    * as the kernel-enforced parentProxy; passthrough still uses it for
@@ -480,7 +519,7 @@ export class HarnessRuntime {
    * Resolution order: explicit `Sandbox` instance override > `sandboxMode`
    * override (typically the CLI flag) > config file's `sandbox:` field.
    */
-  private buildInfra(state: LoadedState, input: StartRunInput): RunInfra {
+  private buildInfra(state: LoadedState, input: StartRunInput, egress: EgressBinding): RunInfra {
     if (this.sandboxOverride) {
       return { kind: "override", sandbox: this.sandboxOverride };
     }
@@ -513,7 +552,8 @@ export class HarnessRuntime {
       internalServices: [
         { kind: "internal", name: "tools", handler: makeToolServiceHandler(brokerDispatch) },
       ],
-      ...(this.egressGatePrompter ? { onEgressGate: this.egressGatePrompter } : {}),
+      ...(egress.prompter ? { onEgressGate: egress.prompter } : {}),
+      preApprovedHosts: egress.preApprovedHosts,
     });
     const brokerClient = new InProcessBrokerClient(brokerDispatch);
     return {
@@ -608,6 +648,11 @@ function defaultRoot(): string {
  * keeps callers from reaching for `audit`/`broker` in modes that don't
  * have them.
  */
+interface EgressBinding {
+  readonly preApprovedHosts: readonly EgressApproval[];
+  readonly prompter?: NonNullable<HarnessRuntimeOptions["egressGatePrompter"]>;
+}
+
 type RunInfra =
   | { readonly kind: "override"; readonly sandbox: Sandbox }
   | {

@@ -128,6 +128,13 @@ export interface BrokerOptions {
    * prompter; headless callers leave it unset and the broker denies.
    */
   readonly onEgressGate?: (req: EgressGateRequest) => Promise<boolean>;
+  /**
+   * Hosts the user already approved on previous runs. Pre-populated
+   * from the per-project `egress.yaml` so the prompter is asked only
+   * for genuinely new hosts. The broker treats these like in-run
+   * cache hits — no audit "gate.requested" is emitted.
+   */
+  readonly preApprovedHosts?: readonly EgressGateRequest[];
 }
 
 const PROXY_AUTH_USER = "ordin";
@@ -170,6 +177,9 @@ export class Broker {
     this.expectedAuth = `Basic ${Buffer.from(`${PROXY_AUTH_USER}:${options.proxyAuth}`).toString(
       "base64",
     )}`;
+    for (const pre of options.preApprovedHosts ?? []) {
+      this.approvedHosts.add(approvalKey(pre.host, pre.port));
+    }
     this.forwardServer = createServer();
     this.forwardServer.on("request", (req, res) => this.onRequest(req, res));
     this.forwardServer.on("connect", (req, sock, head) => this.onConnect(req, sock, head));

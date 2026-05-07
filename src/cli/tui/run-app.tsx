@@ -918,7 +918,7 @@ function EgressGateCard(props: { egress: EgressGateState }) {
         <text
           fg={PALETTE.hint}
           wrapMode="word"
-          content="approve to allow (sticky for this run) or reject to deny"
+          content="approve to allow (saved for this project) or reject to deny"
         />
       </box>
     </box>
