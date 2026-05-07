@@ -36,11 +36,14 @@ export function buildWorkerEnv(
 ): NodeJS.ProcessEnv {
   if (infra.kind !== "managed") return parentEnv;
   if (infra.sandbox.name !== "srt") {
-    // Non-srt subprocess (currently unused — passthrough runs in-process
-    // post-Phase A — but kept robust for future): broker URL with auth
-    // goes in via HTTP_PROXY. The worker's `HttpBrokerClient` reads
-    // HTTP_PROXY and tunnels tool dispatches through the broker.
-    return { ...parentEnv, HTTP_PROXY: infra.broker.proxyUrl() };
+    // `claude-self` (and any future non-srt subprocess mode): the
+    // broker URL is pinned in both HTTP_PROXY and HTTPS_PROXY so
+    // claude-cli's `--settings` injection (claude-language-model-v2)
+    // can propagate it into claude's own per-API-call settings.
+    // `HttpBrokerClient` also reads HTTP_PROXY for its own tool
+    // dispatch tunnel — single env block, two consumers.
+    const proxyUrl = infra.broker.proxyUrl();
+    return { ...parentEnv, HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl };
   }
   // srt: srt's wrapper populates HTTP_PROXY with its own internal
   // filter proxy (no auth — srt injects `Proxy-Authorization` from

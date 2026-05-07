@@ -256,6 +256,10 @@ export class HarnessRuntime {
     const workflowName = this.workflowName;
     const scriptPath = this.scriptPathOverride;
     const config = state.config;
+    // Only `passthrough` runs in-process. `claude-self` and `srt` both
+    // need subprocess isolation: the worker's env carries the broker's
+    // proxy URL (`buildWorkerEnv`) which we don't want leaking into the
+    // harness process for the rest of its lifetime.
     const inProcess = infra.kind === "managed" && infra.mode === "passthrough";
     const brokerDispatch = infra.kind === "managed" ? infra.brokerDispatch : undefined;
     if (inProcess) {

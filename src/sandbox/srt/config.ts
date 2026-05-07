@@ -69,6 +69,11 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
   const tempDirResolved = resolveSafe(tempDir);
   const workerReadRoots = [...(params.workerReadRoots ?? [])].map(resolveSafe);
   const claudeDir = `${home}/.claude`;
+  // claude-cli reads `~/.claude.json` (a sibling file, not under
+  // `~/.claude/`) on every invocation. Without this allow rule the
+  // child silently retries the read forever and never reaches the
+  // network — the seatbelt deny is invisible to claude itself.
+  const claudeJson = `${home}/.claude.json`;
   const devToolingRoots = DEV_TOOLING_ROOTS.map((rel) => resolveSafe(`${home}/${rel}`));
 
   // srt reads are deny-then-allow. Denying the whole home directory
@@ -95,6 +100,7 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
       denyRead: [...deniedReadRoots],
       allowRead: [
         claudeDir,
+        claudeJson,
         harnessRoot,
         workspaceRoot,
         runStoreDir,

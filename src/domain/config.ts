@@ -64,10 +64,16 @@ export type RuntimesConfigRaw = z.infer<typeof RuntimesConfigSchema>;
  * Sandbox mode. `passthrough` = no isolation (default — ADR-007).
  * `srt` = `@anthropic-ai/sandbox-runtime`-backed kernel enforcement
  * (Seatbelt on macOS, bwrap+seccomp on Linux) plus deny-by-default
- * network egress through srt's HTTP+SOCKS proxies (Phase 9c). Linux
- * and Docker variants stay behind the same `Sandbox` interface.
+ * network egress through srt's HTTP+SOCKS proxies (Phase 9c).
+ * `claude-self` = no kernel wrapper (claude-cli's per-tool sandbox-exec
+ * does inner isolation), but the worker is spawned as a subprocess and
+ * its HTTP/HTTPS_PROXY is pinned to the broker. claude-cli's
+ * `--settings` injection re-stamps the proxy into its own settings so
+ * outbound API traffic flows through the broker (askApproval, audit,
+ * persisted egress approvals). Sweet spot for Max-plan users who need
+ * Keychain/mDNS access that srt's profile blocks.
  */
-export const SandboxModeSchema = z.enum(["passthrough", "srt"]);
+export const SandboxModeSchema = z.enum(["passthrough", "claude-self", "srt"]);
 export type SandboxMode = z.infer<typeof SandboxModeSchema>;
 
 /**
