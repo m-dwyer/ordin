@@ -182,7 +182,13 @@ export class Broker {
     }
     this.forwardServer = createServer();
     this.forwardServer.on("request", (req, res) => this.onRequest(req, res));
-    this.forwardServer.on("connect", (req, sock, head) => this.onConnect(req, sock, head));
+    this.forwardServer.on("connect", (req, sock, head) => {
+      this.onConnect(req, sock, head).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[broker] CONNECT handler threw: ${msg}`);
+        if (!sock.destroyed) sock.destroy();
+      });
+    });
     this.forwardServer.on("error", (err) => {
       // Server-level errors (bind failures, accept errors). Bind
       // failures surface via `start()`'s `once("error")`; accept
@@ -354,17 +360,13 @@ export class Broker {
     });
   }
 
-  private onConnect(req: IncomingMessage, client: Duplex, head: Buffer): void {
+  private async onConnect(req: IncomingMessage, client: Duplex, head: Buffer): Promise<void> {
     if (req.headers["proxy-authorization"] !== this.expectedAuth) {
       client.end(
         'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="ordin-broker"\r\n\r\n',
       );
       return;
     }
-    // CONNECT format is `host:port`. Trust srt's prior allowlist:
-    // anything arriving here has already been approved (by
-    // construction, the inner's HTTP_PROXY → srt → us). The broker is
-    // a passthrough tunneler; we audit-emit every attempt and forward.
     const hostport = req.url ?? "";
     const [host = "", portStr = ""] = hostport.split(":");
     const port = Number.parseInt(portStr, 10);
@@ -375,6 +377,22 @@ export class Broker {
       });
       client.end("HTTP/1.1 400 Bad Request\r\n\r\n");
       return;
+    }
+    // Non-mapped destinations gate via `askApproval` so the broker
+    // remains the trust boundary for *both* transports: under srt the
+    // outer proxy already asked and cached the answer, so this is a
+    // fast cache hit. Under `claude-self` (no srt) this is the only
+    // place the egress prompt fires for HTTPS CONNECTs.
+    if (!this.map.has(host)) {
+      const approved = await this.askApproval(host, port);
+      if (!approved) {
+        this.emit({
+          kind: "broker.connect.denied",
+          payload: { host, port, reason: "egress-deny" },
+        });
+        client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+        return;
+      }
     }
     this.emit({ kind: "broker.connect", payload: { host, port } });
     const upstream = netConnect(port, host, () => {

@@ -318,6 +318,10 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
     if (mcpToolNames.length > 0) {
       args.push("--allowed-tools", ...mcpToolNames);
     }
+    const proxySettings = buildProxySettings(process.env);
+    if (proxySettings) {
+      args.push("--settings", proxySettings);
+    }
     return args;
   }
 
@@ -438,6 +442,27 @@ function renderMessages(messages: readonly ProviderMessage[]): string {
 
 function claudeMcpToolName(name: string): string {
   return `mcp__ordin__${name}`;
+}
+
+/**
+ * claude-cli ignores `HTTP_PROXY` / `HTTPS_PROXY` from the process env
+ * for its API traffic, but does honor them when set in the `env` block
+ * of a `--settings` payload. Under srt the worker inherits the proxy
+ * URLs srt set up; we re-stamp them via `--settings` so claude routes
+ * to api.anthropic.com through srt's proxy. Without this, claude opens
+ * direct TCP that srt's seatbelt profile silently blocks.
+ *
+ * Returns undefined when no proxy is set so non-srt runs see no
+ * extra arg.
+ */
+function buildProxySettings(env: NodeJS.ProcessEnv): string | undefined {
+  const passThrough: Record<string, string> = {};
+  for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"]) {
+    const value = env[key];
+    if (value) passThrough[key] = value;
+  }
+  if (Object.keys(passThrough).length === 0) return undefined;
+  return JSON.stringify({ env: passThrough });
 }
 
 function ordinToolNameFromClaude(name: string): string {

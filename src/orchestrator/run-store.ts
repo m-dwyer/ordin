@@ -18,7 +18,7 @@ export interface RunMeta {
   task: string;
   slug: string;
   repo: string;
-  sandboxMode?: "passthrough" | "srt";
+  sandboxMode?: "passthrough" | "claude-self" | "srt";
   phaseSlicing?: {
     onlyPhases?: string[];
     startAt?: string;

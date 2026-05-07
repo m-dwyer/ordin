@@ -86,6 +86,11 @@ describe("buildSrtConfig", () => {
     expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.claude`);
   });
 
+  it("allows ~/.claude.json read — claude-cli stops on the first read deny", () => {
+    const cfg = buildSrtConfig({ params, policy: defaultPolicy({ env: {} }), homeDir });
+    expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.claude.json`);
+  });
+
   it("allows explicit extra read roots for the worker interpreter", () => {
     const cfg = buildSrtConfig({
       params: {
