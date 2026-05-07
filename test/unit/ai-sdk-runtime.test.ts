@@ -9,7 +9,16 @@ import type { ComposedPrompt } from "../../src/domain/composer";
 import { AiSdkRuntime } from "../../src/worker/runtimes/ai-sdk";
 import type { InvokeRequest, RuntimeEvent } from "../../src/worker/runtimes/types";
 
-const noopBroker = (): BrokerDispatch => new BrokerDispatch({ audit: { append: () => {} } });
+/**
+ * Builds a BrokerDispatch pre-registered for `(runId="run-1",
+ * phaseId="plan")` against the supplied tool list. Mirrors what the
+ * harness does parent-side around each phase invoke.
+ */
+function noopBroker(allowedTools: readonly string[] = []): BrokerDispatch {
+  const broker = new BrokerDispatch({ audit: { append: () => {} } });
+  broker.registerPhase("run-1", "plan", allowedTools);
+  return broker;
+}
 
 /**
  * Phase A parity check for the Mastra-Agent migration. Mastra owns the
@@ -167,7 +176,7 @@ describe("AiSdkRuntime.invoke event mapping", () => {
       },
     });
 
-    const runtime = new AiSdkRuntime({ model, broker: noopBroker() });
+    const runtime = new AiSdkRuntime({ model, broker: noopBroker(["Bash"]) });
     const { request, events } = makeRequest(makePrompt({ cwd, tools: ["Bash"] }));
     const result = await runtime.invoke(request);
 

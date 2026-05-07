@@ -34,8 +34,6 @@ export interface ToolIntent {
   /** Workspace cwd for the executing phase. Path normalization is
    *  resolved relative to this. */
   readonly cwd: string;
-  /** Per-phase ACL list. The broker rejects tools not present here. */
-  readonly allowedTools: readonly string[];
   /** Skills available to the phase; consumed only by the `Skill` tool. */
   readonly skills: readonly Skill[];
 }

@@ -255,6 +255,7 @@ export class HarnessRuntime {
     const scriptPath = this.scriptPathOverride;
     const config = state.config;
     const inProcess = infra.kind === "managed" && infra.mode === "passthrough";
+    const brokerDispatch = infra.kind === "managed" ? infra.brokerDispatch : undefined;
     if (inProcess) {
       const brokerClient = infra.kind === "managed" ? infra.brokerClient : undefined;
       // ADR-018: passthrough runs the agent in the harness process,
@@ -265,23 +266,25 @@ export class HarnessRuntime {
           req.runtimeName,
           config.runtimeConfig(req.runtimeName),
         );
-        return new PhaseRunner().run({
-          preview: req.preview,
-          runtimeName: req.runtimeName,
-          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
-          emit: req.emit,
-          invoke: async (invokeReq) => {
-            const runtime = await buildRuntime(req.runtimeName, runtimeConfig, {
-              harnessRoot,
-              workflowName,
-              runsDir: config.runStoreDir(),
-              ...(scriptPath ? { scriptPath } : {}),
-              ...(brokerClient ? { broker: brokerClient } : {}),
-            });
-            return runtime.invoke(invokeReq);
-          },
-          ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-        });
+        return runWithPhaseAcl(brokerDispatch, req, () =>
+          new PhaseRunner().run({
+            preview: req.preview,
+            runtimeName: req.runtimeName,
+            context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+            emit: req.emit,
+            invoke: async (invokeReq) => {
+              const runtime = await buildRuntime(req.runtimeName, runtimeConfig, {
+                harnessRoot,
+                workflowName,
+                runsDir: config.runStoreDir(),
+                ...(scriptPath ? { scriptPath } : {}),
+                ...(brokerClient ? { broker: brokerClient } : {}),
+              });
+              return runtime.invoke(invokeReq);
+            },
+            ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+          }),
+        );
       };
     }
     const sandbox = infra.sandbox;
@@ -304,24 +307,26 @@ export class HarnessRuntime {
         resultPath,
       };
       await writeFile(planPath, JSON.stringify(plan));
-      return new PhaseRunner().run({
-        preview: req.preview,
-        runtimeName: req.runtimeName,
-        context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
-        emit: req.emit,
-        invoke: (invokeReq) =>
-          spawnWorkerInvoke({
-            sandbox,
-            harnessRoot,
-            workerEnv,
-            planPath,
-            resultPath,
-            phaseId: req.phase.id,
-            iteration: req.iteration,
-            invokeReq,
-          }),
-        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-      });
+      return runWithPhaseAcl(brokerDispatch, req, () =>
+        new PhaseRunner().run({
+          preview: req.preview,
+          runtimeName: req.runtimeName,
+          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+          emit: req.emit,
+          invoke: (invokeReq) =>
+            spawnWorkerInvoke({
+              sandbox,
+              harnessRoot,
+              workerEnv,
+              planPath,
+              resultPath,
+              phaseId: req.phase.id,
+              iteration: req.iteration,
+              invokeReq,
+            }),
+          ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+        }),
+      );
     };
   }
 
@@ -517,6 +522,7 @@ export class HarnessRuntime {
       sandbox: selectSandbox(mode, { broker }),
       broker,
       brokerClient,
+      brokerDispatch,
       proxyAuth,
       audit,
       services,
@@ -610,6 +616,7 @@ type RunInfra =
       readonly sandbox: Sandbox;
       readonly broker: Broker;
       readonly brokerClient: BrokerClient;
+      readonly brokerDispatch: BrokerDispatch;
       readonly proxyAuth: string;
       readonly audit: AuditService;
       readonly services: Readonly<Record<string, unknown>>;
@@ -632,6 +639,37 @@ function makeOnEvent(infra: RunInfra, input: StartRunInput): (event: RunEvent) =
     };
   }
   return (ev) => input.onEvent?.(ev);
+}
+
+/**
+ * Register the per-(run, phase) ACL on the broker before the phase
+ * invokes, release it after — even on failure. The worker has no way
+ * to widen its own permissions because it never sees the ACL: the
+ * intent it sends carries no allow-list, and the broker looks up the
+ * authoritative one parent-side keyed by `(runId, phaseId)`.
+ *
+ * `Skill` is auto-added when the phase has skills attached; this
+ * mirrors `buildDispatcherTools`, where `Skill` is implicitly exposed
+ * to Mastra under the same condition. Keeping the two derivations in
+ * lockstep prevents an LLM-issued `Skill` call from reaching the
+ * broker just to get rejected.
+ */
+async function runWithPhaseAcl<T>(
+  brokerDispatch: BrokerDispatch | undefined,
+  req: PhaseDispatchRequest,
+  body: () => Promise<T>,
+): Promise<T> {
+  if (!brokerDispatch) return body();
+  const { runId, preview } = req;
+  const { phaseId, skills } = preview.prompt;
+  const tools = preview.prompt.tools.map((spec) => spec.match(/^\w+/)?.[0] ?? spec);
+  if (skills.length > 0 && !tools.includes("Skill")) tools.push("Skill");
+  brokerDispatch.registerPhase(runId, phaseId, tools);
+  try {
+    return await body();
+  } finally {
+    brokerDispatch.releasePhase(runId, phaseId);
+  }
 }
 
 function startParentTracing(infra: RunInfra): boolean {

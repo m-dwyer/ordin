@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { BrokerClient, ToolIntent } from "../../../broker/client/types";
 import { executeTool } from "../../tools/dispatcher";
-import { parseToolSpec } from "../shared/tools";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -155,7 +154,6 @@ export class ScriptedRuntime implements AgentRuntime {
       req.onEvent?.(event);
     };
 
-    const allowedTools = req.prompt.tools.map((spec) => parseToolSpec(spec).name);
     let toolCounter = 0;
 
     try {
@@ -172,7 +170,6 @@ export class ScriptedRuntime implements AgentRuntime {
             runId: req.runId,
             phaseId: req.prompt.phaseId,
             cwd: req.prompt.cwd,
-            allowedTools,
             skills: req.prompt.skills,
           };
           emit({ type: "tool.use", id, name: step.tool.name, input: expanded });
