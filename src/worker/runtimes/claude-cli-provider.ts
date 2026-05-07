@@ -56,8 +56,6 @@ export interface ClaudeCliProviderRuntimeOptions {
   readonly broker: BrokerClient;
   readonly spawner?: ProviderSpawner;
   readonly mastraTracing?: MastraTracingFactory;
-  readonly parentTraceId?: string;
-  readonly parentSpanId?: string;
 }
 
 /**
@@ -86,8 +84,6 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
   private readonly broker: BrokerClient;
   private readonly spawner: ProviderSpawner | undefined;
   private readonly mastraTracing: MastraTracingFactory | undefined;
-  private readonly parentTraceId: string | undefined;
-  private readonly parentSpanId: string | undefined;
 
   constructor(opts: ClaudeCliProviderRuntimeOptions) {
     this.bin = opts.bin;
@@ -100,8 +96,6 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     this.broker = opts.broker;
     this.spawner = opts.spawner;
     this.mastraTracing = opts.mastraTracing;
-    this.parentTraceId = opts.parentTraceId;
-    this.parentSpanId = opts.parentSpanId;
   }
 
   static fromConfig(
@@ -158,7 +152,6 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
       ...(this.timeoutMs ? { timeoutMs: this.timeoutMs } : {}),
       ...(this.spawner ? { spawner: this.spawner } : {}),
       onRawLine: (line) => debug({ direction: "provider.out", line }),
-      onEvent: emit,
     });
 
     const tools = buildDispatcherTools(toolNames, {
@@ -170,7 +163,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
       onEvent: emit,
     });
 
-    const mastra = this.mastraTracing?.(emit);
+    const mastra = this.mastraTracing?.();
     const agent = new Agent({
       id: `ordin.${req.prompt.phaseId}`,
       name: `ordin.${req.prompt.phaseId}`,
@@ -198,8 +191,6 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
             "ordin.runtime": "claude-cli-provider",
             "langfuse.sessionId": req.runId,
           },
-          ...(this.parentTraceId ? { traceId: this.parentTraceId } : {}),
-          ...(this.parentSpanId ? { parentSpanId: this.parentSpanId } : {}),
         },
       });
       await output.consumeStream();

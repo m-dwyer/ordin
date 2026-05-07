@@ -172,14 +172,14 @@ describe("AiSdkRuntime.invoke event mapping", () => {
     const result = await runtime.invoke(request);
 
     expect(result.status).toBe("ok");
-    // Order: buildDispatcherTools.execute fires tool.use / tool.result /
-    // ordin.tool.<name> timing inside Mastra's tool-call step (before
-    // onStepFinish), then onStepFinish emits the assistant text and
-    // tokens accumulated for that step.
+    // Order: buildDispatcherTools.execute fires tool.use / tool.result
+    // inside Mastra's tool-call step (before onStepFinish), then
+    // onStepFinish emits the assistant text and tokens accumulated for
+    // that step. The per-tool span (`ordin.tool.<name>`) flows OTel-
+    // native now (Phase D); no `timing` runtime event for it.
     expect(events.map((e) => e.type)).toEqual([
       "tool.use",
       "tool.result",
-      "timing",
       "assistant.text",
       "tokens",
       "assistant.text",
@@ -195,11 +195,7 @@ describe("AiSdkRuntime.invoke event mapping", () => {
     expect(toolResult.ok).toBe(true);
     expect(toolResult.result).toContain("hi");
 
-    const toolTiming = events[2];
-    if (toolTiming?.type !== "timing") throw new Error("expected timing");
-    expect(toolTiming.name).toBe("ordin.tool.Bash");
-
-    expect(events[5]).toEqual({ type: "assistant.text", text: "done" });
+    expect(events[4]).toEqual({ type: "assistant.text", text: "done" });
     expect(call).toBe(2);
   });
 });

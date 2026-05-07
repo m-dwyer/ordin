@@ -1,10 +1,13 @@
 import type { ToolsInput } from "@mastra/core/agent";
 import { createTool } from "@mastra/core/tools";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import type { BrokerClient, ToolIntent } from "../../../broker/client/types";
 import type { Skill } from "../../../domain/skill";
 import { executeTool } from "../../tools/dispatcher";
 import type { RuntimeEvent } from "../types";
+
+const tracer = trace.getTracer("ordin.tool-dispatch");
 
 /**
  * Mastra/Vercel tool builder. Each Mastra tool call splits into three
@@ -138,61 +141,56 @@ function makeTool(
         skills: ctx.skills,
       };
       ctx.onEvent({ type: "tool.use", id: callId, name, input });
-      const started = Date.now();
 
-      const approval = await ctx.broker.requestApproval(intent);
-      if (!approval.ok) {
-        const message = approval.error.message;
-        ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
-        ctx.onEvent({
-          type: "timing",
-          name: `ordin.tool.${name}`,
-          durationMs: Date.now() - started,
-          status: "error",
-          error: message,
-          attributes: { "ordin.tool.name": name, "ordin.tool.error_kind": approval.error.kind },
-        });
-        // Record the (denied) outcome so audit reflects the worker
-        // never executed it. Fire-and-await — the result envelope
-        // mirrors the dispatch deny envelope.
-        await ctx.broker.recordResult(intent, {
-          result: { ok: false, error: approval.error },
-          durationMs: Date.now() - started,
-        });
-        throw new Error(message);
-      }
+      // Wrap the whole approval → execute → record sequence in one
+      // OTel span so Langfuse renders each tool dispatch as a single
+      // node nested inside the active context (model_step / phase).
+      return tracer.startActiveSpan(
+        `ordin.tool.${name}`,
+        { attributes: { "ordin.tool.name": name } },
+        async (span) => {
+          const started = Date.now();
+          try {
+            const approval = await ctx.broker.requestApproval(intent);
+            if (!approval.ok) {
+              const message = approval.error.message;
+              ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
+              await ctx.broker.recordResult(intent, {
+                result: { ok: false, error: approval.error },
+                durationMs: Date.now() - started,
+              });
+              span.setAttribute("ordin.tool.error_kind", approval.error.kind);
+              span.setStatus({ code: SpanStatusCode.ERROR, message });
+              throw new Error(message);
+            }
 
-      const result = await executeTool(name, input, { cwd: ctx.cwd, skills: ctx.skills });
-      const durationMs = Date.now() - started;
-      await ctx.broker.recordResult(intent, { result, durationMs });
+            const result = await executeTool(name, input, {
+              cwd: ctx.cwd,
+              skills: ctx.skills,
+            });
+            const durationMs = Date.now() - started;
+            await ctx.broker.recordResult(intent, { result, durationMs });
 
-      if (result.ok) {
-        ctx.onEvent({
-          type: "tool.result",
-          id: callId,
-          ok: true,
-          ...(result.output ? { result: result.output } : {}),
-        });
-        ctx.onEvent({
-          type: "timing",
-          name: `ordin.tool.${name}`,
-          durationMs,
-          status: "ok",
-          attributes: { "ordin.tool.name": name },
-        });
-        return result.output;
-      }
-      const message = result.error.message;
-      ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
-      ctx.onEvent({
-        type: "timing",
-        name: `ordin.tool.${name}`,
-        durationMs,
-        status: "error",
-        error: message,
-        attributes: { "ordin.tool.name": name, "ordin.tool.error_kind": result.error.kind },
-      });
-      throw new Error(message);
+            if (result.ok) {
+              ctx.onEvent({
+                type: "tool.result",
+                id: callId,
+                ok: true,
+                ...(result.output ? { result: result.output } : {}),
+              });
+              span.setAttribute("ordin.tool.success", true);
+              return result.output;
+            }
+            const message = result.error.message;
+            ctx.onEvent({ type: "tool.result", id: callId, ok: false, result: message });
+            span.setAttribute("ordin.tool.error_kind", result.error.kind);
+            span.setStatus({ code: SpanStatusCode.ERROR, message });
+            throw new Error(message);
+          } finally {
+            span.end();
+          }
+        },
+      );
     },
   });
 }

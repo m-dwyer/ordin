@@ -6,94 +6,161 @@ import {
   TracingEventType,
 } from "@mastra/core/observability";
 import { BaseExporter, Observability } from "@mastra/observability";
-import type { RuntimeEvent } from "../runtimes/types";
+import {
+  type Span as OtelSpan,
+  context as otelContext,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 
 /**
  * Sole import site for `@mastra/observability` inside the worker.
- * Runtimes accept a typed `Mastra` container and stay free of
- * Mastra's observability subpackage — vendor wiring stays on one
- * side of the seam.
+ * Mastra's tracing pipeline notifies this exporter on every span
+ * lifecycle event; we translate those into native OpenTelemetry spans
+ * so Langfuse renders the natural hierarchy without parent-side
+ * reconstruction (ADR-017 / Phase D).
  *
- * The container's `RuntimeEventTracingExporter` translates Mastra's
- * span lifecycle events into `RuntimeEvent` `timing` entries on the
- * runtime's existing event channel. The worker stays OTel-free; the
- * parent's `phase-runner.ts` already maps `timing` events into OTel
- * child spans under the active `ordin.phase.*` context, so Mastra's
- * chat / tool activity nests correctly in Langfuse without a worker-
- * side SDK.
+ * Why we maintain our own Mastra-id → OTel-Span map: Mastra emits
+ * spans inside its own pipeline, but the SDK's "active span" context
+ * during exporter callbacks is whatever the parent caller had set —
+ * not Mastra's nested span. We need to wire the parent–child edges
+ * explicitly using Mastra's own `id` / `parentSpanId` references so
+ * Mastra's hierarchy survives the OTel translation.
  *
- * Why custom translation rather than `@mastra/langfuse`'s
- * `LangfuseExporter`: that path needs `@langfuse/core` /
- * `@langfuse/client` running in the worker, which write log lines to
- * stdout via singletons we can't reliably suppress before they
- * snapshot — and worker stdout is the JSONL channel the parent reads
- * as `RuntimeEvent`s. Translating to `timing` events sidesteps the
- * whole vendor-stdout fight.
+ * Map lifecycle:
+ *   - SPAN_STARTED: create an OTel span. Parent = mapped OTel span if
+ *     `parentSpanId` is in the map, else the currently-active OTel
+ *     context (the caller's `ordin.phase.*` span in passthrough; the
+ *     TRACEPARENT-derived context in the worker).
+ *   - SPAN_ENDED: stamp final attributes / status, end the span,
+ *     drop it from the map.
  *
- * Lives under `worker/observability/` rather than `runtimes/ai-sdk/`
- * because the same container is shared across Mastra-Agent-based
- * runtimes (today AiSdkRuntime; Phase C adds ClaudeCliProviderRuntime).
- * Lives under `src/worker/**` rather than `src/observability/**`
- * because the worker-isolation rule in `dependency-cruiser.config.cjs`
- * forbids the worker reaching into parent-side observability code.
+ * Lives under `worker/observability/` because the worker (in HTTP-
+ * transport mode) value-imports it; the harness (in passthrough mode)
+ * value-imports it too via the `worker-isolation` deps exception so
+ * the same factory threads through both modes.
  */
 
-class RuntimeEventTracingExporter extends BaseExporter {
-  readonly name = "ordin.runtime-event";
+const TRACER_NAME = "ordin.mastra";
+const TRACER_VERSION = "0.1.0";
 
-  constructor(private readonly onEvent: (event: RuntimeEvent) => void) {
-    super();
-  }
+class OtelMastraExporter extends BaseExporter {
+  readonly name = "ordin.otel-mastra";
+
+  /** Mastra `id` → live OTel span we created on its behalf. */
+  private readonly active = new Map<string, OtelSpan>();
 
   protected override async _exportTracingEvent(event: TracingEvent): Promise<void> {
-    if (event.type !== TracingEventType.SPAN_ENDED) return;
-    const timing = translateSpan(event.exportedSpan);
-    if (timing) this.onEvent(timing);
+    if (event.type === TracingEventType.SPAN_STARTED) {
+      this.startSpan(event.exportedSpan);
+      return;
+    }
+    if (event.type === TracingEventType.SPAN_ENDED) {
+      this.endSpan(event.exportedSpan);
+    }
+  }
+
+  private startSpan(span: AnyExportedSpan): void {
+    const tracer = trace.getTracer(TRACER_NAME, TRACER_VERSION);
+    const parentOtel = span.parentSpanId ? this.active.get(span.parentSpanId) : undefined;
+    const parentCtx = parentOtel
+      ? trace.setSpan(otelContext.active(), parentOtel)
+      : otelContext.active();
+    const startTime = toEpochMillis(span.startTime);
+    const otelSpan = tracer.startSpan(
+      spanName(span),
+      {
+        attributes: spanAttributes(span),
+        ...(startTime !== undefined ? { startTime } : {}),
+      },
+      parentCtx,
+    );
+    this.active.set(span.id, otelSpan);
+  }
+
+  private endSpan(span: AnyExportedSpan): void {
+    const otelSpan = this.active.get(span.id);
+    if (!otelSpan) return;
+    otelSpan.setAttributes(spanFinalAttributes(span));
+    if (span.errorInfo) {
+      otelSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        ...(span.errorInfo.message ? { message: span.errorInfo.message } : {}),
+      });
+    }
+    const endTime = toEpochMillis(span.endTime);
+    if (endTime !== undefined) otelSpan.end(endTime);
+    else otelSpan.end();
+    this.active.delete(span.id);
   }
 }
 
-function translateSpan(span: AnyExportedSpan): RuntimeEvent | undefined {
-  const durationMs = computeDuration(span);
-  if (durationMs === undefined) return undefined;
-  const status = span.errorInfo ? "error" : "ok";
-  const error = span.errorInfo?.message;
+/**
+ * Static attributes derived from the span at start time.
+ */
+function spanAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
   switch (span.type) {
     case SpanType.MODEL_GENERATION:
     case SpanType.MODEL_STEP:
-      return {
-        type: "timing",
-        name: chatSpanName(span),
-        durationMs,
-        status,
-        ...(error ? { error } : {}),
-        attributes: chatAttributes(span),
-      };
+      return chatStartAttributes(span);
     case SpanType.TOOL_CALL:
     case SpanType.MCP_TOOL_CALL:
-      return {
-        type: "timing",
-        name: `tool ${span.name}`,
-        durationMs,
-        status,
-        ...(error ? { error } : {}),
-        attributes: toolAttributes(span),
-      };
+      return toolStartAttributes(span);
     default:
-      return undefined;
+      return {};
   }
 }
 
-function chatSpanName(span: AnyExportedSpan): string {
-  const attrs = span.attributes as { model?: string } | undefined;
-  return attrs?.model ? `chat ${attrs.model}` : "chat";
+/**
+ * Final attributes derived once the span has ended (output, finish
+ * reason, usage breakdowns). Set in `setAttributes` after the OTel
+ * span has been created so the exporter sees the closed-over state.
+ */
+function spanFinalAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
+  switch (span.type) {
+    case SpanType.MODEL_GENERATION:
+    case SpanType.MODEL_STEP:
+      return chatFinalAttributes(span);
+    case SpanType.TOOL_CALL:
+    case SpanType.MCP_TOOL_CALL:
+      return toolFinalAttributes(span);
+    default:
+      return {};
+  }
 }
 
-function chatAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
+function spanName(span: AnyExportedSpan): string {
+  if (span.type === SpanType.MODEL_GENERATION || span.type === SpanType.MODEL_STEP) {
+    const model = (span.attributes as { model?: string } | undefined)?.model;
+    return model ? `chat ${model}` : "chat";
+  }
+  if (span.type === SpanType.TOOL_CALL || span.type === SpanType.MCP_TOOL_CALL) {
+    return `tool ${span.name}`;
+  }
+  return span.name;
+}
+
+function chatStartAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
   const attrs = (span.attributes ?? {}) as {
     model?: string;
     provider?: string;
-    finishReason?: string;
     streaming?: boolean;
+  };
+  const out: Record<string, string | number | boolean> = {};
+  if (attrs.model) {
+    out["gen_ai.request.model"] = attrs.model;
+  }
+  if (attrs.provider) out["gen_ai.system"] = attrs.provider;
+  if (attrs.streaming !== undefined) out["gen_ai.response.streaming"] = attrs.streaming;
+  const input = serializeForLangfuse(span.input);
+  if (input !== undefined) out["langfuse.observation.input"] = input;
+  return out;
+}
+
+function chatFinalAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
+  const attrs = (span.attributes ?? {}) as {
+    model?: string;
+    finishReason?: string;
     usage?: {
       inputTokens?: number;
       outputTokens?: number;
@@ -102,13 +169,8 @@ function chatAttributes(span: AnyExportedSpan): Record<string, string | number |
     };
   };
   const out: Record<string, string | number | boolean> = {};
-  if (attrs.model) {
-    out["gen_ai.request.model"] = attrs.model;
-    out["gen_ai.response.model"] = attrs.model;
-  }
-  if (attrs.provider) out["gen_ai.system"] = attrs.provider;
+  if (attrs.model) out["gen_ai.response.model"] = attrs.model;
   if (attrs.finishReason) out["gen_ai.response.finish_reason"] = attrs.finishReason;
-  if (attrs.streaming !== undefined) out["gen_ai.response.streaming"] = attrs.streaming;
   if (attrs.usage?.inputTokens !== undefined) {
     out["gen_ai.usage.input_tokens"] = attrs.usage.inputTokens;
   }
@@ -121,23 +183,27 @@ function chatAttributes(span: AnyExportedSpan): Record<string, string | number |
   if (attrs.usage?.cachedInputTokens !== undefined) {
     out["gen_ai.usage.cached_input_tokens"] = attrs.usage.cachedInputTokens;
   }
-  const input = serializeForLangfuse(span.input);
   const output = serializeForLangfuse(span.output);
-  if (input !== undefined) out["langfuse.observation.input"] = input;
   if (output !== undefined) out["langfuse.observation.output"] = output;
   return out;
 }
 
-function toolAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
+function toolStartAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {
     "gen_ai.tool.name": span.name,
   };
-  const attrs = (span.attributes ?? {}) as { toolType?: string; success?: boolean };
+  const attrs = (span.attributes ?? {}) as { toolType?: string };
   if (attrs.toolType) out["gen_ai.tool.type"] = attrs.toolType;
-  if (attrs.success !== undefined) out["ordin.tool.success"] = attrs.success;
   const input = serializeForLangfuse(span.input);
-  const output = serializeForLangfuse(span.output);
   if (input !== undefined) out["langfuse.observation.input"] = input;
+  return out;
+}
+
+function toolFinalAttributes(span: AnyExportedSpan): Record<string, string | number | boolean> {
+  const attrs = (span.attributes ?? {}) as { success?: boolean };
+  const out: Record<string, string | number | boolean> = {};
+  if (attrs.success !== undefined) out["ordin.tool.success"] = attrs.success;
+  const output = serializeForLangfuse(span.output);
   if (output !== undefined) out["langfuse.observation.output"] = output;
   return out;
 }
@@ -159,19 +225,21 @@ function serializeForLangfuse(value: unknown): string | undefined {
   }
 }
 
-function computeDuration(span: AnyExportedSpan): number | undefined {
-  if (!span.endTime) return undefined;
-  const start =
-    span.startTime instanceof Date ? span.startTime.getTime() : Date.parse(String(span.startTime));
-  const end =
-    span.endTime instanceof Date ? span.endTime.getTime() : Date.parse(String(span.endTime));
-  if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
-  return Math.max(0, end - start);
+function toEpochMillis(value: Date | undefined): number | undefined {
+  if (!value) return undefined;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isNaN(ms) ? undefined : ms;
 }
 
-export type MastraTracingFactory = (onEvent: (event: RuntimeEvent) => void) => Mastra;
+export type MastraTracingFactory = () => Mastra;
 
-export const buildMastraTracingContainer: MastraTracingFactory = (onEvent) =>
+/**
+ * Build a `Mastra` container with the OTel exporter wired in. Both
+ * passthrough (parent-side runtime) and srt (worker-side runtime)
+ * route through this factory; whichever side's OTel SDK is active
+ * receives the spans.
+ */
+export const buildMastraTracingContainer: MastraTracingFactory = () =>
   new Mastra({
     // Worker stdout is the JSONL channel the parent reads as
     // `RuntimeEvent`s. Mastra's default `ConsoleLogger` writes to
@@ -184,7 +252,7 @@ export const buildMastraTracingContainer: MastraTracingFactory = (onEvent) =>
       configs: {
         default: {
           serviceName: "ordin",
-          exporters: [new RuntimeEventTracingExporter(onEvent)],
+          exporters: [new OtelMastraExporter()],
         },
       },
     }),
