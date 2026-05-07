@@ -39,17 +39,18 @@ export interface DispatcherToolsContext {
 }
 
 /**
- * Derive the effective allowed-tools list once, then use it for both
- * (a) which Mastra tools we expose and (b) the `allowedTools` field
- * on each `ToolIntent` the broker checks. Two concerns must stay in
- * lockstep: if the model can call a tool, the broker must also know
- * the runtime considers it permitted. Drift between the two is the
- * footgun this function eliminates.
+ * Derive the effective allowed-tools list and use it to decide which
+ * Mastra tools we expose. The broker holds the authoritative ACL for
+ * the (run, phase) pair (registered parent-side); the intent the
+ * worker sends carries no ACL hint, so a compromised runtime cannot
+ * widen its own permissions through this surface.
  *
  * Auto-Skill: when the phase has skills attached (`ctx.skills`
  * non-empty), `Skill` is implicitly allowed so the model can load
  * skill bodies on demand. Workflow authors don't need to list it
- * separately — skill attachment is the opt-in.
+ * separately — skill attachment is the opt-in. The harness applies
+ * the same auto-add when registering the phase ACL, keeping the
+ * Mastra tool list and the broker ACL in lockstep.
  */
 export function buildDispatcherTools(
   toolNames: readonly string[],
@@ -57,11 +58,10 @@ export function buildDispatcherTools(
 ): ToolsInput {
   const effective = new Set(toolNames);
   if (ctx.skills.length > 0) effective.add("Skill");
-  const allowedTools = [...effective];
 
   const out: ToolsInput = {};
   for (const [name, schema] of Object.entries(TOOL_SCHEMAS)) {
-    if (effective.has(name)) out[name] = makeTool(name, schema, allowedTools, ctx);
+    if (effective.has(name)) out[name] = makeTool(name, schema, ctx);
   }
   return out;
 }
@@ -118,12 +118,7 @@ const TOOL_SCHEMAS = {
 
 type ToolSchemaEntry = (typeof TOOL_SCHEMAS)[keyof typeof TOOL_SCHEMAS];
 
-function makeTool(
-  name: string,
-  entry: ToolSchemaEntry,
-  allowedTools: readonly string[],
-  ctx: DispatcherToolsContext,
-) {
+function makeTool(name: string, entry: ToolSchemaEntry, ctx: DispatcherToolsContext) {
   return createTool({
     id: name,
     description: entry.description,
@@ -137,7 +132,6 @@ function makeTool(
         runId: ctx.runId,
         phaseId: ctx.phaseId,
         cwd: ctx.cwd,
-        allowedTools,
         skills: ctx.skills,
       };
       ctx.onEvent({ type: "tool.use", id: callId, name, input });

@@ -20,6 +20,7 @@ class RecordingAudit {
 
 async function startBroker(audit: RecordingAudit): Promise<{
   broker: Broker;
+  dispatch: BrokerDispatch;
   client: HttpBrokerClient;
   cleanup: () => Promise<void>;
 }> {
@@ -41,7 +42,7 @@ async function startBroker(audit: RecordingAudit): Promise<{
   const client = new HttpBrokerClient({
     proxyUrl: `http://ordin:test-secret@${broker.host}:${broker.port}`,
   });
-  return { broker, client, cleanup: () => broker.stop() };
+  return { broker, dispatch, client, cleanup: () => broker.stop() };
 }
 
 const NO_SKILLS: readonly Skill[] = [];
@@ -60,13 +61,13 @@ describe("HttpBrokerClient.requestApproval", () => {
     const setup = await startBroker(audit);
     cleanup = setup.cleanup;
 
+    setup.dispatch.registerPhase("run1", "probe", ["Read"]);
     const approval = await setup.client.requestApproval({
       tool: "Read",
       input: { file_path: "note.md" },
       runId: "run1",
       phaseId: "probe",
       cwd: "/tmp",
-      allowedTools: ["Read"],
       skills: NO_SKILLS,
     });
 
@@ -80,13 +81,13 @@ describe("HttpBrokerClient.requestApproval", () => {
     const setup = await startBroker(audit);
     cleanup = setup.cleanup;
 
+    setup.dispatch.registerPhase("run1", "probe", ["Read"]);
     const approval = await setup.client.requestApproval({
       tool: "Bash",
       input: { command: "echo nope" },
       runId: "run1",
       phaseId: "probe",
       cwd: "/tmp",
-      allowedTools: ["Read"],
       skills: NO_SKILLS,
     });
 
@@ -115,7 +116,6 @@ describe("HttpBrokerClient.requestApproval", () => {
         runId: "run1",
         phaseId: "probe",
         cwd: "/tmp",
-        allowedTools: ["Read"],
         skills: NO_SKILLS,
       }),
     ).rejects.toBeInstanceOf(BrokerTransportError);
@@ -143,7 +143,6 @@ describe("HttpBrokerClient.recordResult", () => {
       runId: "run1",
       phaseId: "probe",
       cwd: "/tmp",
-      allowedTools: ["Read"],
       skills: NO_SKILLS,
     };
     await setup.client.recordResult(intent, {

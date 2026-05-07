@@ -24,6 +24,7 @@ describe("BrokerDispatch.requestApproval", () => {
   it("rejects tool calls outside the per-phase ACL and audits the deny", async () => {
     const audit = new RecordingAudit();
     const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "build", ["Read"]);
     const cwd = await mkdtemp(join(tmpdir(), "broker-acl-"));
 
     const approval = await broker.requestApproval({
@@ -32,7 +33,6 @@ describe("BrokerDispatch.requestApproval", () => {
       runId: "run1",
       phaseId: "build",
       cwd,
-      allowedTools: ["Read"],
       skills: NO_SKILLS,
     });
 
@@ -51,6 +51,7 @@ describe("BrokerDispatch.requestApproval", () => {
   it("rejects unknown tool names with audit envelope", async () => {
     const audit = new RecordingAudit();
     const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "build", ["Hammer"]);
     const cwd = await mkdtemp(join(tmpdir(), "broker-unknown-"));
 
     const approval = await broker.requestApproval({
@@ -59,7 +60,6 @@ describe("BrokerDispatch.requestApproval", () => {
       runId: "run1",
       phaseId: "build",
       cwd,
-      allowedTools: ["Hammer"],
       skills: NO_SKILLS,
     });
 
@@ -69,9 +69,29 @@ describe("BrokerDispatch.requestApproval", () => {
     expect(audit.calls[0]?.payload).toMatchObject({ decision: "deny" });
   });
 
+  it("rejects intents for phases the harness never registered", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+
+    const approval = await broker.requestApproval({
+      tool: "Read",
+      input: { file_path: "note.md" },
+      runId: "run-unknown",
+      phaseId: "build",
+      cwd: "/tmp",
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(false);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.kind).toBe("denied");
+    expect(approval.error.message).toContain("No ACL registered");
+  });
+
   it("approves and audits an in-ACL intent", async () => {
     const audit = new RecordingAudit();
     const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "build", ["Read"]);
     const cwd = await mkdtemp(join(tmpdir(), "broker-allow-"));
 
     const approval = await broker.requestApproval({
@@ -80,7 +100,6 @@ describe("BrokerDispatch.requestApproval", () => {
       runId: "run1",
       phaseId: "build",
       cwd,
-      allowedTools: ["Read"],
       skills: NO_SKILLS,
     });
 
@@ -90,6 +109,26 @@ describe("BrokerDispatch.requestApproval", () => {
       phaseId: "build",
       decision: "allow",
     });
+  });
+
+  it("releasePhase drops the ACL — subsequent intents are denied", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "build", ["Read"]);
+    broker.releasePhase("run1", "build");
+
+    const approval = await broker.requestApproval({
+      tool: "Read",
+      input: { file_path: "note.md" },
+      runId: "run1",
+      phaseId: "build",
+      cwd: "/tmp",
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(false);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.message).toContain("No ACL registered");
   });
 });
 
@@ -105,7 +144,6 @@ describe("BrokerDispatch.recordResult", () => {
         runId: "run1",
         phaseId: "build",
         cwd: "/tmp",
-        allowedTools: ["Read"],
         skills: NO_SKILLS,
       },
       { result: { ok: true, output: "hello" }, durationMs: 12 },
@@ -131,7 +169,6 @@ describe("BrokerDispatch.recordResult", () => {
         runId: "run1",
         phaseId: "build",
         cwd: "/tmp",
-        allowedTools: ["Read"],
         skills: NO_SKILLS,
       },
       {

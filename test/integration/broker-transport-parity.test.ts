@@ -38,8 +38,17 @@ class RecordingAudit {
 }
 
 async function buildPair(): Promise<{
-  inProcess: { client: InProcessBrokerClient; audit: RecordingAudit };
-  http: { client: HttpBrokerClient; audit: RecordingAudit; stop: () => Promise<void> };
+  inProcess: {
+    client: InProcessBrokerClient;
+    dispatch: BrokerDispatch;
+    audit: RecordingAudit;
+  };
+  http: {
+    client: HttpBrokerClient;
+    dispatch: BrokerDispatch;
+    audit: RecordingAudit;
+    stop: () => Promise<void>;
+  };
 }> {
   const inAudit = new RecordingAudit();
   const inDispatch = new BrokerDispatch({ audit: inAudit });
@@ -58,11 +67,16 @@ async function buildPair(): Promise<{
   await broker.start();
 
   return {
-    inProcess: { client: new InProcessBrokerClient(inDispatch), audit: inAudit },
+    inProcess: {
+      client: new InProcessBrokerClient(inDispatch),
+      dispatch: inDispatch,
+      audit: inAudit,
+    },
     http: {
       client: new HttpBrokerClient({
         proxyUrl: `http://ordin:parity-secret@${broker.host}:${broker.port}`,
       }),
+      dispatch: httpDispatch,
       audit: httpAudit,
       stop: () => broker.stop(),
     },
@@ -71,6 +85,8 @@ async function buildPair(): Promise<{
 
 interface Step {
   readonly intent: ToolIntent;
+  /** Per-phase ACL the harness would have registered before invoking. */
+  readonly allowedTools: readonly string[];
   /** What the worker would report after running the executor. */
   readonly recorded: RecordedResult;
 }
@@ -90,22 +106,16 @@ describe("broker transport parity", () => {
     const steps: readonly Step[] = [
       // 1. Allowed read — broker approves, worker reports success.
       {
-        intent: makeIntent({
-          tool: "Read",
-          input: { file_path: "hello.txt" },
-          allowedTools: ["Read"],
-        }),
+        intent: makeIntent({ tool: "Read", input: { file_path: "hello.txt" } }),
+        allowedTools: ["Read"],
         recorded: { result: { ok: true, output: "hi\n" }, durationMs: 4 },
       },
       // 2. Tool not in ACL — broker denies; the worker would not run
       //    anything, but we still record the (denied) outcome to keep
       //    the result envelope alongside the dispatch envelope.
       {
-        intent: makeIntent({
-          tool: "Bash",
-          input: { command: "echo nope" },
-          allowedTools: ["Read"],
-        }),
+        intent: makeIntent({ tool: "Bash", input: { command: "echo nope" } }),
+        allowedTools: ["Read"],
         recorded: {
           result: { ok: false, error: { kind: "denied", message: "denied by ACL" } },
           durationMs: 0,
@@ -113,7 +123,8 @@ describe("broker transport parity", () => {
       },
       // 3. Unknown tool name — broker denies with a different kind.
       {
-        intent: makeIntent({ tool: "Hammer", input: {}, allowedTools: ["Hammer"] }),
+        intent: makeIntent({ tool: "Hammer", input: {} }),
+        allowedTools: ["Hammer"],
         recorded: {
           result: { ok: false, error: { kind: "unknown_tool", message: "unknown" } },
           durationMs: 0,
@@ -122,11 +133,8 @@ describe("broker transport parity", () => {
       // 4. Allowed read whose executor failed — broker approves;
       //    worker reports executor error.
       {
-        intent: makeIntent({
-          tool: "Read",
-          input: { file_path: "missing.txt" },
-          allowedTools: ["Read"],
-        }),
+        intent: makeIntent({ tool: "Read", input: { file_path: "missing.txt" } }),
+        allowedTools: ["Read"],
         recorded: {
           result: {
             ok: false,
@@ -137,16 +145,28 @@ describe("broker transport parity", () => {
       },
     ];
 
-    const inApprovals: ApprovalResult[] = [];
-    for (const step of steps) {
-      inApprovals.push(await pair.inProcess.client.requestApproval(step.intent));
-      await pair.inProcess.client.recordResult(step.intent, step.recorded);
-    }
-    const httpApprovals: ApprovalResult[] = [];
-    for (const step of steps) {
-      httpApprovals.push(await pair.http.client.requestApproval(step.intent));
-      await pair.http.client.recordResult(step.intent, step.recorded);
-    }
+    const driveTransport = async (transport: {
+      client: {
+        requestApproval: typeof pair.inProcess.client.requestApproval;
+        recordResult: typeof pair.inProcess.client.recordResult;
+      };
+      dispatch: BrokerDispatch;
+    }): Promise<ApprovalResult[]> => {
+      const approvals: ApprovalResult[] = [];
+      for (const step of steps) {
+        transport.dispatch.registerPhase(step.intent.runId, step.intent.phaseId, step.allowedTools);
+        try {
+          approvals.push(await transport.client.requestApproval(step.intent));
+          await transport.client.recordResult(step.intent, step.recorded);
+        } finally {
+          transport.dispatch.releasePhase(step.intent.runId, step.intent.phaseId);
+        }
+      }
+      return approvals;
+    };
+
+    const inApprovals = await driveTransport(pair.inProcess);
+    const httpApprovals = await driveTransport(pair.http);
 
     expect(httpApprovals).toEqual(inApprovals);
     expect(pair.http.audit.calls).toEqual(pair.inProcess.audit.calls);
@@ -154,7 +174,7 @@ describe("broker transport parity", () => {
 });
 
 function makeIntent(
-  overrides: Partial<ToolIntent> & Pick<ToolIntent, "tool" | "input" | "allowedTools">,
+  overrides: Partial<ToolIntent> & Pick<ToolIntent, "tool" | "input">,
 ): ToolIntent {
   return {
     runId: "run-A",
