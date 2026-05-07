@@ -149,7 +149,6 @@ export class OpenTuiRunController {
         return;
       case "run.completed":
       case "agent.tokens":
-      case "agent.timing":
         return;
 
       case "phase.started": {

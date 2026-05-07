@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -184,24 +184,8 @@ describe("ClaudeCliProviderRuntime", () => {
     expect(types).toContain("tool.use");
     expect(types).toContain("tool.result");
     expect(types).toContain("assistant.text");
-    const turnTimings = events.filter(
-      (e): e is Extract<RuntimeEvent, { type: "timing" }> =>
-        e.type === "timing" && e.name === "ordin.provider.turn",
-    );
-    expect(turnTimings).toHaveLength(2);
-    expect(turnTimings[0]?.attributes?.["ordin.provider.tool_requested"]).toBe(true);
-    expect(turnTimings[0]?.attributes?.["ordin.provider.resumed"]).toBe(false);
-    expect(turnTimings[1]?.attributes?.["ordin.provider.tool_requested"]).toBe(false);
-    expect(turnTimings[1]?.attributes?.["ordin.provider.resumed"]).toBe(true);
-    const toolTiming = events.find(
-      (e): e is Extract<RuntimeEvent, { type: "timing" }> =>
-        e.type === "timing" && e.name === "ordin.tool.Read",
-    );
-    expect(toolTiming?.status).toBe("ok");
-
-    const transcript = await readFile(result.transcriptPath, "utf8");
-    expect(transcript).toContain("ordin.provider.turn");
-    expect(transcript).toContain("ordin.tool.Read");
+    // Per-turn / per-tool spans flow OTel-native now (Phase D); the
+    // runtime no longer emits `timing` RuntimeEvents for them.
   });
 
   it("classifies provider auth failures as non-retryable", async () => {

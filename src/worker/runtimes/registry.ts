@@ -1,5 +1,5 @@
 import type { BrokerClient } from "../../broker/client/types";
-import type { MastraTracingFactory } from "../observability/mastra-tracing";
+import { buildMastraTracingContainer } from "../observability/mastra-tracing";
 import type { AgentRuntime } from "./types";
 
 /**
@@ -14,25 +14,6 @@ export interface RuntimeBuildContext {
   readonly runsDir: string;
   /** Optional override for `ScriptedRuntime`'s plan file path. */
   readonly scriptPath?: string;
-  /**
-   * Mastra container factory. Mastra-Agent-based runtimes thread the
-   * resulting container into their `Agent` constructor so Mastra's
-   * tracing pipeline ships chat / tool spans through the configured
-   * exporter (today: `LangfuseExporter` via the broker). Other
-   * runtimes ignore it. The factory lives in
-   * `src/worker/observability/mastra-tracing.ts`; the runtime never
-   * imports `@mastra/langfuse` directly.
-   */
-  readonly mastraTracing?: MastraTracingFactory;
-  /**
-   * Parent OTel trace context, parsed by the worker entry from W3C
-   * `TRACEPARENT`. Mastra-Agent-based runtimes pass these to
-   * `agent.stream`'s `tracingOptions` so spans nest under the parent
-   * `ordin.phase.*` span instead of producing a sibling trace tree
-   * in Langfuse.
-   */
-  readonly parentTraceId?: string;
-  readonly parentSpanId?: string;
   /**
    * Broker client passed to runtimes that route tool dispatch through
    * the broker (ADR-016). `claude-cli` ignores it (Claude Code's own
@@ -75,9 +56,7 @@ export async function buildRuntime(
       return AiSdkRuntime.fromConfig(configSlice, {
         runsDir: ctx.runsDir,
         broker: requireBroker(ctx, "ai-sdk"),
-        ...(ctx.mastraTracing ? { mastraTracing: ctx.mastraTracing } : {}),
-        ...(ctx.parentTraceId ? { parentTraceId: ctx.parentTraceId } : {}),
-        ...(ctx.parentSpanId ? { parentSpanId: ctx.parentSpanId } : {}),
+        mastraTracing: buildMastraTracingContainer,
       });
     }
     case "claude-cli": {
@@ -93,9 +72,7 @@ export async function buildRuntime(
         harnessRoot: ctx.harnessRoot,
         runsDirFallback: ctx.runsDir,
         broker: requireBroker(ctx, "claude-cli-provider"),
-        ...(ctx.mastraTracing ? { mastraTracing: ctx.mastraTracing } : {}),
-        ...(ctx.parentTraceId ? { parentTraceId: ctx.parentTraceId } : {}),
-        ...(ctx.parentSpanId ? { parentSpanId: ctx.parentSpanId } : {}),
+        mastraTracing: buildMastraTracingContainer,
       });
     }
     case "scripted": {

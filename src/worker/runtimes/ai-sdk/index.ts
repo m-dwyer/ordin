@@ -73,15 +73,6 @@ export interface AiSdkRuntimeConfig {
    */
   mastraTracing?: MastraTracingFactory;
   /**
-   * Parent OTel trace context, used by Mastra's `tracingOptions` so
-   * spans emitted by Mastra (chat / tool calls forwarded to Langfuse
-   * by `LangfuseExporter`) nest under the active `ordin.phase.*`
-   * span instead of producing a sibling trace tree. Threaded through
-   * by the worker entry from W3C `TRACEPARENT`.
-   */
-  parentTraceId?: string;
-  parentSpanId?: string;
-  /**
    * Broker client used by the shared Mastra tool builder. Required:
    * tool dispatch authority lives in the broker (ADR-016) — there is
    * no in-runtime fallback. Tests inject a fake; the harness wires an
@@ -126,8 +117,6 @@ export class AiSdkRuntime implements AgentRuntime {
   private readonly bypassCache: boolean;
   private readonly modelOverride: MastraModelConfig | undefined;
   private readonly mastraTracing: MastraTracingFactory | undefined;
-  private readonly parentTraceId: string | undefined;
-  private readonly parentSpanId: string | undefined;
   private readonly broker: BrokerClient;
 
   constructor(config: AiSdkRuntimeConfig) {
@@ -139,17 +128,12 @@ export class AiSdkRuntime implements AgentRuntime {
     this.bypassCache = config.bypassCache ?? false;
     this.modelOverride = config.model;
     this.mastraTracing = config.mastraTracing;
-    this.parentTraceId = config.parentTraceId;
-    this.parentSpanId = config.parentSpanId;
     this.broker = config.broker;
   }
 
   static fromConfig(
     raw: unknown,
-    extras: Pick<
-      AiSdkRuntimeConfig,
-      "runsDir" | "mastraTracing" | "parentTraceId" | "parentSpanId" | "broker"
-    >,
+    extras: Pick<AiSdkRuntimeConfig, "runsDir" | "mastraTracing" | "broker">,
   ): AiSdkRuntime {
     const parsed = AiSdkRuntimeConfigSchema.parse(raw ?? {});
     const apiKey = parsed.api_key_env ? process.env[parsed.api_key_env] : parsed.api_key;
@@ -189,7 +173,7 @@ export class AiSdkRuntime implements AgentRuntime {
       phaseId: req.prompt.phaseId,
       onEvent: emit,
     });
-    const mastra = this.mastraTracing?.(emit);
+    const mastra = this.mastraTracing?.();
     const agent = new Agent({
       id: `ordin.${req.prompt.phaseId}`,
       name: `ordin.${req.prompt.phaseId}`,
@@ -220,8 +204,6 @@ export class AiSdkRuntime implements AgentRuntime {
             "ordin.base_url": this.baseUrl,
             "langfuse.sessionId": req.runId,
           },
-          ...(this.parentTraceId ? { traceId: this.parentTraceId } : {}),
-          ...(this.parentSpanId ? { parentSpanId: this.parentSpanId } : {}),
         },
       });
       await output.consumeStream();

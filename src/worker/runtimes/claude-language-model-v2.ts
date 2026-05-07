@@ -14,6 +14,7 @@ import type {
   LanguageModelV2ToolResultOutput,
   LanguageModelV2Usage,
 } from "@ai-sdk/provider-v5";
+import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { effortForTier } from "./claude-cli";
 import {
   type ClaudeToolCall,
@@ -23,7 +24,7 @@ import {
   type ProviderSpawner,
   ProviderTimeoutError,
 } from "./claude-stream";
-import type { RuntimeEvent, TokenUsage } from "./types";
+import type { TokenUsage } from "./types";
 
 /**
  * `LanguageModelV2` adapter that drives `claude -p --output-format
@@ -50,13 +51,6 @@ export interface ClaudeLanguageModelV2Options {
   readonly timeoutMs?: number;
   readonly spawner?: ProviderSpawner;
   readonly onRawLine?: (line: string) => void;
-  /**
-   * Per-turn event sink. The adapter fires `ordin.provider.turn`
-   * timing at the end of every `doStream` so the runtime preserves
-   * its kill-on-tool-use turn boundary instead of relying on
-   * Mastra's per-step span (which spans model + tool execution).
-   */
-  readonly onEvent?: (event: RuntimeEvent) => void;
 }
 
 const ZERO_TOKENS: TokenUsage = {
@@ -108,7 +102,14 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
     const toolNames = extractToolNames(options.tools);
     const resumed = !!this.sessionId;
     const turnMessages = resumed ? takeLatest(messages) : messages;
-    const turnStarted = Date.now();
+
+    // Open the per-turn span before any I/O so the active OTel context
+    // wraps the whole subprocess lifetime; the subprocess closes the
+    // span via the stream's start callback.
+    const tracer = trace.getTracer("ordin.claude-cli-provider");
+    const turnSpan = tracer.startSpan("ordin.provider.turn", {
+      attributes: { "ordin.provider.resumed": resumed },
+    });
 
     const systemPromptFile = this.opts.systemPromptFile?.(stepIndex);
     if (systemPromptFile) await writeFile(systemPromptFile, systemPrompt, "utf8");
@@ -131,10 +132,11 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
     const stdout = child.stdout;
     const stderr = child.stderr;
     if (!stdout || !stderr) {
+      turnSpan.end();
       throw new Error("Failed to capture stdio from claude provider subprocess");
     }
 
-    return { stream: this.buildStream(child, stdout, stderr, options, turnStarted, resumed) };
+    return { stream: this.buildStream(child, stdout, stderr, options, turnSpan) };
   }
 
   private buildStream(
@@ -142,24 +144,21 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
     stdout: NonNullable<ProviderChildProcess["stdout"]>,
     stderr: NonNullable<ProviderChildProcess["stderr"]>,
     options: LanguageModelV2CallOptions,
-    turnStarted: number,
-    resumed: boolean,
+    turnSpan: Span,
   ): ReadableStream<LanguageModelV2StreamPart> {
     const adapter = this;
     let closed = false;
     const kill = (): void => terminateChild(child, () => closed);
-    const emitTurn = (status: "ok" | "error", toolRequested: boolean, error?: string): void => {
-      adapter.opts.onEvent?.({
-        type: "timing",
-        name: "ordin.provider.turn",
-        durationMs: Date.now() - turnStarted,
-        status,
-        ...(error ? { error } : {}),
-        attributes: {
-          "ordin.provider.resumed": resumed,
-          "ordin.provider.tool_requested": toolRequested,
-        },
-      });
+    const finishTurn = (status: "ok" | "error", toolRequested: boolean, error?: string): void => {
+      turnSpan.setAttribute("ordin.provider.tool_requested", toolRequested);
+      if (status === "error") {
+        turnSpan.setStatus({
+          code: SpanStatusCode.ERROR,
+          ...(error ? { message: error } : {}),
+        });
+        if (error) turnSpan.setAttribute("ordin.error", error);
+      }
+      turnSpan.end();
     };
 
     return new ReadableStream<LanguageModelV2StreamPart>({
@@ -234,12 +233,12 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
 
         if (timedOut) {
           const err = new ProviderTimeoutError(adapter.opts.timeoutMs ?? 0);
-          emitTurn("error", false, err.message);
+          finishTurn("error", false, err.message);
           controller.error(err);
           return;
         }
         if (options.abortSignal?.aborted) {
-          emitTurn("error", false, "aborted");
+          finishTurn("error", false, "aborted");
           controller.error(new Error("aborted"));
           return;
         }
@@ -257,7 +256,7 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
           const message =
             stderrChunks.join("\n").trim() ||
             (exitInfo.signal ? `killed by ${exitInfo.signal}` : `exit ${exitInfo.code}`);
-          emitTurn("error", false, message);
+          finishTurn("error", false, message);
           controller.error(new Error(message));
           return;
         } else {
@@ -269,7 +268,7 @@ export class ClaudeLanguageModelV2 implements LanguageModelV2 {
           usage: usageToV2(tokens),
           finishReason,
         });
-        emitTurn("ok", !!toolCall);
+        finishTurn("ok", !!toolCall);
         controller.close();
       },
       cancel() {
