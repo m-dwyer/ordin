@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
+import { deriveToolPolicy } from "../../broker/client/tool-authority";
 import type { BrokerClient } from "../../broker/client/types";
 import type { MastraTracingFactory } from "../observability/mastra-tracing";
 import { classifyFailure } from "./claude-cli";
@@ -12,7 +13,6 @@ import { ClaudeLanguageModelV2 } from "./claude-language-model-v2";
 import type { ClaudeProviderMcpEntrypoint } from "./claude-provider-mcp";
 import type { ProviderSpawner } from "./claude-stream";
 import { buildDispatcherTools } from "./shared/mastra-tools";
-import { parseToolSpec } from "./shared/tools";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -124,10 +124,10 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     const started = Date.now();
     const override = this.phaseOverrides[req.prompt.phaseId] ?? {};
     const maxSteps = override.max_steps ?? this.maxSteps;
-    const toolNames = [...new Set(req.prompt.tools.map((spec) => parseToolSpec(spec).name))];
-    if (req.prompt.skills.length > 0 && !toolNames.includes("Skill")) {
-      toolNames.push("Skill");
-    }
+    const toolNames = deriveToolPolicy({
+      allowedTools: req.prompt.tools,
+      hasSkills: req.prompt.skills.length > 0,
+    }).toolNames;
     const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 };
 
     const emit = (event: RuntimeEvent): void => {

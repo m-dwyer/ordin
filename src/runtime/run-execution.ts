@@ -6,6 +6,7 @@ import { context, trace } from "@opentelemetry/api";
 import { Broker } from "../broker";
 import { AuditService } from "../broker/audit-service";
 import { InProcessBrokerClient } from "../broker/client/in-process";
+import { deriveToolPolicy } from "../broker/client/tool-authority";
 import type { BrokerClient } from "../broker/client/types";
 import { BrokerDispatch } from "../broker/dispatch";
 import { makeToolServiceHandler } from "../broker/tool-service";
@@ -287,10 +288,12 @@ async function runWithPhaseAcl<T>(
 ): Promise<T> {
   if (!brokerDispatch) return body();
   const { runId, preview } = req;
-  const { phaseId, skills } = preview.prompt;
-  const tools = preview.prompt.tools.map((spec) => spec.match(/^\w+/)?.[0] ?? spec);
-  if (skills.length > 0 && !tools.includes("Skill")) tools.push("Skill");
-  brokerDispatch.registerPhase(runId, phaseId, tools);
+  const { phaseId } = preview.prompt;
+  const policy = deriveToolPolicy({
+    allowedTools: preview.prompt.tools,
+    hasSkills: preview.prompt.skills.length > 0,
+  });
+  brokerDispatch.registerPhase(runId, phaseId, policy.toolNames);
   try {
     return await body();
   } finally {

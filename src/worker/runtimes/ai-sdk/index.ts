@@ -6,10 +6,10 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
+import { deriveToolPolicy } from "../../../broker/client/tool-authority";
 import type { BrokerClient } from "../../../broker/client/types";
 import type { MastraTracingFactory } from "../../observability/mastra-tracing";
 import { buildDispatcherTools } from "../shared/mastra-tools";
-import { parseToolSpec } from "../shared/tools";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -164,7 +164,10 @@ export class AiSdkRuntime implements AgentRuntime {
     const modelId = this.modelMap.get(req.prompt.model) ?? req.prompt.model;
     const model = this.modelOverride ?? this.buildModel(modelId);
 
-    const toolNames = [...new Set(req.prompt.tools.map((spec) => parseToolSpec(spec).name))];
+    const toolNames = deriveToolPolicy({
+      allowedTools: req.prompt.tools,
+      hasSkills: req.prompt.skills.length > 0,
+    }).toolNames;
     const tools = buildDispatcherTools(toolNames, {
       cwd: req.prompt.cwd,
       skills: req.prompt.skills,
