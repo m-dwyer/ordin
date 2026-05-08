@@ -1,16 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { context, trace } from "@opentelemetry/api";
-import { Broker } from "../broker";
 import { type VerifyResult, verifyChainText } from "../broker/audit-chain";
-import { AuditService } from "../broker/audit-service";
-import { InProcessBrokerClient } from "../broker/client/in-process";
-import type { BrokerClient } from "../broker/client/types";
-import { BrokerDispatch } from "../broker/dispatch";
-import { makeToolServiceHandler } from "../broker/tool-service";
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
@@ -23,7 +14,6 @@ import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
 import { SkillLoader } from "../infrastructure/skill-loader";
 import { WorkflowLoader } from "../infrastructure/workflow-loader";
-import { shutdownTracing, startTracing } from "../observability/tracing";
 import {
   type Engine,
   EngineRegistry,
@@ -37,16 +27,12 @@ import {
 } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import { MastraEngine } from "../orchestrator/mastra";
-import { PhaseRunner, type PhaseRunResult } from "../orchestrator/phase-runner";
+import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import { type RunMeta, RunStore } from "../orchestrator/run-store";
-import { type SandboxMode, selectSandbox } from "../sandbox";
+import type { SandboxMode } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
-import { workerArgv } from "../worker/locator";
-import { buildRuntime, KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
-import type { InvokeRequest, InvokeResult, RuntimeEvent } from "../worker/runtimes/types";
-import { type EgressApproval, EgressApprovalStore } from "./egress-store";
-import { resolveClaudeBin } from "./resolve-claude-bin";
-import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
+import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
+import { RunExecution } from "./run-execution";
 
 export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
@@ -185,155 +171,38 @@ export class HarnessRuntime {
 
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
-    const egress = await this.prepareEgressStore(state, input, workspaceRoot);
-    const infra = this.buildInfra(state, input, egress);
-    let tracingStarted = false;
+    const execution = await RunExecution.prepare({
+      root: this.root,
+      workflowName: this.workflowName,
+      config: state.config,
+      input,
+      workspaceRoot,
+      ...(this.dispatchPhaseOverride ? { dispatchPhaseOverride: this.dispatchPhaseOverride } : {}),
+      ...(this.egressGatePrompter ? { egressGatePrompter: this.egressGatePrompter } : {}),
+      ...(this.sandboxOverride ? { sandboxOverride: this.sandboxOverride } : {}),
+      ...(this.sandboxModeOverride ? { sandboxModeOverride: this.sandboxModeOverride } : {}),
+      ...(this.scriptPathOverride ? { scriptPathOverride: this.scriptPathOverride } : {}),
+    });
     try {
-      // Broker must be listening before the sandbox initialises — srt
-      // needs the bound port for its parentProxy URL. Parent-side
-      // tracing uses that same broker proxy, so start it after bind and
-      // flush before teardown.
-      if (infra.kind === "managed") {
-        await infra.broker.start();
-        tracingStarted = startParentTracing(infra);
-      }
-      await infra.sandbox.enterIfNeeded({
-        workspaceRoot,
-        runStoreDir: state.config.runStoreDir(),
-        harnessRoot: this.root,
-        workerReadRoots: workerReadRoots(this.root),
-      });
-      const onEvent = makeOnEvent(infra, input);
+      await execution.enter();
+      const onEvent = execution.onEvent();
       const runInput: EngineRunInput = {
         task: input.task,
         slug,
         workspaceRoot,
         tier: input.tier ?? "M",
-        ...(infra.kind === "managed" ? { sandboxMode: infra.mode } : {}),
+        ...(execution.sandboxMode ? { sandboxMode: execution.sandboxMode } : {}),
         ...(input.startAt ? { startAt: input.startAt } : {}),
         ...(input.onlyPhases ? { onlyPhases: input.onlyPhases } : {}),
         onGateRequested: (request) => this.handleGateRequest(request),
         onEvent,
-        dispatchPhase: this.makeDispatchPhase(infra, state),
+        dispatchPhase: execution.dispatchPhase(),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       };
       return await engine.run(program, runInput, this.engineServices(state));
     } finally {
-      if (infra.kind === "managed") {
-        if (tracingStarted) await shutdownTracing();
-        await infra.audit.closeAll();
-        await infra.broker.stop();
-      }
-      await infra.sandbox.shutdown();
+      await execution.dispose();
     }
-  }
-
-  /**
-   * Build the engine's `dispatchPhase` callback. Always spawns a
-   * sandboxed worker — in srt mode the worker is wrapped by srt; in
-   * passthrough mode it's a plain `Bun.spawn`. Uniform path means one
-   * code path to test and no parent value-import of worker code.
-   *
-   * The plan carries a parent-resolved runtime config slice so the
-   * worker doesn't load `ordin.config.yaml` itself. For claude-cli,
-   * the `bin` is resolved through `resolveClaudeBin` parent-side so
-   * the worker sees an absolute (or PATH-resolvable) string and never
-   * touches the env or the user's PATH.
-   *
-   * Phase lifecycle bookkeeping (`phase.started` / `phase.runtime.completed`
-   * / `phase.failed`) and runId/phaseId tagging happen here, in the
-   * parent — `PhaseRunner` is the shared driver. Runtime events flow
-   * back to the parent over the worker's stdout as one JSON object per
-   * line (no broker round-trip), and the worker writes its `InvokeResult`
-   * to a file we read on exit.
-   */
-  private makeDispatchPhase(
-    infra: RunInfra,
-    state: LoadedState,
-  ): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
-    if (this.dispatchPhaseOverride) return this.dispatchPhaseOverride;
-    const harnessRoot = this.root;
-    const workflowName = this.workflowName;
-    const scriptPath = this.scriptPathOverride;
-    const config = state.config;
-    // Only `passthrough` runs in-process. `claude-self` and `srt` both
-    // need subprocess isolation: the worker's env carries the broker's
-    // proxy URL (`buildWorkerEnv`) which we don't want leaking into the
-    // harness process for the rest of its lifetime.
-    const inProcess = infra.kind === "managed" && infra.mode === "passthrough";
-    const brokerDispatch = infra.kind === "managed" ? infra.brokerDispatch : undefined;
-    if (inProcess) {
-      const brokerClient = infra.kind === "managed" ? infra.brokerClient : undefined;
-      // ADR-018: passthrough runs the agent in the harness process,
-      // dispatching tool calls through `InProcessBrokerClient` —
-      // direct method calls, no IPC. Trust separation is logical.
-      return async (req) => {
-        const runtimeConfig = resolveRuntimeConfig(
-          req.runtimeName,
-          config.runtimeConfig(req.runtimeName),
-        );
-        return runWithPhaseAcl(brokerDispatch, req, () =>
-          new PhaseRunner().run({
-            preview: req.preview,
-            runtimeName: req.runtimeName,
-            context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
-            emit: req.emit,
-            invoke: async (invokeReq) => {
-              const runtime = await buildRuntime(req.runtimeName, runtimeConfig, {
-                harnessRoot,
-                workflowName,
-                runsDir: config.runStoreDir(),
-                ...(scriptPath ? { scriptPath } : {}),
-                ...(brokerClient ? { broker: brokerClient } : {}),
-              });
-              return runtime.invoke(invokeReq);
-            },
-            ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-          }),
-        );
-      };
-    }
-    const sandbox = infra.sandbox;
-    const workerEnv = buildWorkerEnv(infra, process.env);
-    return async (req) => {
-      const planPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.plan.json`);
-      const resultPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.result.json`);
-      const plan = {
-        harnessRoot,
-        workflowName,
-        ...(scriptPath ? { scriptPath } : {}),
-        runsDir: config.runStoreDir(),
-        runId: req.runId,
-        runDir: req.runDir,
-        iteration: req.iteration,
-        phase: req.phase,
-        preview: req.preview,
-        runtimeName: req.runtimeName,
-        runtimeConfig: resolveRuntimeConfig(req.runtimeName, config.runtimeConfig(req.runtimeName)),
-        resultPath,
-      };
-      await writeFile(planPath, JSON.stringify(plan));
-      return runWithPhaseAcl(brokerDispatch, req, () =>
-        new PhaseRunner().run({
-          preview: req.preview,
-          runtimeName: req.runtimeName,
-          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
-          emit: req.emit,
-          invoke: (invokeReq) =>
-            spawnWorkerInvoke({
-              sandbox,
-              harnessRoot,
-              workerEnv,
-              planPath,
-              resultPath,
-              phaseId: req.phase.id,
-              iteration: req.iteration,
-              invokeReq,
-            }),
-          ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-        }),
-      );
-    };
   }
 
   /**
@@ -474,105 +343,6 @@ export class HarnessRuntime {
     return workflow;
   }
 
-  /**
-   * Load the per-project egress approval store (ADR-013) and assemble
-   * the binding the broker needs: pre-approved hosts pulled from disk,
-   * and a wrapped prompter that persists every fresh approval back to
-   * disk. Runs without a CLI prompter (headless / CI) skip the wrap —
-   * the broker denies un-mapped hosts as before.
-   */
-  private async prepareEgressStore(
-    state: LoadedState,
-    input: StartRunInput,
-    workspaceRoot: string,
-  ): Promise<EgressBinding> {
-    if (this.sandboxOverride) return { preApprovedHosts: [] };
-    const ordinDir = dirname(state.config.runStoreDir());
-    const projectKey = EgressApprovalStore.projectKeyForWorkspace(workspaceRoot, input.projectName);
-    const store = new EgressApprovalStore({ ordinDir, projectKey });
-    const preApprovedHosts = await store.load();
-    const userPrompter = this.egressGatePrompter;
-    if (!userPrompter) return { preApprovedHosts };
-    const prompter: NonNullable<HarnessRuntimeOptions["egressGatePrompter"]> = async (req) => {
-      const approved = await userPrompter(req);
-      if (approved) {
-        try {
-          await store.add(req.host, req.port);
-        } catch (err) {
-          console.warn(
-            `[harness] failed to persist egress approval for ${req.host}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-      }
-      return approved;
-    };
-    return { preApprovedHosts, prompter };
-  }
-
-  /**
-   * Build the per-run infra bundle: the `Sandbox`, the `Broker`, and the
-   * `AuditService`. The broker is wired regardless of mode — srt uses it
-   * as the kernel-enforced parentProxy; passthrough still uses it for
-   * forward services (otel/llm-gateway) so "switch sandbox modes" is a
-   * true substitution. Runtime observation events flow over the worker's
-   * stdout JSONL channel under L2 (Phase B); the broker is no longer in
-   * the audit data path.
-   *
-   * Resolution order: explicit `Sandbox` instance override > `sandboxMode`
-   * override (typically the CLI flag) > config file's `sandbox:` field.
-   */
-  private buildInfra(state: LoadedState, input: StartRunInput, egress: EgressBinding): RunInfra {
-    if (this.sandboxOverride) {
-      return { kind: "override", sandbox: this.sandboxOverride };
-    }
-    const mode = this.sandboxModeOverride ?? state.config.sandboxMode();
-    // AuditService is the single fan-out point — every appended event
-    // flows back to `input.onEvent`. Parent-emitted RunEvents (run
-    // lifecycle, phase lifecycle, runtime observations) all funnel
-    // through `audit.appendEvent` from `makeOnEvent`. `broker.*`
-    // observations are chain-only and don't propagate to the TUI.
-    const audit = new AuditService({
-      runStoreDir: state.config.runStoreDir(),
-      onEvent: (ev) => {
-        if (ev.kind.startsWith("broker.")) return;
-        input.onEvent?.(ev.payload as RunEvent);
-      },
-    });
-    const services = state.config.localServices();
-    // Tool-dispatch authority lives broker-side (ADR-016). One
-    // `BrokerDispatch` per run; both transports (`InProcessBrokerClient`
-    // for passthrough, `HttpBrokerClient` for sandboxed) call into the
-    // same instance so policy + audit code paths are identical across
-    // modes.
-    const brokerDispatch = new BrokerDispatch({
-      audit: { append: (ev) => audit.appendEvent(ev) },
-    });
-    const proxyAuth = randomBytes(32).toString("hex");
-    const broker = new Broker(services, {
-      proxyAuth,
-      onEgress: audit.egressSink(),
-      internalServices: [
-        { kind: "internal", name: "tools", handler: makeToolServiceHandler(brokerDispatch) },
-      ],
-      ...(egress.prompter ? { onEgressGate: egress.prompter } : {}),
-      preApprovedHosts: egress.preApprovedHosts,
-    });
-    const brokerClient = new InProcessBrokerClient(brokerDispatch);
-    return {
-      kind: "managed",
-      mode,
-      sandbox: selectSandbox(mode, { broker }),
-      broker,
-      brokerClient,
-      brokerDispatch,
-      proxyAuth,
-      audit,
-      services,
-    };
-  }
-
   private engineServices(state: LoadedState): EngineServices {
     return {
       config: state.config,
@@ -647,90 +417,6 @@ function defaultRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
-/**
- * Per-run infra bundle returned by `buildInfra`. The `kind` discriminator
- * keeps callers from reaching for `audit`/`broker` in modes that don't
- * have them.
- */
-interface EgressBinding {
-  readonly preApprovedHosts: readonly EgressApproval[];
-  readonly prompter?: NonNullable<HarnessRuntimeOptions["egressGatePrompter"]>;
-}
-
-type RunInfra =
-  | { readonly kind: "override"; readonly sandbox: Sandbox }
-  | {
-      readonly kind: "managed";
-      readonly mode: SandboxMode;
-      readonly sandbox: Sandbox;
-      readonly broker: Broker;
-      readonly brokerClient: BrokerClient;
-      readonly brokerDispatch: BrokerDispatch;
-      readonly proxyAuth: string;
-      readonly audit: AuditService;
-      readonly services: Readonly<Record<string, unknown>>;
-    };
-
-/**
- * Pick the right per-event funnel for the resolved infra. Managed
- * infra (any caller-non-overridden mode) routes everything through
- * `audit.appendEvent` so the chain writer + the TUI fan-out share a
- * single path. The `override` branch (programmatic Sandbox injection)
- * has no audit, so events go directly to the caller's `onEvent`.
- */
-function makeOnEvent(infra: RunInfra, input: StartRunInput): (event: RunEvent) => void {
-  if (infra.kind === "managed") {
-    const audit = infra.audit;
-    return (ev) => {
-      audit.appendEvent({ runId: ev.runId, kind: ev.type, payload: ev }).catch((err: unknown) => {
-        console.warn(`[harness] audit append failed: ${errMessage(err)}`);
-      });
-    };
-  }
-  return (ev) => input.onEvent?.(ev);
-}
-
-/**
- * Register the per-(run, phase) ACL on the broker before the phase
- * invokes, release it after — even on failure. The worker has no way
- * to widen its own permissions because it never sees the ACL: the
- * intent it sends carries no allow-list, and the broker looks up the
- * authoritative one parent-side keyed by `(runId, phaseId)`.
- *
- * `Skill` is auto-added when the phase has skills attached; this
- * mirrors `buildDispatcherTools`, where `Skill` is implicitly exposed
- * to Mastra under the same condition. Keeping the two derivations in
- * lockstep prevents an LLM-issued `Skill` call from reaching the
- * broker just to get rejected.
- */
-async function runWithPhaseAcl<T>(
-  brokerDispatch: BrokerDispatch | undefined,
-  req: PhaseDispatchRequest,
-  body: () => Promise<T>,
-): Promise<T> {
-  if (!brokerDispatch) return body();
-  const { runId, preview } = req;
-  const { phaseId, skills } = preview.prompt;
-  const tools = preview.prompt.tools.map((spec) => spec.match(/^\w+/)?.[0] ?? spec);
-  if (skills.length > 0 && !tools.includes("Skill")) tools.push("Skill");
-  brokerDispatch.registerPhase(runId, phaseId, tools);
-  try {
-    return await body();
-  } finally {
-    brokerDispatch.releasePhase(runId, phaseId);
-  }
-}
-
-function startParentTracing(infra: RunInfra): boolean {
-  if (infra.kind !== "managed") return false;
-  if (!Object.hasOwn(infra.services, "otel")) return false;
-  return startTracing({ enabled: true, proxyUrl: infra.broker.proxyUrl() });
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 async function assertWorkspaceDirectory(path: string): Promise<void> {
   let info: Awaited<ReturnType<typeof stat>>;
   try {
@@ -745,106 +431,5 @@ async function assertWorkspaceDirectory(path: string): Promise<void> {
   }
   if (!info.isDirectory()) {
     throw new Error(`Workspace path is not a directory: ${path}`);
-  }
-}
-
-/**
- * Pre-resolve any parent-side concerns in a runtime's config slice so
- * the worker can build the runtime without env or PATH access. Today
- * the only resolution is Claude CLI-backed runtime bins through
- * `resolveClaudeBin` (honors `CLAUDE_BIN` env, defaults to `"claude"`).
- * Other runtimes pass through untouched.
- */
-function resolveRuntimeConfig(name: string, slice: unknown): unknown {
-  if (name === "claude-cli" || name === "claude-cli-provider") {
-    const cur = (slice ?? {}) as { bin?: string };
-    return { ...cur, bin: resolveClaudeBin(cur.bin) };
-  }
-  return slice;
-}
-
-interface SpawnWorkerInvokeArgs {
-  readonly sandbox: Sandbox;
-  readonly harnessRoot: string;
-  readonly workerEnv: NodeJS.ProcessEnv;
-  readonly planPath: string;
-  readonly resultPath: string;
-  readonly phaseId: string;
-  readonly iteration: number;
-  readonly invokeReq: InvokeRequest;
-}
-
-/**
- * Spawn the sandboxed worker and shape its lifecycle into the
- * `(InvokeRequest) => InvokeResult` contract `PhaseRunner` expects.
- * Stdout is the JSONL channel: each line is a `RuntimeEvent` the
- * worker emits via its `onEvent` callback. We read + dispatch in a
- * background reader, await the child's exit, then read the result
- * file the worker wrote.
- */
-async function spawnWorkerInvoke(args: SpawnWorkerInvokeArgs): Promise<InvokeResult> {
-  const { sandbox, harnessRoot, workerEnv, planPath, resultPath, phaseId, iteration, invokeReq } =
-    args;
-  // Stamp the active OTel span as W3C `TRACEPARENT` so the worker can
-  // hand it to Mastra's `tracingOptions` and Mastra-emitted spans
-  // (chat / tool calls forwarded to Langfuse) nest under the active
-  // `ordin.phase.*` span instead of producing a sibling trace tree.
-  // No-op when tracing is disabled — `trace.getSpan` returns
-  // undefined under the API's default no-op TracerProvider.
-  const traceparent = serializeActiveTraceparent();
-  const env = traceparent ? { ...workerEnv, TRACEPARENT: traceparent } : workerEnv;
-  const handle = sandbox.spawnWorker({
-    argv: [...workerArgv({ harnessRoot }), "--plan", planPath],
-    env,
-  });
-  const events = consumeRuntimeEvents(handle.stdout, invokeReq.onEvent);
-  if (invokeReq.abortSignal) {
-    const onAbort = () => handle.kill("SIGTERM");
-    invokeReq.abortSignal.addEventListener("abort", onAbort, { once: true });
-  }
-  const code = await handle.exit;
-  await events;
-  if (code !== 0) {
-    throw new Error(`worker for phase "${phaseId}" iteration ${iteration} exited ${code}`);
-  }
-  const resultText = await readFile(resultPath, "utf8");
-  return JSON.parse(resultText) as InvokeResult;
-}
-
-/**
- * Serialize the currently-active OTel span to a W3C Trace Context
- * `traceparent` value (`00-<traceId>-<spanId>-<flags>`). Returns
- * undefined when no SDK is active — under `@opentelemetry/api`'s
- * default no-op tracer provider, `trace.getSpan` returns undefined.
- */
-function serializeActiveTraceparent(): string | undefined {
-  const span = trace.getSpan(context.active());
-  if (!span) return undefined;
-  const sc = span.spanContext();
-  if (!sc.traceId || !sc.spanId) return undefined;
-  const flags = (sc.traceFlags ?? 0).toString(16).padStart(2, "0");
-  return `00-${sc.traceId}-${sc.spanId}-${flags}`;
-}
-
-/**
- * Read the worker's stdout one line at a time, parse each as a
- * `RuntimeEvent`, and forward to the supplied callback. Resolves when
- * the stream ends (i.e. the worker has closed stdout). Malformed lines
- * are logged and dropped — runtime events are supplementary observation
- * data, never load-bearing for run correctness.
- */
-async function consumeRuntimeEvents(
-  stdout: NodeJS.ReadableStream,
-  onEvent: ((event: RuntimeEvent) => void) | undefined,
-): Promise<void> {
-  const rl = createInterface({ input: stdout, crlfDelay: Number.POSITIVE_INFINITY });
-  for await (const line of rl) {
-    if (!line) continue;
-    try {
-      const parsed = JSON.parse(line) as RuntimeEvent;
-      onEvent?.(parsed);
-    } catch (err) {
-      console.warn(`[worker] dropped malformed event line: ${errMessage(err)}`);
-    }
   }
 }
