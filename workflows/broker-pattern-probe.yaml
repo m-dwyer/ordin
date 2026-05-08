@@ -1,0 +1,22 @@
+# Deterministic probe for broker tool-pattern enforcement.
+#
+# Pairs with `scripts/broker-pattern-probe.yaml`. The phase allows Bash
+# only when the command starts with `git diff`. The scripted plan first
+# runs a matching command, then intentionally requests `npm install` so
+# the broker rejects by pattern and the run fails.
+
+name: broker-pattern-probe
+version: 1
+runtime: scripted
+model: scripted
+description: >
+  Deterministic broker tool-pattern probe. Exercises one matching Bash
+  command and one denied Bash command in a single phase. No LLM call.
+
+phases:
+  - id: probe
+    agent: probe-agent
+    gate: auto
+    allowed_tools:
+      - Bash(git diff*)
+    fresh_context: true

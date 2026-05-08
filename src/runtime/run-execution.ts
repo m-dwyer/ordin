@@ -293,7 +293,7 @@ async function runWithPhaseAcl<T>(
     allowedTools: preview.prompt.tools,
     hasSkills: preview.prompt.skills.length > 0,
   });
-  brokerDispatch.registerPhase(runId, phaseId, policy.toolNames);
+  brokerDispatch.registerPhase(runId, phaseId, policy);
   try {
     return await body();
   } finally {

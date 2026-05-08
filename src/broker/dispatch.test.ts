@@ -111,6 +111,93 @@ describe("BrokerDispatch.requestApproval", () => {
     });
   });
 
+  it("approves a command matching a Bash pattern", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "build", ["Bash(git diff*)"]);
+    const cwd = await mkdtemp(join(tmpdir(), "broker-bash-pattern-"));
+
+    const approval = await broker.requestApproval({
+      tool: "Bash",
+      input: { command: "git diff --stat" },
+      runId: "run1",
+      phaseId: "build",
+      cwd,
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(true);
+    expect(audit.calls[0]?.payload).toMatchObject({
+      tool: "Bash",
+      decision: "allow",
+    });
+  });
+
+  it("denies a command outside a Bash pattern", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "build", ["Bash(git diff*)"]);
+    const cwd = await mkdtemp(join(tmpdir(), "broker-bash-deny-"));
+
+    const approval = await broker.requestApproval({
+      tool: "Bash",
+      input: { command: "npm install" },
+      runId: "run1",
+      phaseId: "build",
+      cwd,
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(false);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.kind).toBe("denied");
+    expect(approval.error.message).toContain("does not match");
+    expect(audit.calls[0]?.payload).toMatchObject({
+      tool: "Bash",
+      decision: "deny",
+      errorKind: "denied",
+    });
+  });
+
+  it("approves a file tool matching a path pattern", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "plan", ["Write(docs/rfcs/*)"]);
+    const cwd = await mkdtemp(join(tmpdir(), "broker-write-pattern-"));
+
+    const approval = await broker.requestApproval({
+      tool: "Write",
+      input: { file_path: "docs/rfcs/example-rfc.md", content: "ok" },
+      runId: "run1",
+      phaseId: "plan",
+      cwd,
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(true);
+  });
+
+  it("denies a patterned tool when the match field is missing", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+    broker.registerPhase("run1", "review", ["Grep(src/*)"]);
+    const cwd = await mkdtemp(join(tmpdir(), "broker-missing-pattern-field-"));
+
+    const approval = await broker.requestApproval({
+      tool: "Grep",
+      input: { pattern: "TODO" },
+      runId: "run1",
+      phaseId: "review",
+      cwd,
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(false);
+    if (approval.ok) throw new Error("expected deny");
+    expect(approval.error.kind).toBe("denied");
+    expect(approval.error.message).toContain("no matchable field");
+  });
+
   it("releasePhase drops the ACL — subsequent intents are denied", async () => {
     const audit = new RecordingAudit();
     const broker = new BrokerDispatch({ audit });
