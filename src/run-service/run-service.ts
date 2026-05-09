@@ -10,7 +10,6 @@ import {
   type RunMeta,
   type StartRunInput,
 } from "../runtime/harness";
-import { PassthroughSandbox } from "../sandbox/passthrough";
 import { DeferredGatePrompter, type PendingGate } from "./deferred-gate-prompter";
 import { EventBus } from "./event-bus";
 
@@ -47,11 +46,11 @@ export class RunService {
       ...opts,
       gateForKind: gateResolverFor(this.prompter),
       // ADR-008: v1 sandboxing is `ordin run` only. Server modes
-      // (serve/mcp) force PassthroughSandbox so an srt config
-      // can't accidentally apply where wrapping the server would be
-      // nonsensical (the server would block on the wrapped child's
-      // exit). Callers can still override explicitly via `opts.sandbox`.
-      sandbox: opts.sandbox ?? new PassthroughSandbox(),
+      // (serve/mcp) force passthrough so an srt config can't accidentally
+      // apply where wrapping the server would be nonsensical (the server
+      // would block on the wrapped child's exit). Callers can still
+      // override via `opts.sandboxMode`.
+      sandboxMode: opts.sandboxMode ?? "passthrough",
     });
   }
 

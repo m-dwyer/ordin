@@ -34,7 +34,6 @@ export interface RunExecutionOptions {
   readonly egressGatePrompter:
     | ((req: { host: string; port: number | undefined }) => Promise<boolean>)
     | undefined;
-  readonly sandboxOverride: Sandbox | undefined;
   readonly sandboxModeOverride: SandboxMode | undefined;
   readonly scriptPathOverride: string | undefined;
 }
@@ -58,23 +57,18 @@ export class DefaultRunExecution implements RunExecution {
   }
 
   get sandboxMode(): SandboxMode | undefined {
-    const infra = this.requireInfra();
-    return infra.kind === "managed" ? infra.mode : undefined;
+    return this.requireInfra().mode;
   }
 
   onEvent(): (event: RunEvent) => void {
-    const infra = this.requireInfra();
-    if (infra.kind === "managed") {
-      const audit = infra.audit;
-      return (ev) => {
-        audit.appendEvent({ runId: ev.runId, kind: ev.type, payload: ev }).catch((err: unknown) => {
-          console.warn(
-            `[harness] audit append failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
-      };
-    }
-    return (ev) => this.opts.onEvent?.(ev);
+    const { audit } = this.requireInfra();
+    return (ev) => {
+      audit.appendEvent({ runId: ev.runId, kind: ev.type, payload: ev }).catch((err: unknown) => {
+        console.warn(
+          `[harness] audit append failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    };
   }
 
   dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
@@ -90,10 +84,8 @@ export class DefaultRunExecution implements RunExecution {
     // need subprocess isolation: the worker's env carries the broker's
     // proxy URL (`buildWorkerEnv`) which we don't want leaking into the
     // harness process for the rest of its lifetime.
-    const inProcess = infra.kind === "managed" && infra.mode === "passthrough";
-    const brokerDispatch = infra.kind === "managed" ? infra.brokerDispatch : undefined;
-    if (inProcess) {
-      const brokerClient = infra.kind === "managed" ? infra.brokerClient : undefined;
+    if (infra.mode === "passthrough") {
+      const { brokerClient, brokerDispatch } = infra;
       return async (req) => {
         const runtimeConfig = resolveRuntimeConfig(
           req.runtimeName,
@@ -111,7 +103,7 @@ export class DefaultRunExecution implements RunExecution {
                 workflowName,
                 runsDir: config.runStoreDir(),
                 ...(scriptPath ? { scriptPath } : {}),
-                ...(brokerClient ? { broker: brokerClient } : {}),
+                broker: brokerClient,
               });
               return runtime.invoke(invokeReq);
             },
@@ -121,7 +113,7 @@ export class DefaultRunExecution implements RunExecution {
       };
     }
 
-    const sandbox = infra.sandbox;
+    const { sandbox, brokerDispatch } = infra;
     const workerEnv = buildWorkerEnv(infra, process.env);
     return async (req) => {
       const worker = await prepareWorkerDispatch(sandbox, req, {
@@ -148,10 +140,8 @@ export class DefaultRunExecution implements RunExecution {
 
   async enter(): Promise<void> {
     const infra = this.requireInfra();
-    if (infra.kind === "managed") {
-      await infra.broker.start();
-      this.tracingStarted = startParentTracing(infra);
-    }
+    await infra.broker.start();
+    this.tracingStarted = startParentTracing(infra);
     await infra.sandbox.enterIfNeeded({
       workspaceRoot: this.opts.workspaceRoot,
       runStoreDir: this.opts.config.runStoreDir(),
@@ -163,11 +153,9 @@ export class DefaultRunExecution implements RunExecution {
   async dispose(): Promise<void> {
     const infra = this.infra;
     if (!infra) return;
-    if (infra.kind === "managed") {
-      if (this.tracingStarted) await shutdownTracing();
-      await infra.audit.closeAll();
-      await infra.broker.stop();
-    }
+    if (this.tracingStarted) await shutdownTracing();
+    await infra.audit.closeAll();
+    await infra.broker.stop();
     await infra.sandbox.shutdown();
   }
 
@@ -177,7 +165,6 @@ export class DefaultRunExecution implements RunExecution {
   }
 
   private async prepareEgressStore(): Promise<EgressBinding> {
-    if (this.opts.sandboxOverride) return { preApprovedHosts: [] };
     const ordinDir = dirname(this.opts.config.runStoreDir());
     const projectKey = EgressApprovalStore.projectKeyForWorkspace(
       this.opts.workspaceRoot,
@@ -204,9 +191,6 @@ export class DefaultRunExecution implements RunExecution {
   }
 
   private buildInfra(egress: EgressBinding): RunInfra {
-    if (this.opts.sandboxOverride) {
-      return { kind: "override", sandbox: this.opts.sandboxOverride };
-    }
     const mode = this.opts.sandboxModeOverride ?? this.opts.config.sandboxMode();
     const audit = new AuditService({
       runStoreDir: this.opts.config.runStoreDir(),
@@ -231,7 +215,6 @@ export class DefaultRunExecution implements RunExecution {
     });
     const brokerClient = new InProcessBrokerClient(brokerDispatch);
     return {
-      kind: "managed",
       mode,
       sandbox: selectSandbox(mode, { broker }),
       broker,
@@ -248,25 +231,21 @@ interface EgressBinding {
   readonly prompter?: NonNullable<RunExecutionOptions["egressGatePrompter"]>;
 }
 
-type RunInfra =
-  | { readonly kind: "override"; readonly sandbox: Sandbox }
-  | {
-      readonly kind: "managed";
-      readonly mode: SandboxMode;
-      readonly sandbox: Sandbox;
-      readonly broker: Broker;
-      readonly brokerClient: BrokerClient;
-      readonly brokerDispatch: BrokerDispatch;
-      readonly audit: AuditService;
-      readonly services: Readonly<Record<string, unknown>>;
-    };
+interface RunInfra {
+  readonly mode: SandboxMode;
+  readonly sandbox: Sandbox;
+  readonly broker: Broker;
+  readonly brokerClient: BrokerClient;
+  readonly brokerDispatch: BrokerDispatch;
+  readonly audit: AuditService;
+  readonly services: Readonly<Record<string, unknown>>;
+}
 
 async function runWithPhaseAcl<T>(
-  brokerDispatch: BrokerDispatch | undefined,
+  brokerDispatch: BrokerDispatch,
   req: PhaseDispatchRequest,
   body: () => Promise<T>,
 ): Promise<T> {
-  if (!brokerDispatch) return body();
   const { runId, preview } = req;
   const { phaseId } = preview.prompt;
   const policy = deriveToolPolicy({
@@ -282,7 +261,6 @@ async function runWithPhaseAcl<T>(
 }
 
 function startParentTracing(infra: RunInfra): boolean {
-  if (infra.kind !== "managed") return false;
   if (!Object.hasOwn(infra.services, "otel")) return false;
   return startTracing({ enabled: true, proxyUrl: infra.broker.proxyUrl() });
 }

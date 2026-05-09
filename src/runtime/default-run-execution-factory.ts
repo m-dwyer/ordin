@@ -27,7 +27,6 @@ export class DefaultRunExecutionFactory implements RunExecutionFactory {
       ...opts,
       dispatchPhaseOverride: this.overrides.dispatchPhaseOverride,
       egressGatePrompter: this.overrides.egressGatePrompter,
-      sandboxOverride: this.overrides.sandboxOverride,
       sandboxModeOverride: this.overrides.sandboxModeOverride,
       scriptPathOverride: this.overrides.scriptPathOverride,
     });

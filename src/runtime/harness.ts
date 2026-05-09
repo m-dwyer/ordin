@@ -14,7 +14,6 @@ import type { Engine, PhaseDispatchRequest } from "../orchestrator/engine";
 import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
-import type { Sandbox } from "../sandbox/types";
 import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
 import { DefaultRunExecutionFactory } from "./default-run-execution-factory";
 
@@ -73,14 +72,9 @@ export interface HarnessRuntimeOptions {
     port: number | undefined;
   }) => Promise<boolean>;
   /**
-   * Direct override — programmatic callers (tests, eval suite) inject
-   * a `Sandbox` instance to bypass mode resolution. Highest priority.
-   */
-  readonly sandbox?: Sandbox;
-  /**
-   * Sandbox mode override — typically the CLI's `--sandbox` flag.
-   * Beats the config file's `sandbox:` field. Lower priority than
-   * `sandbox` (which is a fully-resolved instance).
+   * Sandbox mode override — typically the CLI's `--sandbox` flag, or
+   * `RunService` forcing `passthrough` for server modes. Beats the
+   * config file's `sandbox:` field.
    */
   readonly sandboxMode?: SandboxMode;
   /**
@@ -122,7 +116,6 @@ export class HarnessRuntime {
     const factory = new DefaultRunExecutionFactory({
       dispatchPhaseOverride: opts.dispatchPhase,
       egressGatePrompter: opts.egressGatePrompter,
-      sandboxOverride: opts.sandbox,
       sandboxModeOverride: opts.sandboxMode,
       scriptPathOverride: opts.scriptPath,
     });

@@ -6,13 +6,10 @@ import { workerArgv } from "../worker/locator";
  * untrusted side of the sandbox, so they receive only the process vars
  * and read roots needed for ordinary execution.
  */
-export type WorkerPolicyInfra =
-  | { readonly kind: "override" }
-  | {
-      readonly kind: "managed";
-      readonly sandbox: { readonly name: string };
-      readonly broker: { proxyUrl(): string };
-    };
+export interface WorkerPolicyInfra {
+  readonly sandbox: { readonly name: string };
+  readonly broker: { proxyUrl(): string };
+}
 
 const EXACT_SRT_WORKER_ENV_ALLOWLIST = new Set([
   "HOME",
@@ -34,7 +31,6 @@ export function buildWorkerEnv(
   infra: WorkerPolicyInfra,
   parentEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  if (infra.kind !== "managed") return parentEnv;
   if (infra.sandbox.name !== "srt") {
     // `claude-self` (and any future non-srt subprocess mode): the
     // broker URL is pinned in both HTTP_PROXY and HTTPS_PROXY so

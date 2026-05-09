@@ -2,7 +2,6 @@ import type { HarnessConfig, SandboxMode } from "../../domain/config";
 import type { PhaseDispatchRequest } from "../../orchestrator/engine";
 import type { RunEvent } from "../../orchestrator/events";
 import type { PhaseRunResult } from "../../orchestrator/phase-runner";
-import type { Sandbox } from "../../sandbox/types";
 
 export interface RunExecution {
   readonly sandboxMode: SandboxMode | undefined;
@@ -45,7 +44,6 @@ export interface RunExecutionFactoryOverrides {
   readonly egressGatePrompter:
     | ((req: { host: string; port: number | undefined }) => Promise<boolean>)
     | undefined;
-  readonly sandboxOverride: Sandbox | undefined;
   readonly sandboxModeOverride: SandboxMode | undefined;
   readonly scriptPathOverride: string | undefined;
 }

@@ -21,14 +21,9 @@ const parentEnv: NodeJS.ProcessEnv = {
 };
 
 describe("buildWorkerEnv", () => {
-  it("preserves ambient env for override sandboxes", () => {
-    expect(buildWorkerEnv({ kind: "override" }, parentEnv)).toBe(parentEnv);
-  });
-
-  it("routes non-srt managed workers through the broker", () => {
+  it("routes non-srt workers through the broker", () => {
     const env = buildWorkerEnv(
       {
-        kind: "managed",
         sandbox: { name: "passthrough" },
         broker: { proxyUrl: () => "http://ordin:secret@127.0.0.1:1234" },
       },
@@ -41,7 +36,6 @@ describe("buildWorkerEnv", () => {
   it("allowlists only operational env for srt workers", () => {
     const env = buildWorkerEnv(
       {
-        kind: "managed",
         sandbox: { name: "srt" },
         broker: { proxyUrl: () => "http://ordin:secret@127.0.0.1:1234" },
       },
