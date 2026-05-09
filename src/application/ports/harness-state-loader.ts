@@ -26,6 +26,8 @@ export interface LoadedHarnessState {
 }
 
 export interface HarnessStateLoader {
+  readonly root: string;
+  readonly workflowName: string;
   paths(): HarnessPaths;
   load(): Promise<LoadedHarnessState>;
   runStore(): Promise<RunStore>;

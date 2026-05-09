@@ -11,8 +11,6 @@ export class StartRunUseCase {
     private readonly loader: HarnessStateLoader,
     private readonly factory: RunExecutionFactory,
     private readonly gateResolver: (kind: GateRequest["gateKind"]) => Gate,
-    private readonly root: string,
-    private readonly workflowName: string,
   ) {}
 
   async execute(input: StartRunInput): Promise<RunMeta> {
@@ -21,8 +19,8 @@ export class StartRunUseCase {
     const workspaceRoot = await this.loader.resolveWorkspace(input);
     const program = state.engine.compile(workflowForRun(state.workflow, input));
     const execution = await this.factory.prepare({
-      root: this.root,
-      workflowName: this.workflowName,
+      root: this.loader.root,
+      workflowName: this.loader.workflowName,
       config: state.config,
       workspaceRoot,
       projectName: input.projectName,

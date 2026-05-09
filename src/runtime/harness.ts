@@ -127,7 +127,7 @@ export class HarnessRuntime {
       scriptPathOverride: opts.scriptPath,
     });
 
-    this.startRun_ = new StartRunUseCase(this.loader, factory, gateResolver, root, workflowName);
+    this.startRun_ = new StartRunUseCase(this.loader, factory, gateResolver);
     this.previewRun_ = new PreviewRunUseCase(this.loader);
     this.listRuns_ = new ListRunsUseCase(this.loader);
     this.getRun_ = new GetRunUseCase(this.loader);

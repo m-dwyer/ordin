@@ -28,11 +28,15 @@ export interface DefaultHarnessStateLoaderOptions {
  * agents/skills/projects when only the run store is needed.
  */
 export class DefaultHarnessStateLoader implements HarnessStateLoader {
+  readonly root: string;
+  readonly workflowName: string;
   private readonly engines: EngineRegistry;
   private loadingPromise?: Promise<LoadedHarnessState>;
   private configPromise?: ReturnType<HarnessConfigLoader["load"]>;
 
   constructor(private readonly opts: DefaultHarnessStateLoaderOptions) {
+    this.root = opts.root;
+    this.workflowName = opts.workflowName;
     this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
   }
 

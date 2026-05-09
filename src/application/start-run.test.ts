@@ -105,6 +105,6 @@ async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
     root,
     repoPath,
     runtime,
-    useCase: new StartRunUseCase(loader, factory, () => new AutoGate(), root, "software-delivery"),
+    useCase: new StartRunUseCase(loader, factory, () => new AutoGate()),
   };
 }
