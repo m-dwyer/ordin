@@ -29,8 +29,9 @@ describe("DefaultRunExecution", () => {
       root,
       workflowName: "software-delivery",
       config: config(runStoreDir),
-      onEvent: (ev: RunEvent) => events.push(ev),
       workspaceRoot,
+      projectName: undefined,
+      onEvent: (ev: RunEvent) => events.push(ev),
     });
 
     expect(execution.sandboxMode).toBeUndefined();
@@ -62,6 +63,8 @@ describe("DefaultRunExecution", () => {
       workflowName: "software-delivery",
       config: config(runStoreDir),
       workspaceRoot,
+      projectName: undefined,
+      onEvent: undefined,
     });
 
     expect(execution.dispatchPhase()).toBe(override);
@@ -87,6 +90,8 @@ describe("DefaultRunExecution", () => {
       workflowName: "software-delivery",
       config: config(runStoreDir),
       workspaceRoot,
+      projectName: undefined,
+      onEvent: undefined,
     });
 
     const result = await execution.dispatchPhase()(

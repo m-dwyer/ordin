@@ -12,13 +12,21 @@ export interface RunExecution {
   dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseRunResult>;
 }
 
+/**
+ * Internal option shapes use `T | undefined` (required, explicit
+ * undefined allowed) so the composition root can do plain assignment
+ * without `...(opts.X ? { X: opts.X } : {})` ceremony under
+ * `exactOptionalPropertyTypes`. The public `HarnessRuntimeOptions`
+ * keeps `T?` because omission is the natural way external callers
+ * decline an option.
+ */
 export interface RunExecutionPrepareOptions {
   readonly root: string;
   readonly workflowName: string;
   readonly config: HarnessConfig;
   readonly workspaceRoot: string;
-  readonly projectName?: string;
-  readonly onEvent?: (event: RunEvent) => void;
+  readonly projectName: string | undefined;
+  readonly onEvent: ((event: RunEvent) => void) | undefined;
 }
 
 export interface RunExecutionFactory {
@@ -31,12 +39,13 @@ export interface RunExecutionFactory {
  * cases can stay ignorant of sandbox / dispatcher injection.
  */
 export interface RunExecutionFactoryOverrides {
-  readonly dispatchPhaseOverride?: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
-  readonly egressGatePrompter?: (req: {
-    host: string;
-    port: number | undefined;
-  }) => Promise<boolean>;
-  readonly sandboxOverride?: Sandbox;
-  readonly sandboxModeOverride?: SandboxMode;
-  readonly scriptPathOverride?: string;
+  readonly dispatchPhaseOverride:
+    | ((request: PhaseDispatchRequest) => Promise<PhaseRunResult>)
+    | undefined;
+  readonly egressGatePrompter:
+    | ((req: { host: string; port: number | undefined }) => Promise<boolean>)
+    | undefined;
+  readonly sandboxOverride: Sandbox | undefined;
+  readonly sandboxModeOverride: SandboxMode | undefined;
+  readonly scriptPathOverride: string | undefined;
 }

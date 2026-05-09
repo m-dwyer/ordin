@@ -116,15 +116,15 @@ export class HarnessRuntime {
       root,
       workflowName,
       engineName,
-      ...(opts.engines ? { engines: opts.engines } : {}),
-      ...(opts.sandboxMode ? { sandboxModeOverride: opts.sandboxMode } : {}),
+      engines: opts.engines,
+      sandboxModeOverride: opts.sandboxMode,
     });
     const factory = new DefaultRunExecutionFactory({
-      ...(opts.dispatchPhase ? { dispatchPhaseOverride: opts.dispatchPhase } : {}),
-      ...(opts.egressGatePrompter ? { egressGatePrompter: opts.egressGatePrompter } : {}),
-      ...(opts.sandbox ? { sandboxOverride: opts.sandbox } : {}),
-      ...(opts.sandboxMode ? { sandboxModeOverride: opts.sandboxMode } : {}),
-      ...(opts.scriptPath ? { scriptPathOverride: opts.scriptPath } : {}),
+      dispatchPhaseOverride: opts.dispatchPhase,
+      egressGatePrompter: opts.egressGatePrompter,
+      sandboxOverride: opts.sandbox,
+      sandboxModeOverride: opts.sandboxMode,
+      scriptPathOverride: opts.scriptPath,
     });
 
     this.startRun_ = new StartRunUseCase(this.loader, factory, gateResolver, root, workflowName);

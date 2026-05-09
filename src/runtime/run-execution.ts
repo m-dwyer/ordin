@@ -26,16 +26,17 @@ export interface RunExecutionOptions {
   readonly workflowName: string;
   readonly config: HarnessConfig;
   readonly workspaceRoot: string;
-  readonly projectName?: string;
-  readonly onEvent?: (event: RunEvent) => void;
-  readonly dispatchPhaseOverride?: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
-  readonly egressGatePrompter?: (req: {
-    host: string;
-    port: number | undefined;
-  }) => Promise<boolean>;
-  readonly sandboxOverride?: Sandbox;
-  readonly sandboxModeOverride?: SandboxMode;
-  readonly scriptPathOverride?: string;
+  readonly projectName: string | undefined;
+  readonly onEvent: ((event: RunEvent) => void) | undefined;
+  readonly dispatchPhaseOverride:
+    | ((request: PhaseDispatchRequest) => Promise<PhaseRunResult>)
+    | undefined;
+  readonly egressGatePrompter:
+    | ((req: { host: string; port: number | undefined }) => Promise<boolean>)
+    | undefined;
+  readonly sandboxOverride: Sandbox | undefined;
+  readonly sandboxModeOverride: SandboxMode | undefined;
+  readonly scriptPathOverride: string | undefined;
 }
 
 /**

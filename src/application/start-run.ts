@@ -25,8 +25,8 @@ export class StartRunUseCase {
       workflowName: this.workflowName,
       config: state.config,
       workspaceRoot,
-      ...(input.projectName ? { projectName: input.projectName } : {}),
-      ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      projectName: input.projectName,
+      onEvent: input.onEvent,
     });
     try {
       await execution.enter();
@@ -35,13 +35,13 @@ export class StartRunUseCase {
         slug,
         workspaceRoot,
         tier: input.tier ?? "M",
-        ...(execution.sandboxMode ? { sandboxMode: execution.sandboxMode } : {}),
-        ...(input.startAt ? { startAt: input.startAt } : {}),
-        ...(input.onlyPhases ? { onlyPhases: input.onlyPhases } : {}),
+        sandboxMode: execution.sandboxMode,
+        startAt: input.startAt,
+        onlyPhases: input.onlyPhases,
         onGateRequested: (request) => this.handleGateRequest(request),
         onEvent: execution.onEvent(),
         dispatchPhase: execution.dispatchPhase(),
-        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        abortSignal: input.abortSignal,
       };
       return await state.engine.run(program, runInput, engineServices(state));
     } finally {

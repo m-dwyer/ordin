@@ -16,6 +16,8 @@ describe("PreviewRunUseCase", () => {
       root,
       workflowName: "software-delivery",
       engineName: "mastra",
+      engines: undefined,
+      sandboxModeOverride: undefined,
     });
 
     const previews = await new PreviewRunUseCase(loader).execute({

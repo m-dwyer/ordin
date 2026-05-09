@@ -16,8 +16,8 @@ export interface DefaultHarnessStateLoaderOptions {
   readonly root: string;
   readonly workflowName: string;
   readonly engineName: string;
-  readonly engines?: Iterable<Engine>;
-  readonly sandboxModeOverride?: SandboxMode;
+  readonly engines: Iterable<Engine> | undefined;
+  readonly sandboxModeOverride: SandboxMode | undefined;
 }
 
 /**

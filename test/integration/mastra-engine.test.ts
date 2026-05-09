@@ -132,7 +132,12 @@ async function runWithMastra(
       slug: input.slug ?? "t",
       workspaceRoot: input.workspaceRoot ?? "/tmp/repo",
       tier: input.tier ?? "M",
+      sandboxMode: undefined,
+      startAt: undefined,
+      onlyPhases: undefined,
+      onEvent: input.onEvent,
       onGateRequested,
+      abortSignal: undefined,
       dispatchPhase: (req) =>
         runner.run({
           preview: req.preview,

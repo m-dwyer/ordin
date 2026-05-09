@@ -95,6 +95,8 @@ async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
     root,
     workflowName: "software-delivery",
     engineName: "mastra",
+    engines: undefined,
+    sandboxModeOverride: undefined,
   });
   const factory = new DefaultRunExecutionFactory({
     dispatchPhaseOverride: dispatchFromRuntime(runtime),

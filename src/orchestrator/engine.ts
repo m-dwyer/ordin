@@ -74,10 +74,10 @@ export interface EngineRunInput {
   readonly slug: string;
   readonly workspaceRoot: string;
   readonly tier: "S" | "M" | "L";
-  readonly sandboxMode?: "passthrough" | "claude-self" | "srt";
-  readonly startAt?: string;
-  readonly onlyPhases?: readonly string[];
-  readonly onEvent?: (event: RunEvent) => void;
+  readonly sandboxMode: "passthrough" | "claude-self" | "srt" | undefined;
+  readonly startAt: string | undefined;
+  readonly onlyPhases: readonly string[] | undefined;
+  readonly onEvent: ((event: RunEvent) => void) | undefined;
   readonly onGateRequested: (request: GateRequest) => Promise<GateDecision>;
   /**
    * How a single phase invocation runs. Engine-neutral: the engine
@@ -86,7 +86,7 @@ export interface EngineRunInput {
    * runner). HarnessRuntime supplies this per-run.
    */
   readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
-  readonly abortSignal?: AbortSignal;
+  readonly abortSignal: AbortSignal | undefined;
 }
 
 /**
