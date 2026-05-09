@@ -1,6 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HarnessContext, type HarnessPaths } from "../application/harness-context";
+import type { HarnessPaths } from "../application/ports";
 import { PreviewRunUseCase } from "../application/preview-run";
 import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "../application/run-queries";
 import { StartRunUseCase } from "../application/start-run";
@@ -15,6 +15,8 @@ import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
+import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
+import { DefaultRunExecutionFactory } from "./default-run-execution-factory";
 
 export type { StartRunInput } from "../application/types";
 export type { VerifyResult } from "../broker/audit-chain";
@@ -90,80 +92,62 @@ export interface HarnessRuntimeOptions {
   readonly scriptPath?: string;
 }
 
+/**
+ * Composition root. Wires the application-layer use cases to their
+ * adapter implementations: `DefaultHarnessStateLoader` reads disk and
+ * registers engines; `DefaultRunExecutionFactory` constructs broker /
+ * sandbox / dispatcher per run. The use cases never reach into either.
+ */
 export class HarnessRuntime {
-  private readonly root: string;
-  private readonly workflowName: string;
-  private readonly context: HarnessContext;
-  private readonly dispatchPhaseOverride?: (
-    request: PhaseDispatchRequest,
-  ) => Promise<PhaseRunResult>;
-  private readonly gateResolver: (kind: Phase["gate"]) => Gate;
-  private readonly egressGatePrompter?: (req: {
-    host: string;
-    port: number | undefined;
-  }) => Promise<boolean>;
-  private readonly sandboxOverride?: Sandbox;
-  private readonly sandboxModeOverride?: SandboxMode;
-  private readonly scriptPathOverride?: string;
-  private readonly startRunUseCase: StartRunUseCase;
-  private readonly previewRunUseCase: PreviewRunUseCase;
-  private readonly listRunsUseCase: ListRunsUseCase;
-  private readonly getRunUseCase: GetRunUseCase;
-  private readonly verifyAuditUseCase: VerifyAuditUseCase;
+  private readonly loader: DefaultHarnessStateLoader;
+  private readonly startRun_: StartRunUseCase;
+  private readonly previewRun_: PreviewRunUseCase;
+  private readonly listRuns_: ListRunsUseCase;
+  private readonly getRun_: GetRunUseCase;
+  private readonly verifyAudit_: VerifyAuditUseCase;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
-    this.root = opts.root ?? defaultRoot();
-    this.workflowName = opts.workflow ?? "software-delivery";
-    if (opts.dispatchPhase) this.dispatchPhaseOverride = opts.dispatchPhase;
-    this.gateResolver = opts.gateForKind ?? defaultGateResolver;
-    if (opts.egressGatePrompter) this.egressGatePrompter = opts.egressGatePrompter;
-    this.sandboxOverride = opts.sandbox;
-    this.sandboxModeOverride = opts.sandboxMode;
-    this.scriptPathOverride = opts.scriptPath;
-    this.context = new HarnessContext({
-      root: this.root,
-      workflowName: this.workflowName,
-      engineName: opts.engine ?? "mastra",
+    const root = opts.root ?? defaultRoot();
+    const workflowName = opts.workflow ?? "software-delivery";
+    const engineName = opts.engine ?? "mastra";
+    const gateResolver = opts.gateForKind ?? defaultGateResolver;
+
+    this.loader = new DefaultHarnessStateLoader({
+      root,
+      workflowName,
+      engineName,
       ...(opts.engines ? { engines: opts.engines } : {}),
-      ...(this.sandboxModeOverride ? { sandboxModeOverride: this.sandboxModeOverride } : {}),
+      ...(opts.sandboxMode ? { sandboxModeOverride: opts.sandboxMode } : {}),
     });
-    this.startRunUseCase = new StartRunUseCase({
-      root: this.root,
-      workflowName: this.workflowName,
-      context: this.context,
-      gateResolver: this.gateResolver,
-      ...(this.dispatchPhaseOverride ? { dispatchPhaseOverride: this.dispatchPhaseOverride } : {}),
-      ...(this.egressGatePrompter ? { egressGatePrompter: this.egressGatePrompter } : {}),
-      ...(this.sandboxOverride ? { sandboxOverride: this.sandboxOverride } : {}),
-      ...(this.sandboxModeOverride ? { sandboxModeOverride: this.sandboxModeOverride } : {}),
-      ...(this.scriptPathOverride ? { scriptPathOverride: this.scriptPathOverride } : {}),
+    const factory = new DefaultRunExecutionFactory({
+      ...(opts.dispatchPhase ? { dispatchPhaseOverride: opts.dispatchPhase } : {}),
+      ...(opts.egressGatePrompter ? { egressGatePrompter: opts.egressGatePrompter } : {}),
+      ...(opts.sandbox ? { sandboxOverride: opts.sandbox } : {}),
+      ...(opts.sandboxMode ? { sandboxModeOverride: opts.sandboxMode } : {}),
+      ...(opts.scriptPath ? { scriptPathOverride: opts.scriptPath } : {}),
     });
-    this.previewRunUseCase = new PreviewRunUseCase(this.context);
-    this.listRunsUseCase = new ListRunsUseCase(this.context);
-    this.getRunUseCase = new GetRunUseCase(this.context);
-    this.verifyAuditUseCase = new VerifyAuditUseCase(this.context);
+
+    this.startRun_ = new StartRunUseCase(this.loader, factory, gateResolver, root, workflowName);
+    this.previewRun_ = new PreviewRunUseCase(this.loader);
+    this.listRuns_ = new ListRunsUseCase(this.loader);
+    this.getRun_ = new GetRunUseCase(this.loader);
+    this.verifyAudit_ = new VerifyAuditUseCase(this.loader);
   }
 
-  async startRun(input: StartRunInput): Promise<RunMeta> {
-    return this.startRunUseCase.execute(input);
+  startRun(input: StartRunInput): Promise<RunMeta> {
+    return this.startRun_.execute(input);
   }
 
-  /**
-   * Compose the prompt for every phase without invoking any runtime.
-   * Mirrors `startRun` shape (prepareRun → delegate) so dry-run
-   * inherits all the same workflow slicing semantics (`onlyPhases`,
-   * `startAt`, project resolution, slug validation).
-   */
-  async previewRun(input: StartRunInput): Promise<readonly PhasePreview[]> {
-    return this.previewRunUseCase.execute(input);
+  previewRun(input: StartRunInput): Promise<readonly PhasePreview[]> {
+    return this.previewRun_.execute(input);
   }
 
-  async listRuns(): Promise<RunMeta[]> {
-    return this.listRunsUseCase.execute();
+  listRuns(): Promise<RunMeta[]> {
+    return this.listRuns_.execute();
   }
 
-  async getRun(runId: string): Promise<RunMeta> {
-    return this.getRunUseCase.execute(runId);
+  getRun(runId: string): Promise<RunMeta> {
+    return this.getRun_.execute(runId);
   }
 
   /**
@@ -171,18 +155,17 @@ export class HarnessRuntime {
    * and report tamper status. Returns the same VerifyResult shape the
    * pure verifier produces; the CLI layer renders it.
    */
-  async verifyAudit(runId: string): Promise<VerifyResult> {
-    return this.verifyAuditUseCase.execute(runId);
+  verifyAudit(runId: string): Promise<VerifyResult> {
+    return this.verifyAudit_.execute(runId);
   }
 
   async workflowDefinition(): Promise<WorkflowManifest> {
-    return this.context.workflowDefinition();
+    const state = await this.loader.load();
+    return state.workflow;
   }
 
-  async resolveRunWorkspace(
-    input: Pick<StartRunInput, "projectName" | "repoPath">,
-  ): Promise<string> {
-    return this.context.resolveRunWorkspace(input);
+  resolveRunWorkspace(input: Pick<StartRunInput, "projectName" | "repoPath">): Promise<string> {
+    return this.loader.resolveWorkspace(input);
   }
 
   /**
@@ -190,13 +173,13 @@ export class HarnessRuntime {
    * `sandboxMode` constructor override > config file). Used by the
    * doctor command for diagnostic reporting.
    */
-  async sandboxMode(): Promise<SandboxMode> {
-    return this.context.sandboxMode();
+  sandboxMode(): Promise<SandboxMode> {
+    return this.loader.sandboxMode();
   }
 
   /** Paths ordin knows about — useful for the CLI `doctor` command. */
   paths(): HarnessPaths {
-    return this.context.paths();
+    return this.loader.paths();
   }
 }
 

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createHttpApp } from "../../src/http/app";
 import { isLoopbackHost, tokenFromEnv } from "../../src/http/auth";
 import { RunService } from "../../src/run-service/run-service";
-import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime } from "../fixtures/agent-runtime";
+import { makeHarnessRoot } from "../fixtures/harness-root";
 
 describe("HTTP auth", () => {
   it("rejects API requests without a bearer token when token is configured", async () => {

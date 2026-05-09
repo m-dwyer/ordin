@@ -2,8 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { FakeRuntime, makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { HarnessContext } from "./harness-context";
+import { FakeRuntime } from "../../test/fixtures/agent-runtime";
+import { makeHarnessRoot } from "../../test/fixtures/harness-root";
+import { DefaultHarnessStateLoader } from "../runtime/default-harness-state-loader";
 import { PreviewRunUseCase } from "./preview-run";
 
 describe("PreviewRunUseCase", () => {
@@ -11,13 +12,13 @@ describe("PreviewRunUseCase", () => {
     const root = await makeHarnessRoot();
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-preview-repo-"));
     const runtime = new FakeRuntime();
-    const context = new HarnessContext({
+    const loader = new DefaultHarnessStateLoader({
       root,
       workflowName: "software-delivery",
       engineName: "mastra",
     });
 
-    const previews = await new PreviewRunUseCase(context).execute({
+    const previews = await new PreviewRunUseCase(loader).execute({
       task: "Preview the whole thing",
       slug: "preview-it",
       repoPath,

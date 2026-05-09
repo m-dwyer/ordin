@@ -6,7 +6,8 @@ import { OrdinHttpClient } from "../../src/client/http-client";
 import { createHttpApp } from "../../src/http/app";
 import { type RunningHttpServer, startHttpServer } from "../../src/http/server";
 import { RunService } from "../../src/run-service/run-service";
-import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime } from "../fixtures/agent-runtime";
+import { makeHarnessRoot } from "../fixtures/harness-root";
 
 describe("OrdinHttpClient (real server)", () => {
   let server: RunningHttpServer;

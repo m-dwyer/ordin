@@ -17,15 +17,22 @@ Conventions for agents (and humans) working **on** the ordin repo itself. ordin 
 cli/           client interface — only uses HarnessRuntime
                 tui/             OpenTUI + Solid run UI (controller + footer app + non-TTY sink)
                 gate-prompters/  CLI-side prompters (OpenTUI); CLI assembles its own gate resolver
-runtime/       HarnessRuntime implementation
+runtime/       composition root — HarnessRuntime facade + concrete adapter
+                implementations of application-layer ports (DefaultHarnessStateLoader,
+                DefaultRunExecution, DefaultRunExecutionFactory, worker-dispatch, etc.)
+application/   use cases (StartRun, PreviewRun, ListRuns, GetRun, VerifyAudit) and
+                ports/ (HarnessStateLoader, RunExecutionFactory). Production use cases
+                only depend on these ports; runtime news up the concrete impls.
 orchestrator/  Engine interface + PhaseRunner + RunStore
                 mastra/   MastraEngine — compiles Workflow → Mastra workflow
 gates/         Gate / GatePrompter interfaces + HumanGate / FileGate / AutoGate (pure business logic)
-runtimes/      AgentRuntime interface + ClaudeCliRuntime + ai-sdk/
-domain/        pure types + loaders + composer (no orchestrator, no runtime)
+worker/        sandboxed code path — runtimes (AgentRuntime impls) + locator
+infrastructure/ disk loaders only — config, agents, skills, projects, workflow YAML
+domain/        pure types + composer + slug rule (no orchestrator, no runtime)
+sandbox/       isolation primitive (leaf — depends on nothing else in src)
 ```
 
-**Dependency rule:** `orchestrator` imports from `domain` and `runtimes`. `domain` and `runtimes` depend on neither each other nor the orchestrator. `cli` only goes through `HarnessRuntime`. Targeted exception: `cli/gate-prompters/` legitimately imports from `gates/` and `domain/workflow.ts` to assemble the CLI's gate resolver. Enforced via `bun run deps:check` (dependency-cruiser) — run locally before commits; no CI enforcement yet.
+**Dependency rule:** `cli` only goes through `HarnessRuntime`. `HarnessRuntime` (in `runtime/`) is the composition root: it news up the concrete adapter implementations and injects them into the application-layer use cases. `application/` depends only on its own `ports/`, plus `domain/`, `gates/`, and `orchestrator/` types — never on `runtime/`, `cli/`, or `infrastructure/` (production code). `*.test.ts` co-located in `application/` are exempt and may wire real adapters end-to-end. `infrastructure/` adapts disk → domain and depends on nothing else above. `domain/` and `sandbox/` are leaves. Targeted exception: `cli/gate-prompters/` legitimately imports from `gates/` and `domain/workflow.ts` to assemble the CLI's gate resolver. Enforced via `bun run deps:check` (dependency-cruiser) — run locally before commits; no CI enforcement yet.
 
 **Engine seam.** `Engine` (in `src/orchestrator/engine.ts`) is the swap interface. `MastraEngine` is today's only implementation, backed by `@mastra/core/workflows`. A future `LangGraphEngine` or any other implementation lives behind the same interface — domain, runtimes, gates, composer, CLI, and YAML content stay unchanged.
 

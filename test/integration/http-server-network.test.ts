@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHttpApp } from "../../src/http/app";
 import { type RunningHttpServer, startHttpServer } from "../../src/http/server";
 import { RunService } from "../../src/run-service/run-service";
-import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime } from "../fixtures/agent-runtime";
+import { makeHarnessRoot } from "../fixtures/harness-root";
 
 /**
  * Real-port integration: exercises the @hono/node-server adapter that

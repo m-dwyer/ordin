@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest";
 import {
   dispatchFromRuntime,
   FakeRuntime,
-  makeHarnessRoot,
-} from "../../test/fixtures/harness-root";
+  makeStubRuntime,
+} from "../../test/fixtures/agent-runtime";
+import { makeHarnessRoot } from "../../test/fixtures/harness-root";
 import { AutoGate } from "../gates/auto";
-import type { AgentRuntime, InvokeResult } from "../worker/runtimes/types";
-import { HarnessContext } from "./harness-context";
+import { DefaultHarnessStateLoader } from "../runtime/default-harness-state-loader";
+import { DefaultRunExecutionFactory } from "../runtime/default-run-execution-factory";
+import type { AgentRuntime } from "../worker/runtimes/types";
 import { StartRunUseCase } from "./start-run";
 
 describe("StartRunUseCase", () => {
@@ -47,25 +49,7 @@ describe("StartRunUseCase", () => {
   });
 
   it("fails the phase when declared outputs are not written to disk", async () => {
-    const silentRuntime: AgentRuntime = {
-      name: "fake",
-      capabilities: {
-        nativeSkillDiscovery: false,
-        streaming: false,
-        mcpSupport: false,
-        maxContextTokens: 200_000,
-      },
-      async invoke(): Promise<InvokeResult> {
-        return {
-          status: "ok",
-          exitCode: 0,
-          transcriptPath: "/tmp/transcript.jsonl",
-          tokens: { input: 1, output: 2, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 1 },
-          durationMs: 5,
-        };
-      },
-    };
-    const { repoPath, useCase } = await makeUseCase(silentRuntime);
+    const { repoPath, useCase } = await makeUseCase(makeStubRuntime());
 
     const meta = await useCase.execute({
       task: "Should fail",
@@ -83,27 +67,8 @@ describe("StartRunUseCase", () => {
   });
 
   it("fails the phase before invoking the runtime when declared inputs are missing", async () => {
-    let invoked = 0;
-    const tripwireRuntime: AgentRuntime = {
-      name: "fake",
-      capabilities: {
-        nativeSkillDiscovery: false,
-        streaming: false,
-        mcpSupport: false,
-        maxContextTokens: 200_000,
-      },
-      async invoke(): Promise<InvokeResult> {
-        invoked++;
-        return {
-          status: "ok",
-          exitCode: 0,
-          transcriptPath: "/tmp/transcript.jsonl",
-          tokens: { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 },
-          durationMs: 0,
-        };
-      },
-    };
-    const { repoPath, useCase } = await makeUseCase(tripwireRuntime);
+    const runtime = makeStubRuntime();
+    const { repoPath, useCase } = await makeUseCase(runtime);
 
     const meta = await useCase.execute({
       task: "Skip plan",
@@ -113,7 +78,7 @@ describe("StartRunUseCase", () => {
       onlyPhases: ["build"],
     });
 
-    expect(invoked).toBe(0);
+    expect(runtime.invoke).not.toHaveBeenCalled();
     expect(meta.status).toBe("failed");
     expect(meta.phases[0]?.status).toBe("failed");
     expect(meta.phases[0]?.error).toMatch(/declared inputs that are missing on disk/);
@@ -126,21 +91,18 @@ describe("StartRunUseCase", () => {
 async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
   const root = await makeHarnessRoot();
   const repoPath = await mkdtemp(join(tmpdir(), "ordin-start-run-repo-"));
-  const context = new HarnessContext({
+  const loader = new DefaultHarnessStateLoader({
     root,
     workflowName: "software-delivery",
     engineName: "mastra",
+  });
+  const factory = new DefaultRunExecutionFactory({
+    dispatchPhaseOverride: dispatchFromRuntime(runtime),
   });
   return {
     root,
     repoPath,
     runtime,
-    useCase: new StartRunUseCase({
-      root,
-      workflowName: "software-delivery",
-      context,
-      dispatchPhaseOverride: dispatchFromRuntime(runtime),
-      gateResolver: () => new AutoGate(),
-    }),
+    useCase: new StartRunUseCase(loader, factory, () => new AutoGate(), root, "software-delivery"),
   };
 }

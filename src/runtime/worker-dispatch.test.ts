@@ -40,10 +40,12 @@ describe("prepareWorkerDispatch", () => {
     expect(received).toEqual([{ type: "assistant.text", text: "hello from worker" }]);
     expect(sandbox.spawned).toHaveLength(1);
     expect(sandbox.spawned[0]?.argv.at(-2)).toBe("--plan");
-    expect(sandbox.spawned[0]?.argv.at(-1)).toBe(dispatch.planPath);
+    const planPath = sandbox.spawned[0]?.argv.at(-1);
+    if (typeof planPath !== "string") throw new Error("expected --plan argv");
+    expect(planPath).toBe(join(runDir, "worker-plan-1.plan.json"));
     expect(sandbox.spawned[0]?.env["BASE"]).toBe("1");
 
-    const plan = JSON.parse(await readFile(dispatch.planPath, "utf8")) as {
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as {
       harnessRoot: string;
       workflowName: string;
       runsDir: string;
@@ -59,7 +61,7 @@ describe("prepareWorkerDispatch", () => {
       runId: "run-1",
       runtimeName: "scripted",
       runtimeConfig: { name: "scripted" },
-      resultPath: dispatch.resultPath,
+      resultPath: join(runDir, "worker-plan-1.result.json"),
     });
   });
 

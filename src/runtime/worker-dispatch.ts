@@ -17,8 +17,6 @@ export interface WorkerDispatchConfig {
 }
 
 export interface PreparedWorkerDispatch {
-  readonly planPath: string;
-  readonly resultPath: string;
   readonly invoke: (invokeReq: InvokeRequest) => Promise<InvokeResult>;
 }
 
@@ -45,8 +43,6 @@ export async function prepareWorkerDispatch(
   };
   await writeFile(planPath, JSON.stringify(plan));
   return {
-    planPath,
-    resultPath,
     invoke: (invokeReq) =>
       spawnWorkerInvoke({
         sandbox,
@@ -115,11 +111,9 @@ async function consumeRuntimeEvents(
       const parsed = JSON.parse(line) as RuntimeEvent;
       onEvent?.(parsed);
     } catch (err) {
-      console.warn(`[worker] dropped malformed event line: ${errMessage(err)}`);
+      console.warn(
+        `[worker] dropped malformed event line: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

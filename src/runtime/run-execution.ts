@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
+import type { RunExecution } from "../application/ports";
 import { Broker } from "../broker";
 import { AuditService } from "../broker/audit-service";
 import { InProcessBrokerClient } from "../broker/client/in-process";
@@ -24,11 +25,9 @@ export interface RunExecutionOptions {
   readonly root: string;
   readonly workflowName: string;
   readonly config: HarnessConfig;
-  readonly input: {
-    readonly projectName?: string;
-    readonly onEvent?: (event: RunEvent) => void;
-  };
   readonly workspaceRoot: string;
+  readonly projectName?: string;
+  readonly onEvent?: (event: RunEvent) => void;
   readonly dispatchPhaseOverride?: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
   readonly egressGatePrompter?: (req: {
     host: string;
@@ -40,21 +39,21 @@ export interface RunExecutionOptions {
 }
 
 /**
- * Per-run execution plumbing behind `HarnessRuntime`'s public interface.
- * Owns broker/audit/sandbox lifecycle and the phase dispatcher that
- * closes over that infrastructure.
+ * Per-run execution plumbing — the concrete adapter behind the
+ * application-layer `RunExecution` port. Owns broker/audit/sandbox
+ * lifecycle and the phase dispatcher that closes over that
+ * infrastructure. Constructed via `DefaultRunExecutionFactory.prepare`;
+ * use cases never `new` this class directly.
  */
-export class RunExecution {
+export class DefaultRunExecution implements RunExecution {
   private infra?: RunInfra;
   private tracingStarted = false;
 
-  private constructor(private readonly opts: RunExecutionOptions) {}
+  constructor(private readonly opts: RunExecutionOptions) {}
 
-  static async prepare(opts: RunExecutionOptions): Promise<RunExecution> {
-    const execution = new RunExecution(opts);
-    const egress = await execution.prepareEgressStore();
-    execution.infra = execution.buildInfra(egress);
-    return execution;
+  async prepareInfra(): Promise<void> {
+    const egress = await this.prepareEgressStore();
+    this.infra = this.buildInfra(egress);
   }
 
   get sandboxMode(): SandboxMode | undefined {
@@ -68,11 +67,13 @@ export class RunExecution {
       const audit = infra.audit;
       return (ev) => {
         audit.appendEvent({ runId: ev.runId, kind: ev.type, payload: ev }).catch((err: unknown) => {
-          console.warn(`[harness] audit append failed: ${errMessage(err)}`);
+          console.warn(
+            `[harness] audit append failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         });
       };
     }
-    return (ev) => this.opts.input.onEvent?.(ev);
+    return (ev) => this.opts.onEvent?.(ev);
   }
 
   dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
@@ -170,7 +171,7 @@ export class RunExecution {
   }
 
   private requireInfra(): RunInfra {
-    if (!this.infra) throw new Error("RunExecution used before prepare()");
+    if (!this.infra) throw new Error("DefaultRunExecution used before prepareInfra()");
     return this.infra;
   }
 
@@ -179,7 +180,7 @@ export class RunExecution {
     const ordinDir = dirname(this.opts.config.runStoreDir());
     const projectKey = EgressApprovalStore.projectKeyForWorkspace(
       this.opts.workspaceRoot,
-      this.opts.input.projectName,
+      this.opts.projectName,
     );
     const store = new EgressApprovalStore({ ordinDir, projectKey });
     const preApprovedHosts = await store.load();
@@ -192,7 +193,7 @@ export class RunExecution {
           await store.add(req.host, req.port);
         } catch (err) {
           console.warn(
-            `[harness] failed to persist egress approval for ${req.host}: ${errMessage(err)}`,
+            `[harness] failed to persist egress approval for ${req.host}: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
@@ -210,7 +211,7 @@ export class RunExecution {
       runStoreDir: this.opts.config.runStoreDir(),
       onEvent: (ev) => {
         if (ev.kind.startsWith("broker.")) return;
-        this.opts.input.onEvent?.(ev.payload as RunEvent);
+        this.opts.onEvent?.(ev.payload as RunEvent);
       },
     });
     const services = this.opts.config.localServices();
@@ -291,8 +292,4 @@ function resolveRuntimeConfig(name: string, slice: unknown): unknown {
     return { ...cur, bin: resolveClaudeBin(cur.bin) };
   }
   return slice;
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

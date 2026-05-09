@@ -12,9 +12,9 @@ import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import type { Sandbox, SandboxParams, SandboxReadiness } from "../sandbox";
 import type { WorkerHandle, WorkerPlan } from "../sandbox/types";
 import type { InvokeResult, RuntimeEvent } from "../worker/runtimes/types";
-import { RunExecution } from "./run-execution";
+import { DefaultRunExecutionFactory } from "./default-run-execution-factory";
 
-describe("RunExecution", () => {
+describe("DefaultRunExecution", () => {
   it("owns sandbox lifecycle and direct event fan-out for sandbox overrides", async () => {
     const root = await mkdtemp(join(tmpdir(), "ordin-run-execution-"));
     const runStoreDir = join(root, "runs");
@@ -23,13 +23,14 @@ describe("RunExecution", () => {
     const sandbox = new FakeSandbox();
     const events: RunEvent[] = [];
 
-    const execution = await RunExecution.prepare({
+    const execution = await new DefaultRunExecutionFactory({
+      sandboxOverride: sandbox,
+    }).prepare({
       root,
       workflowName: "software-delivery",
       config: config(runStoreDir),
-      input: { onEvent: (ev) => events.push(ev) },
+      onEvent: (ev: RunEvent) => events.push(ev),
       workspaceRoot,
-      sandboxOverride: sandbox,
     });
 
     expect(execution.sandboxMode).toBeUndefined();
@@ -53,14 +54,14 @@ describe("RunExecution", () => {
     const expected = phaseRunResult();
     const override = async () => expected;
 
-    const execution = await RunExecution.prepare({
+    const execution = await new DefaultRunExecutionFactory({
+      sandboxOverride: new FakeSandbox(),
+      dispatchPhaseOverride: override,
+    }).prepare({
       root,
       workflowName: "software-delivery",
       config: config(runStoreDir),
-      input: {},
       workspaceRoot,
-      sandboxOverride: new FakeSandbox(),
-      dispatchPhaseOverride: override,
     });
 
     expect(execution.dispatchPhase()).toBe(override);
@@ -79,13 +80,13 @@ describe("RunExecution", () => {
     });
     const emitted: RunEvent[] = [];
 
-    const execution = await RunExecution.prepare({
+    const execution = await new DefaultRunExecutionFactory({
+      sandboxOverride: sandbox,
+    }).prepare({
       root,
       workflowName: "software-delivery",
       config: config(runStoreDir),
-      input: {},
       workspaceRoot,
-      sandboxOverride: sandbox,
     });
 
     const result = await execution.dispatchPhase()(

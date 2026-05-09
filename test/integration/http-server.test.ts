@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { createHttpApp } from "../../src/http/app";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { RunService } from "../../src/run-service/run-service";
-import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime } from "../fixtures/agent-runtime";
+import { makeHarnessRoot } from "../fixtures/harness-root";
 
 describe("HTTP app (in-process)", () => {
   it("serves a valid OpenAPI 3.0 document at /openapi.json", async () => {

@@ -6,7 +6,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createMcpServer } from "../../src/mcp/server";
 import { RunService } from "../../src/run-service/run-service";
-import { dispatchFromRuntime, FakeRuntime, makeHarnessRoot } from "../fixtures/harness-root";
+import { dispatchFromRuntime, FakeRuntime } from "../fixtures/agent-runtime";
+import { makeHarnessRoot } from "../fixtures/harness-root";
 
 /**
  * In-process MCP transport via `InMemoryTransport.createLinkedPair`.
