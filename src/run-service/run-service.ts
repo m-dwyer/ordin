@@ -1,3 +1,4 @@
+import type { VerifyResult } from "../broker/audit-chain";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
 import { gateResolverFor } from "../gates/resolver";
@@ -26,8 +27,13 @@ import { EventBus } from "./event-bus";
  *
  * Status is not tracked here — `RunMeta` (filesystem-backed via
  * `RunStore`) is the single source of truth and is read on demand.
+ *
+ * `gateForKind` is intentionally omitted from `RunServiceOptions`: the
+ * service installs its own resolver wired to the deferred prompter so
+ * HTTP/MCP clients can decide gates out-of-band, and a caller-supplied
+ * resolver would be silently overwritten.
  */
-export type RunServiceOptions = HarnessRuntimeOptions;
+export type RunServiceOptions = Omit<HarnessRuntimeOptions, "gateForKind">;
 
 export type StartRunRequest = Omit<StartRunInput, "onEvent">;
 
@@ -120,6 +126,10 @@ export class RunService {
 
   listRuns(): Promise<RunMeta[]> {
     return this.harness.listRuns();
+  }
+
+  verifyAudit(runId: string): Promise<VerifyResult> {
+    return this.harness.verifyAudit(runId);
   }
 
   workflowDefinition(): Promise<WorkflowManifest> {
