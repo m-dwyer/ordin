@@ -1,39 +1,22 @@
-import { readFile, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type VerifyResult, verifyChainText } from "../broker/audit-chain";
-import type { Agent } from "../domain/agent";
-import type { HarnessConfig } from "../domain/config";
+import { HarnessContext, type HarnessPaths } from "../application/harness-context";
+import { PreviewRunUseCase } from "../application/preview-run";
+import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "../application/run-queries";
+import { StartRunUseCase } from "../application/start-run";
+import type { StartRunInput } from "../application/types";
+import type { VerifyResult } from "../broker/audit-chain";
 import type { PhasePreview } from "../domain/phase-preview";
-import type { ProjectRegistry } from "../domain/project";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
 import { AutoGate } from "../gates/auto";
-import type { Gate, GateDecision } from "../gates/types";
-import { AgentLoader } from "../infrastructure/agent-loader";
-import { HarnessConfigLoader } from "../infrastructure/config-loader";
-import { ProjectRegistryLoader } from "../infrastructure/project-loader";
-import { SkillLoader } from "../infrastructure/skill-loader";
-import { WorkflowLoader } from "../infrastructure/workflow-loader";
-import {
-  type Engine,
-  EngineRegistry,
-  type EngineRunInput,
-  type EngineServices,
-  type GateRequest,
-  type PhaseDispatchRequest,
-  type PreviewInput,
-  type PreviewServices,
-  type WorkflowProgram,
-} from "../orchestrator/engine";
-import type { RunEvent } from "../orchestrator/events";
-import { MastraEngine } from "../orchestrator/mastra";
+import type { Gate } from "../gates/types";
+import type { Engine, PhaseDispatchRequest } from "../orchestrator/engine";
 import type { PhaseRunResult } from "../orchestrator/phase-runner";
-import { type RunMeta, RunStore } from "../orchestrator/run-store";
+import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
-import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
-import { RunExecution } from "./run-execution";
 
+export type { StartRunInput } from "../application/types";
 export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
 export type { PhasePreview } from "../domain/phase-preview";
@@ -107,42 +90,10 @@ export interface HarnessRuntimeOptions {
   readonly scriptPath?: string;
 }
 
-export interface StartRunInput {
-  readonly task: string;
-  readonly slug: string;
-  readonly projectName?: string;
-  readonly repoPath?: string;
-  readonly tier?: "S" | "M" | "L";
-  readonly onEvent?: (event: RunEvent) => void;
-  /** Begin at this phase; earlier phases are skipped. */
-  readonly startAt?: string;
-  /** Run only these phases (in workflow order). Overrides startAt. */
-  readonly onlyPhases?: readonly string[];
-  readonly abortSignal?: AbortSignal;
-}
-
-interface LoadedState {
-  readonly config: HarnessConfig;
-  readonly workflow: WorkflowManifest;
-  readonly agents: ReadonlyMap<string, Agent>;
-  readonly projects: ProjectRegistry;
-  readonly runStore: RunStore;
-}
-
-interface PreparedRun {
-  readonly state: LoadedState;
-  readonly engine: Engine;
-  readonly program: WorkflowProgram;
-  readonly slug: string;
-  readonly workspaceRoot: string;
-}
-
 export class HarnessRuntime {
-  private loaded?: LoadedState;
-
   private readonly root: string;
   private readonly workflowName: string;
-  private readonly engineName: string;
+  private readonly context: HarnessContext;
   private readonly dispatchPhaseOverride?: (
     request: PhaseDispatchRequest,
   ) => Promise<PhaseRunResult>;
@@ -151,58 +102,50 @@ export class HarnessRuntime {
     host: string;
     port: number | undefined;
   }) => Promise<boolean>;
-  private readonly engines: EngineRegistry;
   private readonly sandboxOverride?: Sandbox;
   private readonly sandboxModeOverride?: SandboxMode;
   private readonly scriptPathOverride?: string;
+  private readonly startRunUseCase: StartRunUseCase;
+  private readonly previewRunUseCase: PreviewRunUseCase;
+  private readonly listRunsUseCase: ListRunsUseCase;
+  private readonly getRunUseCase: GetRunUseCase;
+  private readonly verifyAuditUseCase: VerifyAuditUseCase;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
     this.root = opts.root ?? defaultRoot();
     this.workflowName = opts.workflow ?? "software-delivery";
-    this.engineName = opts.engine ?? "mastra";
     if (opts.dispatchPhase) this.dispatchPhaseOverride = opts.dispatchPhase;
     this.gateResolver = opts.gateForKind ?? defaultGateResolver;
     if (opts.egressGatePrompter) this.egressGatePrompter = opts.egressGatePrompter;
-    this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
     this.sandboxOverride = opts.sandbox;
     this.sandboxModeOverride = opts.sandboxMode;
     this.scriptPathOverride = opts.scriptPath;
-  }
-
-  async startRun(input: StartRunInput): Promise<RunMeta> {
-    const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
-    const execution = await RunExecution.prepare({
+    this.context = new HarnessContext({
       root: this.root,
       workflowName: this.workflowName,
-      config: state.config,
-      input,
-      workspaceRoot,
+      engineName: opts.engine ?? "mastra",
+      ...(opts.engines ? { engines: opts.engines } : {}),
+      ...(this.sandboxModeOverride ? { sandboxModeOverride: this.sandboxModeOverride } : {}),
+    });
+    this.startRunUseCase = new StartRunUseCase({
+      root: this.root,
+      workflowName: this.workflowName,
+      context: this.context,
+      gateResolver: this.gateResolver,
       ...(this.dispatchPhaseOverride ? { dispatchPhaseOverride: this.dispatchPhaseOverride } : {}),
       ...(this.egressGatePrompter ? { egressGatePrompter: this.egressGatePrompter } : {}),
       ...(this.sandboxOverride ? { sandboxOverride: this.sandboxOverride } : {}),
       ...(this.sandboxModeOverride ? { sandboxModeOverride: this.sandboxModeOverride } : {}),
       ...(this.scriptPathOverride ? { scriptPathOverride: this.scriptPathOverride } : {}),
     });
-    try {
-      await execution.enter();
-      const onEvent = execution.onEvent();
-      const runInput: EngineRunInput = {
-        task: input.task,
-        slug,
-        workspaceRoot,
-        tier: input.tier ?? "M",
-        ...(execution.sandboxMode ? { sandboxMode: execution.sandboxMode } : {}),
-        ...(input.startAt ? { startAt: input.startAt } : {}),
-        ...(input.onlyPhases ? { onlyPhases: input.onlyPhases } : {}),
-        onGateRequested: (request) => this.handleGateRequest(request),
-        onEvent,
-        dispatchPhase: execution.dispatchPhase(),
-        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-      };
-      return await engine.run(program, runInput, this.engineServices(state));
-    } finally {
-      await execution.dispose();
-    }
+    this.previewRunUseCase = new PreviewRunUseCase(this.context);
+    this.listRunsUseCase = new ListRunsUseCase(this.context);
+    this.getRunUseCase = new GetRunUseCase(this.context);
+    this.verifyAuditUseCase = new VerifyAuditUseCase(this.context);
+  }
+
+  async startRun(input: StartRunInput): Promise<RunMeta> {
+    return this.startRunUseCase.execute(input);
   }
 
   /**
@@ -212,28 +155,15 @@ export class HarnessRuntime {
    * `startAt`, project resolution, slug validation).
    */
   async previewRun(input: StartRunInput): Promise<readonly PhasePreview[]> {
-    const { state, engine, program, slug, workspaceRoot } = await this.prepareRun(input);
-    const previewInput: PreviewInput = {
-      task: input.task,
-      slug,
-      workspaceRoot,
-      tier: input.tier ?? "M",
-    };
-    const previewServices: PreviewServices = {
-      config: state.config,
-      agents: state.agents,
-    };
-    return engine.preview(program, previewInput, previewServices);
+    return this.previewRunUseCase.execute(input);
   }
 
   async listRuns(): Promise<RunMeta[]> {
-    const { runStore } = await this.load();
-    return runStore.listRuns();
+    return this.listRunsUseCase.execute();
   }
 
   async getRun(runId: string): Promise<RunMeta> {
-    const { runStore } = await this.load();
-    return runStore.readMeta(runId);
+    return this.getRunUseCase.execute(runId);
   }
 
   /**
@@ -242,22 +172,17 @@ export class HarnessRuntime {
    * pure verifier produces; the CLI layer renders it.
    */
   async verifyAudit(runId: string): Promise<VerifyResult> {
-    const { runStore } = await this.load();
-    const path = join(runStore.runDir(runId), "audit.jsonl");
-    const text = await readFile(path, "utf8");
-    return verifyChainText(text);
+    return this.verifyAuditUseCase.execute(runId);
   }
 
   async workflowDefinition(): Promise<WorkflowManifest> {
-    const { workflow } = await this.load();
-    return workflow;
+    return this.context.workflowDefinition();
   }
 
   async resolveRunWorkspace(
     input: Pick<StartRunInput, "projectName" | "repoPath">,
   ): Promise<string> {
-    const { projects } = await this.load();
-    return this.resolveWorkspaceRoot(input as StartRunInput, projects);
+    return this.context.resolveRunWorkspace(input);
   }
 
   /**
@@ -266,107 +191,12 @@ export class HarnessRuntime {
    * doctor command for diagnostic reporting.
    */
   async sandboxMode(): Promise<SandboxMode> {
-    if (this.sandboxModeOverride) return this.sandboxModeOverride;
-    const { config } = await this.load();
-    return config.sandboxMode();
+    return this.context.sandboxMode();
   }
 
   /** Paths ordin knows about — useful for the CLI `doctor` command. */
   paths(): HarnessPaths {
-    return {
-      root: this.root,
-      configFile: join(this.root, "ordin.config.yaml"),
-      workflowFile: join(this.root, "workflows", `${this.workflowName}.yaml`),
-      agentsDir: join(this.root, "agents"),
-      skillsDir: join(this.root, "skills"),
-      projectsFile: join(this.root, "projects.yaml"),
-      projectsLocalFile: join(this.root, "projects.local.yaml"),
-    };
-  }
-
-  private async prepareRun(input: StartRunInput): Promise<PreparedRun> {
-    const state = await this.load();
-    const slug = requireSlug(input.slug);
-    const workspaceRoot = await this.resolveWorkspaceRoot(input, state.projects);
-    const engine = this.engines.get(this.engineName);
-    const program = engine.compile(this.workflowForRun(state.workflow, input));
-    return { state, engine, program, slug, workspaceRoot };
-  }
-
-  private async load(): Promise<LoadedState> {
-    if (this.loaded) return this.loaded;
-    const paths = this.paths();
-    const configLoader = new HarnessConfigLoader();
-    const projectLoader = new ProjectRegistryLoader();
-    const [config, workflow, skills, projects] = await Promise.all([
-      configLoader.load(paths.configFile),
-      new WorkflowLoader().load(paths.workflowFile),
-      new SkillLoader().loadAll(paths.skillsDir),
-      projectLoader.load(paths.projectsFile, paths.projectsLocalFile),
-    ]);
-    const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
-    this.loaded = {
-      config,
-      workflow,
-      agents,
-      projects,
-      runStore: new RunStore(config.runStoreDir()),
-    };
-    return this.loaded;
-  }
-
-  private async resolveWorkspaceRoot(
-    input: StartRunInput,
-    projects: ProjectRegistry,
-  ): Promise<string> {
-    if (input.repoPath && input.projectName) {
-      throw new Error(
-        "startRun accepts either `projectName` (registry) or `repoPath`, not both — " +
-          "pick the one that names the workspace you mean to run against.",
-      );
-    }
-    const workspaceRoot = input.repoPath
-      ? resolve(input.repoPath)
-      : input.projectName
-        ? projects.get(input.projectName).path
-        : undefined;
-    if (!workspaceRoot) {
-      throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
-    }
-    await assertWorkspaceDirectory(workspaceRoot);
-    return workspaceRoot;
-  }
-
-  private workflowForRun(workflow: WorkflowManifest, input: StartRunInput): WorkflowManifest {
-    if (input.onlyPhases) return workflow.only(input.onlyPhases);
-    if (input.startAt) return workflow.startingAt(input.startAt);
-    return workflow;
-  }
-
-  private engineServices(state: LoadedState): EngineServices {
-    return {
-      config: state.config,
-      agents: state.agents,
-      runtimeNames: new Set(KNOWN_RUNTIME_NAMES),
-      runStore: state.runStore,
-    };
-  }
-
-  /**
-   * Adapts the engine's gate-agnostic `GateRequest` to whichever
-   * `Gate` impl the harness has wired for the requested kind. Engine
-   * doesn't know about `Gate`, `clack`, `AutoGate`, etc. — that
-   * vocabulary stops here at the harness boundary.
-   */
-  private async handleGateRequest(request: GateRequest): Promise<GateDecision> {
-    const gate = this.gateResolver(request.gateKind);
-    return gate.request({
-      runId: request.runId,
-      phaseId: request.phaseId,
-      cwd: request.cwd,
-      artefacts: request.artefacts,
-      summary: request.summary,
-    });
+    return this.context.paths();
   }
 }
 
@@ -395,41 +225,7 @@ function defaultGateResolver(kind: Phase["gate"]): Gate {
   }
 }
 
-export interface HarnessPaths {
-  readonly root: string;
-  readonly configFile: string;
-  readonly workflowFile: string;
-  readonly agentsDir: string;
-  readonly skillsDir: string;
-  readonly projectsFile: string;
-  readonly projectsLocalFile: string;
-}
-
-function requireSlug(slug: string): string {
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
-    throw new Error(`Invalid slug "${slug}": use lowercase kebab-case (e.g. "add-user-search")`);
-  }
-  return slug;
-}
-
 function defaultRoot(): string {
   // Walk up from this file: src/runtime/harness.ts → src/runtime → src → root.
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-}
-
-async function assertWorkspaceDirectory(path: string): Promise<void> {
-  let info: Awaited<ReturnType<typeof stat>>;
-  try {
-    info = await stat(path);
-  } catch (err) {
-    const code =
-      typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-    if (code === "ENOENT") {
-      throw new Error(`Workspace path does not exist: ${path}`);
-    }
-    throw err;
-  }
-  if (!info.isDirectory()) {
-    throw new Error(`Workspace path is not a directory: ${path}`);
-  }
 }
