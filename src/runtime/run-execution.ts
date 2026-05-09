@@ -4,7 +4,6 @@ import type { RunExecution } from "../application/ports";
 import { Broker } from "../broker";
 import { AuditService } from "../broker/audit-service";
 import { InProcessBrokerClient } from "../broker/client/in-process";
-import { deriveToolPolicy } from "../broker/client/tool-authority";
 import type { BrokerClient } from "../broker/client/types";
 import { BrokerDispatch } from "../broker/dispatch";
 import { makeToolServiceHandler } from "../broker/tool-service";
@@ -12,13 +11,18 @@ import type { HarnessConfig, SandboxMode } from "../domain/config";
 import { shutdownTracing, startTracing } from "../observability/tracing";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
-import { PhaseRunner, type PhaseRunResult } from "../orchestrator/phase-runner";
+import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import { selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
-import { buildRuntime } from "../worker/runtimes/registry";
 import { type EgressApproval, EgressApprovalStore } from "./egress-store";
+import {
+  InProcessInvokeSource,
+  PhaseDispatcher,
+  type RuntimeContext,
+  SandboxedInvokeSource,
+  type WorkerInvokeSource,
+} from "./phase-dispatcher";
 import { resolveClaudeBin } from "./resolve-claude-bin";
-import { prepareWorkerDispatch } from "./worker-dispatch";
 import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
 
 export interface RunExecutionOptions {
@@ -41,9 +45,9 @@ export interface RunExecutionOptions {
 /**
  * Per-run execution plumbing — the concrete adapter behind the
  * application-layer `RunExecution` port. Owns broker/audit/sandbox
- * lifecycle and the phase dispatcher that closes over that
- * infrastructure. Constructed via `DefaultRunExecutionFactory.prepare`;
- * use cases never `new` this class directly.
+ * lifecycle and constructs the `PhaseDispatcher` that drives each phase.
+ * Constructed via `DefaultRunExecutionFactory.prepare`; use cases never
+ * `new` this class directly.
  */
 export class DefaultRunExecution implements RunExecution {
   private infra?: RunInfra;
@@ -75,67 +79,23 @@ export class DefaultRunExecution implements RunExecution {
     if (this.opts.dispatchPhaseOverride) return this.opts.dispatchPhaseOverride;
 
     const infra = this.requireInfra();
-    const harnessRoot = this.opts.root;
-    const workflowName = this.opts.workflowName;
-    const scriptPath = this.opts.scriptPathOverride;
-    const config = this.opts.config;
-
+    const ctx: RuntimeContext = {
+      harnessRoot: this.opts.root,
+      workflowName: this.opts.workflowName,
+      runsDir: this.opts.config.runStoreDir(),
+      scriptPath: this.opts.scriptPathOverride,
+      runtimeConfigFor: (name) => resolveRuntimeConfig(name, this.opts.config.runtimeConfig(name)),
+    };
     // Only `passthrough` runs in-process. `claude-self` and `srt` both
     // need subprocess isolation: the worker's env carries the broker's
     // proxy URL (`buildWorkerEnv`) which we don't want leaking into the
     // harness process for the rest of its lifetime.
-    if (infra.mode === "passthrough") {
-      const { brokerClient, brokerDispatch } = infra;
-      return async (req) => {
-        const runtimeConfig = resolveRuntimeConfig(
-          req.runtimeName,
-          config.runtimeConfig(req.runtimeName),
-        );
-        return runWithPhaseAcl(brokerDispatch, req, () =>
-          new PhaseRunner().run({
-            preview: req.preview,
-            runtimeName: req.runtimeName,
-            context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
-            emit: req.emit,
-            invoke: async (invokeReq) => {
-              const runtime = await buildRuntime(req.runtimeName, runtimeConfig, {
-                harnessRoot,
-                workflowName,
-                runsDir: config.runStoreDir(),
-                ...(scriptPath ? { scriptPath } : {}),
-                broker: brokerClient,
-              });
-              return runtime.invoke(invokeReq);
-            },
-            ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-          }),
-        );
-      };
-    }
-
-    const { sandbox, brokerDispatch } = infra;
-    const workerEnv = buildWorkerEnv(infra, process.env);
-    return async (req) => {
-      const worker = await prepareWorkerDispatch(sandbox, req, {
-        harnessRoot,
-        workflowName,
-        ...(scriptPath ? { scriptPath } : {}),
-        runsDir: config.runStoreDir(),
-        workerEnv,
-        runtimeConfigFor: (runtimeName) =>
-          resolveRuntimeConfig(runtimeName, config.runtimeConfig(runtimeName)),
-      });
-      return runWithPhaseAcl(brokerDispatch, req, () =>
-        new PhaseRunner().run({
-          preview: req.preview,
-          runtimeName: req.runtimeName,
-          context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
-          emit: req.emit,
-          invoke: worker.invoke,
-          ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
-        }),
-      );
-    };
+    const source: WorkerInvokeSource =
+      infra.mode === "passthrough"
+        ? new InProcessInvokeSource(ctx, infra.brokerClient)
+        : new SandboxedInvokeSource(infra.sandbox, ctx, buildWorkerEnv(infra, process.env));
+    const dispatcher = new PhaseDispatcher(source, infra.brokerDispatch);
+    return (req) => dispatcher.dispatch(req);
   }
 
   async enter(): Promise<void> {
@@ -239,25 +199,6 @@ interface RunInfra {
   readonly brokerDispatch: BrokerDispatch;
   readonly audit: AuditService;
   readonly services: Readonly<Record<string, unknown>>;
-}
-
-async function runWithPhaseAcl<T>(
-  brokerDispatch: BrokerDispatch,
-  req: PhaseDispatchRequest,
-  body: () => Promise<T>,
-): Promise<T> {
-  const { runId, preview } = req;
-  const { phaseId } = preview.prompt;
-  const policy = deriveToolPolicy({
-    allowedTools: preview.prompt.tools,
-    hasSkills: preview.prompt.skills.length > 0,
-  });
-  brokerDispatch.registerPhase(runId, phaseId, policy);
-  try {
-    return await body();
-  } finally {
-    brokerDispatch.releasePhase(runId, phaseId);
-  }
 }
 
 function startParentTracing(infra: RunInfra): boolean {
