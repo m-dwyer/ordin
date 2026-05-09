@@ -34,9 +34,9 @@ tiers:
 
   it("exposes opaque runtime config slices for validation by each runtime", async () => {
     const path = await tempConfig(
-      `default_runtime: claude-cli
+      `default_runtime: claude-cli-provider
 runtimes:
-  claude-cli:
+  claude-cli-provider:
     bin: /usr/local/bin/claude
     phases:
       plan: { fallback_model: claude-sonnet-4-6, max_turns: 60 }
@@ -46,8 +46,8 @@ runtimes:
     );
     const config = await new HarnessConfigLoader().load(path);
 
-    expect(config.defaultRuntime).toBe("claude-cli");
-    expect(config.runtimeConfig("claude-cli")).toEqual({
+    expect(config.defaultRuntime).toBe("claude-cli-provider");
+    expect(config.runtimeConfig("claude-cli-provider")).toEqual({
       bin: "/usr/local/bin/claude",
       phases: { plan: { fallback_model: "claude-sonnet-4-6", max_turns: 60 } },
     });

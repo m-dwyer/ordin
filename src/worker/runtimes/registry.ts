@@ -16,9 +16,9 @@ export interface RuntimeBuildContext {
   readonly scriptPath?: string;
   /**
    * Broker client passed to runtimes that route tool dispatch through
-   * the broker (ADR-016). `claude-cli` ignores it (Claude Code's own
-   * tools execute inside that subprocess). Required for the others
-   * because tool dispatch authority lives broker-side.
+   * the broker (ADR-016). All runtimes route tools broker-side; the
+   * field is optional only because `RuntimeBuildContext` is constructed
+   * before sandbox/dispatch is decided.
    */
   readonly broker?: BrokerClient;
 }
@@ -31,18 +31,13 @@ export interface RuntimeBuildContext {
  * parent's job.
  *
  * Adapters are loaded via dynamic `import()` so the worker bundle
- * doesn't pay for unused runtimes. A claude-cli workflow never loads
- * Vercel AI SDK; an ai-sdk workflow never loads the claude-cli stream
- * parser.
+ * doesn't pay for unused runtimes. A claude-cli-provider workflow
+ * never loads Vercel AI SDK; an ai-sdk workflow never loads the
+ * claude-cli stream parser.
  *
  * Names match the strings that workflow YAML uses in `runtime:` fields.
  */
-export const KNOWN_RUNTIME_NAMES = [
-  "ai-sdk",
-  "claude-cli",
-  "claude-cli-provider",
-  "scripted",
-] as const;
+export const KNOWN_RUNTIME_NAMES = ["ai-sdk", "claude-cli-provider", "scripted"] as const;
 export type KnownRuntimeName = (typeof KNOWN_RUNTIME_NAMES)[number];
 
 export async function buildRuntime(
@@ -57,13 +52,6 @@ export async function buildRuntime(
         runsDir: ctx.runsDir,
         broker: requireBroker(ctx, "ai-sdk"),
         mastraTracing: buildMastraTracingContainer,
-      });
-    }
-    case "claude-cli": {
-      const { ClaudeCliRuntime } = await import("./claude-cli");
-      return ClaudeCliRuntime.fromConfig(configSlice, {
-        pluginDirs: [ctx.harnessRoot],
-        runsDirFallback: ctx.runsDir,
       });
     }
     case "claude-cli-provider": {

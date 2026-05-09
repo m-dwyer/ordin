@@ -1,6 +1,6 @@
 ---
 name: reviewer
-runtime: claude-cli
+runtime: claude-cli-provider
 description: Independent review of a built change against its RFC
 skills: [review-rubric]
 ---

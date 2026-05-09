@@ -43,7 +43,7 @@ describe("nonTtyRunSession", () => {
       phaseId: "plan",
       iteration: 1,
       model: "claude-sonnet-4-6",
-      runtime: "claude-cli",
+      runtime: "claude-cli-provider",
     });
     expect(lines()).toEqual(["▶ plan — claude-sonnet-4-6"]);
   });
@@ -56,7 +56,7 @@ describe("nonTtyRunSession", () => {
       phaseId: "build",
       iteration: 3,
       model: "claude-sonnet-4-6",
-      runtime: "claude-cli",
+      runtime: "claude-cli-provider",
     });
     expect(lines()).toEqual(["▶ build (iteration 3) — claude-sonnet-4-6"]);
   });
@@ -230,7 +230,7 @@ describe("nonTtyRunSession", () => {
         phaseId: "plan",
         iteration: 1,
         model: "claude-sonnet-4-6",
-        runtime: "claude-cli",
+        runtime: "claude-cli-provider",
       },
       {
         type: "agent.tool.use",
@@ -273,7 +273,7 @@ describe("nonTtyRunSession", () => {
         phaseId: "build",
         iteration: 1,
         model: "claude-sonnet-4-6",
-        runtime: "claude-cli",
+        runtime: "claude-cli-provider",
       },
       {
         type: "agent.tool.use",

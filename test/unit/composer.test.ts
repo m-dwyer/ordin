@@ -6,14 +6,14 @@ import type { Phase } from "../../src/domain/workflow";
 const phase: Phase = {
   id: "plan",
   agent: "planner",
-  runtime: "claude-cli",
+  runtime: "claude-cli-provider",
   gate: "human",
   fresh_context: true,
 };
 
 const agent: Agent = {
   name: "planner",
-  runtime: "claude-cli",
+  runtime: "claude-cli-provider",
   body: "You are a planner.",
   source: "/tmp/agents/planner.md",
   skills: [],

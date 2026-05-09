@@ -58,7 +58,7 @@ function phaseStarted(phaseId: string, iteration = 1, model = "claude-sonnet-4-6
     phaseId,
     iteration,
     model,
-    runtime: "claude-cli",
+    runtime: "claude-cli-provider",
   };
 }
 

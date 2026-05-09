@@ -16,12 +16,12 @@ describe("AgentLoader.loadAll", () => {
     const dir = await tempDir();
     await writeFile(
       join(dir, "planner.md"),
-      "---\nname: planner\nruntime: claude-cli\n---\n\nplan body\n",
+      "---\nname: planner\nruntime: claude-cli-provider\n---\n\nplan body\n",
       "utf8",
     );
     await writeFile(
       join(dir, "builder.md"),
-      "---\nname: build-local\nruntime: claude-cli\n---\n\nbuild body\n",
+      "---\nname: build-local\nruntime: claude-cli-provider\n---\n\nbuild body\n",
       "utf8",
     );
     // non-.md files and dotfiles should be ignored
@@ -37,12 +37,12 @@ describe("AgentLoader.loadAll", () => {
     const dir = await tempDir();
     await writeFile(
       join(dir, "a.md"),
-      "---\nname: dup\nruntime: claude-cli\n---\n\nbody\n",
+      "---\nname: dup\nruntime: claude-cli-provider\n---\n\nbody\n",
       "utf8",
     );
     await writeFile(
       join(dir, "b.md"),
-      "---\nname: dup\nruntime: claude-cli\n---\n\nbody\n",
+      "---\nname: dup\nruntime: claude-cli-provider\n---\n\nbody\n",
       "utf8",
     );
     await expect(loader.loadAll(dir, new Map())).rejects.toThrow(/Duplicate agent name "dup"/);
@@ -52,7 +52,7 @@ describe("AgentLoader.loadAll", () => {
     const dir = await tempDir();
     await writeFile(
       join(dir, "planner.md"),
-      "---\nname: planner\nruntime: claude-cli\nskills: [rfc-template]\n---\n\nplan body\n",
+      "---\nname: planner\nruntime: claude-cli-provider\nskills: [rfc-template]\n---\n\nplan body\n",
       "utf8",
     );
     const registry = new Map([
@@ -74,7 +74,7 @@ describe("AgentLoader.loadAll", () => {
     const dir = await tempDir();
     await writeFile(
       join(dir, "planner.md"),
-      "---\nname: planner\nruntime: claude-cli\nskills: [nope]\n---\n\nbody\n",
+      "---\nname: planner\nruntime: claude-cli-provider\nskills: [nope]\n---\n\nbody\n",
       "utf8",
     );
     await expect(loader.loadAll(dir, new Map())).rejects.toThrow(/references unknown skill "nope"/);

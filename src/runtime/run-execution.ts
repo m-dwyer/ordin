@@ -207,7 +207,7 @@ function startParentTracing(infra: RunInfra): boolean {
 }
 
 function resolveRuntimeConfig(name: string, slice: unknown): unknown {
-  if (name === "claude-cli" || name === "claude-cli-provider") {
+  if (name === "claude-cli-provider") {
     const cur = (slice ?? {}) as { bin?: string };
     return { ...cur, bin: resolveClaudeBin(cur.bin) };
   }

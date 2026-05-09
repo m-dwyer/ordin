@@ -15,7 +15,6 @@ import type {
   LanguageModelV2Usage,
 } from "@ai-sdk/provider-v5";
 import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
-import { effortForTier } from "./claude-cli";
 import {
   type ClaudeToolCall,
   interpretClaudeStreamLine,
@@ -24,7 +23,7 @@ import {
   type ProviderSpawner,
   ProviderTimeoutError,
 } from "./claude-stream";
-import type { TokenUsage } from "./types";
+import type { RuntimeFailure, RuntimeFailureKind, TokenUsage } from "./types";
 
 /**
  * `LanguageModelV2` adapter that drives `claude -p --output-format
@@ -498,4 +497,53 @@ function usageToV2(tokens: TokenUsage): LanguageModelV2Usage {
     totalTokens: tokens.input + tokens.output,
     cachedInputTokens: tokens.cacheReadInput,
   };
+}
+
+/**
+ * Tier → Claude `--effort` mapping. Domain exposes the neutral `tier`
+ * hint; this module maps it to Claude Code's effort levels.
+ */
+export function effortForTier(tier: "S" | "M" | "L"): "low" | "medium" | "high" {
+  switch (tier) {
+    case "S":
+      return "low";
+    case "M":
+      return "medium";
+    case "L":
+      return "high";
+  }
+}
+
+export interface ClassifyInput {
+  readonly exitCode: number;
+  readonly signal: NodeJS.Signals | null;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+}
+
+export function classifyFailure(input: ClassifyInput): RuntimeFailure {
+  const { exitCode, signal, stderr, timedOut } = input;
+  const message = stderr || (signal ? `killed by ${signal}` : `exit ${exitCode}`);
+
+  if (timedOut) return { kind: "timeout", message, retryable: true };
+  if (signal) return { kind: "crash", message, retryable: false };
+
+  const lower = stderr.toLowerCase();
+  const matchAny = (patterns: readonly string[]): boolean =>
+    patterns.some((p) => lower.includes(p));
+
+  const kind: RuntimeFailureKind = matchAny(["rate limit", "rate_limit", "529", "overloaded"])
+    ? "rate_limit"
+    : matchAny(["invalid api key", "unauthorized", "unauthenticated", "401"])
+      ? "auth"
+      : matchAny(["not in allowed-tools", "tool not allowed", "disallowed tool", "is not allowed"])
+        ? "tool"
+        : matchAny(["model not found", "unknown model", "invalid model"])
+          ? "model"
+          : matchAny(["timed out", "timeout"])
+            ? "timeout"
+            : "unknown";
+
+  const retryable = kind === "rate_limit" || kind === "timeout";
+  return { kind, message, retryable };
 }

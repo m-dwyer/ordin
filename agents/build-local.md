@@ -1,6 +1,6 @@
 ---
 name: build-local
-runtime: claude-cli
+runtime: claude-cli-provider
 description: Turns an approved RFC into a PR-ready branch
 skills: [build-notes-template, engineering-principles]
 ---

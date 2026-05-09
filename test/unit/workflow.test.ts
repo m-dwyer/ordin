@@ -21,9 +21,9 @@ describe("WorkflowLoader", () => {
       `name: t
 version: 1
 phases:
-  - { id: plan, agent: p, runtime: claude-cli, gate: human }
-  - { id: build, agent: b, runtime: claude-cli, gate: human }
-  - { id: review, agent: r, runtime: claude-cli, gate: human, on_reject: { goto: build, max_iterations: 2 } }
+  - { id: plan, agent: p, runtime: claude-cli-provider, gate: human }
+  - { id: build, agent: b, runtime: claude-cli-provider, gate: human }
+  - { id: review, agent: r, runtime: claude-cli-provider, gate: human, on_reject: { goto: build, max_iterations: 2 } }
 `,
     );
     const wf = await loader.load(path);
@@ -40,7 +40,7 @@ version: 1
 runtime: ai-sdk
 phases:
   - { id: plan, agent: p, gate: human }
-  - { id: review, agent: r, runtime: claude-cli, gate: human }
+  - { id: review, agent: r, runtime: claude-cli-provider, gate: human }
 `,
     );
     const wf = await loader.load(path);
@@ -48,7 +48,7 @@ phases:
     expect(wf.runtime).toBe("ai-sdk");
     expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, undefined, "fallback")).toBe("ai-sdk");
     expect(resolvePhaseRuntime(wf.findPhase("review"), wf, undefined, "fallback")).toBe(
-      "claude-cli",
+      "claude-cli-provider",
     );
   });
 
@@ -58,7 +58,7 @@ phases:
 version: 1
 phases:
   - { id: plan, agent: p, gate: human }
-  - { id: review, agent: r, runtime: claude-cli, gate: human }
+  - { id: review, agent: r, runtime: claude-cli-provider, gate: human }
 `,
     );
     const wf = await loader.load(path);
@@ -67,7 +67,7 @@ phases:
       "agent-runtime",
     );
     expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "agent-runtime", "fallback")).toBe(
-      "claude-cli",
+      "claude-cli-provider",
     );
   });
 
@@ -76,8 +76,8 @@ phases:
       `name: t
 version: 1
 phases:
-  - { id: x, agent: a, runtime: claude-cli, gate: human }
-  - { id: x, agent: a, runtime: claude-cli, gate: human }
+  - { id: x, agent: a, runtime: claude-cli-provider, gate: human }
+  - { id: x, agent: a, runtime: claude-cli-provider, gate: human }
 `,
     );
     const wf = await loader.load(path);
@@ -89,7 +89,7 @@ phases:
       `name: t
 version: 1
 phases:
-  - { id: plan, agent: a, runtime: claude-cli, gate: human, on_reject: { goto: nope, max_iterations: 1 } }
+  - { id: plan, agent: a, runtime: claude-cli-provider, gate: human, on_reject: { goto: nope, max_iterations: 1 } }
 `,
     );
     const wf = await loader.load(path);
@@ -102,9 +102,9 @@ phases:
         `name: t
 version: 1
 phases:
-  - { id: plan, agent: a, runtime: claude-cli, gate: human }
-  - { id: build, agent: b, runtime: claude-cli, gate: human }
-  - { id: review, agent: r, runtime: claude-cli, gate: human, on_reject: { goto: build, max_iterations: 2 } }
+  - { id: plan, agent: a, runtime: claude-cli-provider, gate: human }
+  - { id: build, agent: b, runtime: claude-cli-provider, gate: human }
+  - { id: review, agent: r, runtime: claude-cli-provider, gate: human, on_reject: { goto: build, max_iterations: 2 } }
 `,
       );
       return loader.load(path);
