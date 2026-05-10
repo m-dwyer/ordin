@@ -23,7 +23,6 @@ describe.skipIf(!hasSrt)("srt sandbox scripted e2e", () => {
         root: repoRoot,
         workflow: "sandbox-validation",
         sandboxMode: "srt",
-        gateForKind: () => new AutoGate(),
       });
 
       const meta = await harness.startRun({
@@ -31,6 +30,7 @@ describe.skipIf(!hasSrt)("srt sandbox scripted e2e", () => {
         slug: "sandbox-e2e",
         repoPath: workspace,
         tier: "S",
+        gateForKind: () => new AutoGate(),
       });
 
       expect(meta.status).toBe("completed");

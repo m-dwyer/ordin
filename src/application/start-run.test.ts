@@ -24,6 +24,7 @@ describe("StartRunUseCase", () => {
       slug: "ship-feature-x",
       repoPath,
       tier: "M",
+      gateForKind: () => new AutoGate(),
     });
 
     expect(runtime.invocations.map((i) => i.prompt.phaseId)).toEqual(["plan", "build", "review"]);
@@ -56,6 +57,7 @@ describe("StartRunUseCase", () => {
       slug: "should-fail",
       repoPath,
       tier: "M",
+      gateForKind: () => new AutoGate(),
     });
 
     expect(meta.status).toBe("failed");
@@ -76,6 +78,7 @@ describe("StartRunUseCase", () => {
       repoPath,
       tier: "M",
       onlyPhases: ["build"],
+      gateForKind: () => new AutoGate(),
     });
 
     expect(runtime.invoke).not.toHaveBeenCalled();
@@ -105,6 +108,6 @@ async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
     root,
     repoPath,
     runtime,
-    useCase: new StartRunUseCase(loader, factory, () => new AutoGate()),
+    useCase: new StartRunUseCase(loader, factory),
   };
 }

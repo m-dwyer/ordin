@@ -7,26 +7,31 @@ import { StartRunUseCase } from "../application/start-run";
 import type { StartRunInput } from "../application/types";
 import type { VerifyResult } from "../broker/audit-chain";
 import type { PhasePreview } from "../domain/phase-preview";
-import type { Phase, WorkflowManifest } from "../domain/workflow";
-import { AutoGate } from "../gates/auto";
-import type { Gate } from "../gates/types";
+import type { WorkflowManifest } from "../domain/workflow";
 import type { Engine, PhaseDispatchRequest } from "../orchestrator/engine";
+import type { RunEvent } from "../orchestrator/events";
 import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
 import { DefaultRunExecutionFactory } from "./default-run-execution-factory";
+import { DefaultRunSession, type RunSession } from "./run-session";
 
 export type { StartRunInput } from "../application/types";
 export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
 export type { PhasePreview } from "../domain/phase-preview";
+export type { Phase } from "../domain/workflow";
+export type { Gate } from "../gates/types";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
+export type { PendingGate } from "./deferred-gate-prompter";
+export type { RunSession } from "./run-session";
 
 /**
- * Stable library surface. The CLI is the Stage 1 client; Phase 2 adds
- * an HTTP adapter that will call the same methods.
+ * Stable library surface. The CLI is the Stage 1 client; HTTP and MCP
+ * adapters call through `RunService` which itself goes through this
+ * runtime.
  */
 export interface HarnessRuntimeOptions {
   /** Harness repo root. Defaults to the repo this module lives in. */
@@ -49,15 +54,6 @@ export interface HarnessRuntimeOptions {
    * this to swap in `AiSdkRuntime` against a LiteLLM proxy.
    */
   readonly dispatchPhase?: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
-  /**
-   * Resolve a `Gate` for a given workflow `gate` kind. Client interfaces
-   * assemble their own resolver — the CLI builds one that wraps clack
-   * around `HumanGate`; the eval suite (and headless / CI callers)
-   * return `AutoGate` for every kind. Harness default (no override) is
-   * `AutoGate` for every kind: safe headless behaviour, and production
-   * flows always supply their own resolver explicitly.
-   */
-  readonly gateForKind?: (kind: Phase["gate"]) => Gate;
   /**
    * Resolve a yes/no decision when the agent attempts egress to a host
    * that isn't in `local_services` and isn't in srt's `allowedDomains`.
@@ -90,7 +86,12 @@ export interface HarnessRuntimeOptions {
  * Composition root. Wires the application-layer use cases to their
  * adapter implementations: `DefaultHarnessStateLoader` reads disk and
  * registers engines; `DefaultRunExecutionFactory` constructs broker /
- * sandbox / dispatcher per run. The use cases never reach into either.
+ * sandbox / dispatcher per run.
+ *
+ * Active runs are tracked by `runId` while in flight; `findSession`
+ * lets multi-tenant transports (HTTP, MCP) look up the live handle for
+ * out-of-band gate resolution and event subscription. Sessions are
+ * evicted on completion — historical runs go through `RunStore`.
  */
 export class HarnessRuntime {
   private readonly loader: DefaultHarnessStateLoader;
@@ -99,12 +100,12 @@ export class HarnessRuntime {
   private readonly listRuns_: ListRunsUseCase;
   private readonly getRun_: GetRunUseCase;
   private readonly verifyAudit_: VerifyAuditUseCase;
+  private readonly sessions = new Map<string, RunSession>();
 
   constructor(opts: HarnessRuntimeOptions = {}) {
     const root = opts.root ?? defaultRoot();
     const workflowName = opts.workflow ?? "software-delivery";
     const engineName = opts.engine ?? "mastra";
-    const gateResolver = opts.gateForKind ?? defaultGateResolver;
 
     this.loader = new DefaultHarnessStateLoader({
       root,
@@ -120,15 +121,69 @@ export class HarnessRuntime {
       scriptPathOverride: opts.scriptPath,
     });
 
-    this.startRun_ = new StartRunUseCase(this.loader, factory, gateResolver);
+    this.startRun_ = new StartRunUseCase(this.loader, factory);
     this.previewRun_ = new PreviewRunUseCase(this.loader);
     this.listRuns_ = new ListRunsUseCase(this.loader);
     this.getRun_ = new GetRunUseCase(this.loader);
     this.verifyAudit_ = new VerifyAuditUseCase(this.loader);
   }
 
-  startRun(input: StartRunInput): Promise<RunMeta> {
-    return this.startRun_.execute(input);
+  /**
+   * Begin a run and return a live session once the engine has emitted
+   * `run.started`. Resolves with `runId` synchronously available; the
+   * eventual `RunMeta` arrives via `session.completion`. Out-of-band
+   * gate resolution flows through `session.resolveGate(phaseId, ...)`
+   * unless the caller passed an interactive `gateForKind` in `input`.
+   */
+  async prepareRun(input: StartRunInput): Promise<RunSession> {
+    const session = new DefaultRunSession();
+    const sessionEmit = session.onEvent(input.onEvent);
+    // CLI passes its own gateForKind (interactive); HTTP/MCP omit and
+    // the session's deferred prompter handles it.
+    const gateForKind = input.gateForKind ?? session.gateResolver();
+
+    let captureRunId!: (id: string) => void;
+    let rejectRunStart!: (err: Error) => void;
+    const runIdReady = new Promise<string>((res, rej) => {
+      captureRunId = res;
+      rejectRunStart = rej;
+    });
+
+    const onEvent = (event: RunEvent): void => {
+      sessionEmit(event);
+      if (event.type === "run.started") captureRunId(event.runId);
+    };
+
+    const completion = this.startRun_
+      .execute({ ...input, onEvent, gateForKind })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err : new Error(String(err));
+        rejectRunStart(e);
+        throw e;
+      });
+
+    const runId = await runIdReady;
+    this.sessions.set(runId, session);
+    session.bind(runId, completion);
+    // Sessions remain in the map after completion so late MCP polls
+    // can drain buffered events and observe `isClosed: true`. No
+    // eviction yet — multi-tenant servers will need an explicit
+    // dispose hook before this matters.
+    return session;
+  }
+
+  /**
+   * Convenience over `prepareRun`: start a run and await its full
+   * completion. CLI uses this; out-of-band callers should `prepareRun`
+   * and consume `session.events` / call `session.resolveGate(...)`.
+   */
+  async startRun(input: StartRunInput): Promise<RunMeta> {
+    const session = await this.prepareRun(input);
+    return session.completion;
+  }
+
+  findSession(runId: string): RunSession | undefined {
+    return this.sessions.get(runId);
   }
 
   previewRun(input: StartRunInput): Promise<readonly PhasePreview[]> {
@@ -173,31 +228,6 @@ export class HarnessRuntime {
   /** Paths ordin knows about — useful for the CLI `doctor` command. */
   paths(): HarnessPaths {
     return this.loader.paths();
-  }
-}
-
-/**
- * Strict default: only `auto` gates are auto-approved. `human` and
- * `pre-commit` require an explicit `gateForKind` resolver — the CLI
- * wires clack + HumanGate; eval/CI callers supply `() => new AutoGate()`
- * to opt into headless approval. Failing closed here prevents a caller
- * from silently shipping past a human checkpoint by forgetting to wire
- * a resolver.
- */
-function defaultGateResolver(kind: Phase["gate"]): Gate {
-  switch (kind) {
-    case "auto":
-      return new AutoGate();
-    case "human":
-    case "pre-commit":
-      throw new Error(
-        `Gate kind "${kind}" requires an explicit \`gateForKind\` resolver on HarnessRuntime. ` +
-          "Pass one (e.g. clack-backed HumanGate for CLI, or `() => new AutoGate()` for headless).",
-      );
-    default: {
-      const _exhaustive: never = kind;
-      throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
-    }
   }
 }
 

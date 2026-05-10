@@ -34,6 +34,9 @@ describe("registerRun", () => {
             previewRun: async () => [],
           } as unknown as HarnessRuntime,
           onEvent: () => {},
+          gateForKind: () => {
+            throw new Error("not used in this test");
+          },
           finish: () => {},
           dispose: () => {},
         };

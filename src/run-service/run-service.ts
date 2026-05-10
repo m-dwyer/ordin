@@ -1,87 +1,46 @@
 import type { VerifyResult } from "../broker/audit-chain";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
-import { gateResolverFor } from "../gates/resolver";
 import type { GateDecision } from "../gates/types";
 import type { RunEvent } from "../orchestrator/events";
+import type { PendingGate } from "../runtime/deferred-gate-prompter";
 import {
   HarnessRuntime,
   type HarnessRuntimeOptions,
   type RunMeta,
+  type RunSession,
   type StartRunInput,
 } from "../runtime/harness";
-import { DeferredGatePrompter, type PendingGate } from "./deferred-gate-prompter";
-import { EventBus } from "./event-bus";
 
 /**
- * Run-management layer that turns the blocking, callback-based
- * `HarnessRuntime` into a non-blocking surface fit for HTTP and MCP:
+ * HTTP/MCP-shaped facade over `HarnessRuntime`. Server-mode entry point:
  *
- *   - `startRun` returns a `runId` immediately; the run continues in
- *     the background, with events fanned into a per-run `EventBus`.
- *   - `subscribe(runId)` is an async iterable used by SSE handlers.
- *   - Human gates pause inside the engine until `resolveGate` is called
- *     out-of-band; the deferred promise the gate is awaiting completes
- *     and the engine resumes.
- *
- * Status is not tracked here — `RunMeta` (filesystem-backed via
- * `RunStore`) is the single source of truth and is read on demand.
- *
- * `gateForKind` is intentionally omitted from `RunServiceOptions`: the
- * service installs its own resolver wired to the deferred prompter so
- * HTTP/MCP clients can decide gates out-of-band, and a caller-supplied
- * resolver would be silently overwritten.
+ *   - Forces `sandboxMode: "passthrough"` per ADR-008 — wrapping the
+ *     server itself is nonsensical, so any `srt`/`claude-self` from
+ *     config is ignored unless the caller overrides explicitly.
+ *   - Resolves runId-keyed lookups by delegating to
+ *     `HarnessRuntime.findSession` — sessions own events, pending
+ *     gates, and gate resolution.
+ *   - Read-only operations (listRuns, getRun, verifyAudit, preview,
+ *     workflowDefinition) pass straight through.
  */
-export type RunServiceOptions = Omit<HarnessRuntimeOptions, "gateForKind">;
+export type RunServiceOptions = HarnessRuntimeOptions;
 
-export type StartRunRequest = Omit<StartRunInput, "onEvent">;
+export type StartRunRequest = Omit<StartRunInput, "onEvent" | "gateForKind">;
 
 export class RunService {
   private readonly harness: HarnessRuntime;
-  private readonly prompter = new DeferredGatePrompter();
-  private readonly buses = new Map<string, EventBus<RunEvent>>();
 
   constructor(opts: RunServiceOptions = {}) {
     this.harness = new HarnessRuntime({
       ...opts,
-      gateForKind: gateResolverFor(this.prompter),
-      // ADR-008: v1 sandboxing is `ordin run` only. Server modes
-      // (serve/mcp) force passthrough so an srt config can't accidentally
-      // apply where wrapping the server would be nonsensical (the server
-      // would block on the wrapped child's exit). Callers can still
-      // override via `opts.sandboxMode`.
       sandboxMode: opts.sandboxMode ?? "passthrough",
     });
   }
 
-  /**
-   * Resolves on the first `run.started` event — the engine emits it
-   * synchronously when it allocates the run id. If `harness.startRun`
-   * rejects before any event fires, the rejection propagates here.
-   */
   async startRun(input: StartRunRequest): Promise<string> {
-    const bus = new EventBus<RunEvent>();
-    let runId: string | undefined;
-
-    return new Promise<string>((resolveStart, rejectStart) => {
-      const onEvent = (event: RunEvent) => {
-        bus.emit(event);
-        if (!runId && event.type === "run.started") {
-          runId = event.runId;
-          this.buses.set(runId, bus);
-          resolveStart(runId);
-        }
-      };
-
-      this.harness.startRun({ ...input, onEvent }).then(
-        () => bus.close(),
-        (err) => {
-          bus.close();
-          if (runId) this.prompter.rejectRun(runId, "run failed");
-          else rejectStart(err instanceof Error ? err : new Error(String(err)));
-        },
-      );
-    });
+    const session = await this.harness.prepareRun(input);
+    return session.runId;
   }
 
   previewRun(input: StartRunRequest): Promise<readonly PhasePreview[]> {
@@ -89,34 +48,33 @@ export class RunService {
   }
 
   subscribe(runId: string): AsyncIterable<RunEvent> {
-    const bus = this.buses.get(runId);
-    if (!bus) throw new Error(`No active run with id ${runId}`);
-    return bus.subscribe();
+    return this.requireSession(runId).events;
   }
 
   /**
    * Polling-friendly view of the same event stream `subscribe()` exposes.
-   * MCP tool calls are one-shot, so an MCP client can't hold an
-   * async-iterable open across the run; instead it pages through the
+   * MCP tool calls are one-shot, so MCP clients can't hold an
+   * async-iterable open across the run; instead they page through the
    * buffer with a cursor until `done` is true.
    */
   getEvents(runId: string, since = 0): { events: RunEvent[]; nextCursor: number; done: boolean } {
-    const bus = this.buses.get(runId);
-    if (!bus) throw new Error(`No active run with id ${runId}`);
-    const buffered = bus.buffered();
+    const session = this.requireSession(runId);
+    const buffered = session.buffered();
     return {
       events: buffered.slice(since),
       nextCursor: buffered.length,
-      done: bus.isClosed(),
+      done: session.isClosed(),
     };
   }
 
   pendingGatesFor(runId: string): readonly PendingGate[] {
-    return this.prompter.listFor(runId);
+    return this.requireSession(runId).pendingGates();
   }
 
   resolveGate(runId: string, phaseId: string, decision: GateDecision): boolean {
-    return this.prompter.resolve(runId, phaseId, decision);
+    const session = this.harness.findSession(runId);
+    if (!session) return false;
+    return session.resolveGate(phaseId, decision);
   }
 
   getRun(runId: string): Promise<RunMeta> {
@@ -133,5 +91,11 @@ export class RunService {
 
   workflowDefinition(): Promise<WorkflowManifest> {
     return this.harness.workflowDefinition();
+  }
+
+  private requireSession(runId: string): RunSession {
+    const session = this.harness.findSession(runId);
+    if (!session) throw new Error(`No active run with id ${runId}`);
+    return session;
   }
 }

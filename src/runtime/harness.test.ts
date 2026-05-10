@@ -17,7 +17,6 @@ describe("HarnessRuntime", () => {
 
     const runtime = new HarnessRuntime({
       root,
-      gateForKind: () => new AutoGate(),
       dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
 
@@ -27,6 +26,7 @@ describe("HarnessRuntime", () => {
       repoPath,
       tier: "M",
       onEvent: (ev) => events.push(ev),
+      gateForKind: () => new AutoGate(),
     });
 
     expect(meta.status).toBe("completed");
@@ -42,5 +42,37 @@ describe("HarnessRuntime", () => {
     expect(eventTypes[0]).toBe("run.started");
     expect(eventTypes).toContain("phase.completed");
     expect(eventTypes.at(-1)).toBe("run.completed");
+  });
+
+  it("prepareRun returns a session with runId, events stream, and completion", async () => {
+    const root = await makeHarnessRoot();
+    const repoPath = await mkdtemp(join(tmpdir(), "ordin-harness-repo-"));
+    await mkdir(repoPath, { recursive: true });
+
+    const runtime = new HarnessRuntime({
+      root,
+      dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
+    });
+
+    const session = await runtime.prepareRun({
+      task: "Session test",
+      slug: "session-test",
+      repoPath,
+      tier: "M",
+      gateForKind: () => new AutoGate(),
+    });
+
+    expect(session.runId).toMatch(/_session-test$/);
+    expect(runtime.findSession(session.runId)).toBe(session);
+
+    const meta = await session.completion;
+    expect(meta.status).toBe("completed");
+    expect(meta.runId).toBe(session.runId);
+
+    expect(session.isClosed()).toBe(true);
+    // Sessions remain in the map after completion so late MCP polls
+    // can drain buffered events and observe isClosed.
+    expect(runtime.findSession(session.runId)).toBe(session);
+    expect(session.buffered().map((ev) => ev.type)).toContain("run.completed");
   });
 });

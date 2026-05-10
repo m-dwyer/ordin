@@ -18,7 +18,6 @@ describe("broker ACL e2e", () => {
       root: repoRoot,
       workflow: "broker-acl-probe",
       sandboxMode: "passthrough",
-      gateForKind: () => new AutoGate(),
     });
 
     let runId: string | undefined;
@@ -28,6 +27,7 @@ describe("broker ACL e2e", () => {
         slug: "broker-acl-probe",
         repoPath: workspace,
         tier: "S",
+        gateForKind: () => new AutoGate(),
       });
       runId = meta.runId;
 

@@ -1,5 +1,12 @@
 import { InvalidArgumentError } from "commander";
-import { HarnessRuntime, type RunEvent, type RunMeta, type SandboxMode } from "../runtime/harness";
+import {
+  type Gate,
+  HarnessRuntime,
+  type Phase,
+  type RunEvent,
+  type RunMeta,
+  type SandboxMode,
+} from "../runtime/harness";
 import type { RunHeader } from "./tui/types";
 
 export function parseTier(value: string): "S" | "M" | "L" {
@@ -39,6 +46,7 @@ export function ordin(opts: OrdinCliOptions = {}): HarnessRuntime {
 export interface OrdinRunSession {
   readonly runtime: HarnessRuntime;
   readonly onEvent: (event: RunEvent) => void;
+  readonly gateForKind: (kind: Phase["gate"]) => Gate;
   readonly finish: (summary: { runId: string; status: RunMeta["status"] }) => void;
   readonly dispose: () => Promise<void> | void;
 }
@@ -77,8 +85,9 @@ export async function ordinRunSession(opts: {
     const { nonTtyRunSession } = await import("./tui/non-tty-sink");
     const session = nonTtyRunSession();
     return {
-      runtime: new HarnessRuntime({ ...sharedOpts, gateForKind: session.gateForKind }),
+      runtime: new HarnessRuntime(sharedOpts),
       onEvent: session.onEvent,
+      gateForKind: session.gateForKind,
       finish: () => session.finish(),
       dispose: () => session.finish(),
     };
@@ -95,7 +104,6 @@ export async function ordinRunSession(opts: {
   const controller = new OpenTuiRunController();
   const runtime = new HarnessRuntime({
     ...sharedOpts,
-    gateForKind: openTuiGateResolver(controller),
     egressGatePrompter: openTuiEgressGatePrompter(controller),
   });
   // Pre-populate the footer's phase list so all phases show up as
@@ -110,6 +118,7 @@ export async function ordinRunSession(opts: {
   return {
     runtime,
     onEvent: (ev) => controller.pushEvent(ev),
+    gateForKind: openTuiGateResolver(controller),
     finish: (summary) => controller.finish(summary),
     dispose: async () => {
       await controller.dispose();
