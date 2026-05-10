@@ -16,7 +16,7 @@ import {
  * HTTP/MCP-shaped facade over `HarnessRuntime`. Server-mode entry point:
  *
  *   - Forces `sandboxMode: "passthrough"` per ADR-008 — wrapping the
- *     server itself is nonsensical, so any `srt`/`claude-self` from
+ *     server itself is nonsensical, so any `srt`/`broker` from
  *     config is ignored unless the caller overrides explicitly.
  *   - Resolves runId-keyed lookups by delegating to
  *     `HarnessRuntime.findSession` — sessions own events, pending

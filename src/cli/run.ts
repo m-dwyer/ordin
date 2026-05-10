@@ -61,7 +61,7 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
     .option("--dry-run", "Print each phase's composed prompt without invoking any runtime")
     .option(
       "--sandbox <mode>",
-      "Sandbox mode: passthrough (no isolation), claude-self (broker-mediated egress + claude-cli's per-tool sandbox), or srt (kernel + network egress via @anthropic-ai/sandbox-runtime)",
+      "Sandbox mode: passthrough (no isolation), broker (broker-mediated egress via HTTP_PROXY env), or srt (kernel + network egress via @anthropic-ai/sandbox-runtime)",
       parseSandboxMode,
     )
     .option(

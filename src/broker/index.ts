@@ -381,7 +381,7 @@ export class Broker {
     // Non-mapped destinations gate via `askApproval` so the broker
     // remains the trust boundary for *both* transports: under srt the
     // outer proxy already asked and cached the answer, so this is a
-    // fast cache hit. Under `claude-self` (no srt) this is the only
+    // fast cache hit. Under `broker` mode (no srt) this is the only
     // place the egress prompt fires for HTTPS CONNECTs.
     if (!this.map.has(host)) {
       const approved = await this.askApproval(host, port);

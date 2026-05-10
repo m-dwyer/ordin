@@ -86,7 +86,7 @@ export class DefaultRunExecution implements RunExecution {
       scriptPath: this.opts.scriptPathOverride,
       runtimeConfigFor: (name) => resolveRuntimeConfig(name, this.opts.config.runtimeConfig(name)),
     };
-    // Only `passthrough` runs in-process. `claude-self` and `srt` both
+    // Only `passthrough` runs in-process. `broker` and `srt` both
     // need subprocess isolation: the worker's env carries the broker's
     // proxy URL (`buildWorkerEnv`) which we don't want leaking into the
     // harness process for the rest of its lifetime.

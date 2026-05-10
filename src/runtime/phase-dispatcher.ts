@@ -15,7 +15,7 @@ import { prepareWorkerDispatch } from "./worker-dispatch";
  *
  *   - `InProcessInvokeSource`: passthrough mode runs the runtime in the
  *     parent process; the worker env never enters the harness lifetime.
- *   - `SandboxedInvokeSource`: claude-self / srt modes spawn a subprocess
+ *   - `SandboxedInvokeSource`: broker / srt modes spawn a subprocess
  *     per phase via `prepareWorkerDispatch`.
  */
 export interface WorkerInvokeSource {

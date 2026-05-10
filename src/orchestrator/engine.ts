@@ -74,7 +74,7 @@ export interface EngineRunInput {
   readonly slug: string;
   readonly workspaceRoot: string;
   readonly tier: "S" | "M" | "L";
-  readonly sandboxMode: "passthrough" | "claude-self" | "srt" | undefined;
+  readonly sandboxMode: "passthrough" | "broker" | "srt" | undefined;
   readonly startAt: string | undefined;
   readonly onlyPhases: readonly string[] | undefined;
   readonly onEvent: ((event: RunEvent) => void) | undefined;

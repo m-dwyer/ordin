@@ -15,8 +15,8 @@ export function parseTier(value: string): "S" | "M" | "L" {
 }
 
 export function parseSandboxMode(value: string): SandboxMode {
-  if (value === "passthrough" || value === "claude-self" || value === "srt") return value;
-  throw new InvalidArgumentError("Sandbox mode must be passthrough, claude-self, or srt");
+  if (value === "passthrough" || value === "broker" || value === "srt") return value;
+  throw new InvalidArgumentError("Sandbox mode must be passthrough, broker, or srt");
 }
 
 export interface OrdinCliOptions {

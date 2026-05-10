@@ -32,7 +32,7 @@ export function buildWorkerEnv(
   parentEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   if (infra.sandbox.name !== "srt") {
-    // `claude-self` (and any future non-srt subprocess mode): the
+    // `broker` mode (and any future non-srt subprocess mode): the
     // broker URL is pinned in both HTTP_PROXY and HTTPS_PROXY so
     // claude-cli's `--settings` injection (claude-language-model-v2)
     // can propagate it into claude's own per-API-call settings.
