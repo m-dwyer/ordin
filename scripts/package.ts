@@ -11,7 +11,7 @@
  * e.g. `bun-darwin-arm64`, `bun-linux-x64`.
  */
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import createSolidTransformPlugin from "@opentui/solid/bun-plugin";
 
 interface BuildOpts {
@@ -58,3 +58,52 @@ if (!result.success) {
   process.exit(1);
 }
 console.log(`✓ ${opts.outfile} (${opts.target}, ${Date.now() - start}ms)`);
+
+// @opentui/core spawns a Worker from `./parser.worker.js` for tree-sitter
+// syntax highlighting. `bun --compile` puts source in a VFS that can't
+// be a Worker entry point, so we ship the worker as a sibling file and
+// point OpenTUI at it via `OTUI_TREE_SITTER_WORKER_PATH` at runtime.
+const workerStart = Date.now();
+const workerOutDir = dirname(opts.outfile);
+const workerEntry = join(
+  import.meta.dir,
+  "..",
+  "node_modules",
+  "@opentui",
+  "core",
+  "parser.worker.js",
+);
+const workerResult = await Bun.build({
+  entrypoints: [workerEntry],
+  target: "bun",
+  outdir: workerOutDir,
+  naming: "parser.worker.js",
+});
+if (!workerResult.success) {
+  for (const log of workerResult.logs) console.error(log);
+  process.exit(1);
+}
+
+// Bun bundles the tree-sitter wasm sibling and exports its path as
+// `"./tree-sitter-<hash>.wasm"` — a relative string. emscripten's
+// readBinary resolves that against `process.cwd()`, not the worker's
+// own location, so the worker spawned by an installed binary fails
+// with ENOENT when launched from any cwd outside ~/.ordin/lib/.
+//
+// Patch the emit so the wasm path is resolved against `import.meta.url`
+// (the worker file's URL) at load time. Yields an absolute path
+// regardless of where the parent process was launched.
+const workerPath = join(workerOutDir, "parser.worker.js");
+const workerJs = await Bun.file(workerPath).text();
+const patched = workerJs.replace(
+  /module2\.exports\s*=\s*"(\.\/tree-sitter-[a-z0-9]+\.wasm)";/,
+  'module2.exports = new URL("$1", import.meta.url).pathname;',
+);
+if (patched === workerJs) {
+  console.error(
+    "✗ failed to patch tree-sitter wasm path in parser.worker.js — Bun bundler output changed shape?",
+  );
+  process.exit(1);
+}
+await Bun.write(workerPath, patched);
+console.log(`✓ ${workerPath} (${Date.now() - workerStart}ms, wasm path patched)`);

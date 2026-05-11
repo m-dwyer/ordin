@@ -8,6 +8,7 @@ import "@opentui/solid/preload";
 import { Command } from "commander";
 import { registerAudit } from "./audit";
 import { registerBundle } from "./bundle";
+import { setupCompiledRuntime } from "./compiled-runtime";
 import { registerDoctor } from "./doctor";
 import { registerMcp } from "./mcp";
 import { registerRemote } from "./remote";
@@ -16,6 +17,11 @@ import { registerRun } from "./run";
 import { registerRuns } from "./runs";
 import { registerServe } from "./serve";
 import { registerStatus } from "./status";
+
+// Apply compile-time-only runtime patches (e.g. the tree-sitter worker
+// path) BEFORE commander dispatches to a subcommand that might mount
+// the TUI. No-op in dev runs.
+setupCompiledRuntime();
 
 /**
  * CLI is the Stage 1 client. Every command goes through `Harness`
