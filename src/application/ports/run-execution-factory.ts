@@ -1,14 +1,14 @@
 import type { HarnessConfig, SandboxMode } from "../../domain/config";
 import type { PhaseDispatchRequest } from "../../orchestrator/engine";
 import type { RunEvent } from "../../orchestrator/events";
-import type { PhaseRunResult } from "../../orchestrator/phase-runner";
+import type { PhaseInvocationResult } from "../../orchestrator/phase-invocation";
 
 export interface RunExecution {
   readonly sandboxMode: SandboxMode | undefined;
   enter(): Promise<void>;
   dispose(): Promise<void>;
   onEvent(): (event: RunEvent) => void;
-  dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseRunResult>;
+  dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseInvocationResult>;
 }
 
 /**

@@ -11,7 +11,7 @@ import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
 import type { Engine, PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
-import type { PhaseRunResult } from "../orchestrator/phase-runner";
+import type { PhaseInvocationResult } from "../orchestrator/phase-invocation";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
@@ -49,11 +49,11 @@ export interface HarnessRuntimeOptions {
    * Override the per-phase dispatcher. When provided, replaces the
    * default worker-spawn path entirely. Tests use this to short-circuit
    * the worker process: the override receives the engine's
-   * `PhaseDispatchRequest` and returns a synthetic `PhaseRunResult`
+   * `PhaseDispatchRequest` and returns a synthetic `PhaseInvocationResult`
    * without ever touching `Sandbox.spawnWorker`. The eval suite uses
    * this to swap in `AiSdkRuntime` against a LiteLLM proxy.
    */
-  readonly dispatchPhase?: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
+  readonly dispatchPhase?: (request: PhaseDispatchRequest) => Promise<PhaseInvocationResult>;
   /**
    * Resolve a yes/no decision when the agent attempts egress to a host
    * that isn't in `local_services` and isn't in srt's `allowedDomains`.

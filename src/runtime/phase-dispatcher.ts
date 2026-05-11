@@ -2,7 +2,11 @@ import { deriveToolPolicy } from "../broker/client/tool-authority";
 import type { BrokerClient } from "../broker/client/types";
 import type { BrokerDispatch } from "../broker/dispatch";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
-import { PhaseRunner, type PhaseRunResult, type RuntimeInvoke } from "../orchestrator/phase-runner";
+import {
+  PhaseInvocation,
+  type PhaseInvocationResult,
+  type RuntimeInvoke,
+} from "../orchestrator/phase-invocation";
 import type { Sandbox } from "../sandbox/types";
 import { buildRuntime } from "../worker/runtimes/registry";
 import { prepareWorkerDispatch } from "./worker-dispatch";
@@ -10,7 +14,7 @@ import { prepareWorkerDispatch } from "./worker-dispatch";
 /**
  * Resolves an `invoke` for one phase request. The seam is intentionally
  * tight — the dispatcher owns the rest of the per-phase scaffolding
- * (broker ACL registration, PhaseRunner construction). Two impls cover
+ * (broker ACL registration, PhaseInvocation construction). Two impls cover
  * the only two strategies that exist:
  *
  *   - `InProcessInvokeSource`: passthrough mode runs the runtime in the
@@ -89,7 +93,7 @@ export class PhaseDispatcher {
     private readonly brokerDispatch: BrokerDispatch,
   ) {}
 
-  async dispatch(req: PhaseDispatchRequest): Promise<PhaseRunResult> {
+  async dispatch(req: PhaseDispatchRequest): Promise<PhaseInvocationResult> {
     const invoke = await this.source.prepare(req);
     const { runId, preview } = req;
     const { phaseId } = preview.prompt;
@@ -99,7 +103,7 @@ export class PhaseDispatcher {
     });
     this.brokerDispatch.registerPhase(runId, phaseId, policy);
     try {
-      return await new PhaseRunner().run({
+      return await new PhaseInvocation().run({
         preview,
         runtimeName: req.runtimeName,
         context: { runId, runDir: req.runDir, iteration: req.iteration },

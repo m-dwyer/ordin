@@ -11,23 +11,26 @@ import type { PhaseMeta } from "./run-store";
 import { promoteRuntimeEvent } from "./runtime-events";
 
 /**
- * Drives a single phase invocation parent-side: emits the phase
- * lifecycle (`phase.started` / `phase.runtime.completed` / `phase.failed`),
- * tags raw `RuntimeEvent`s with run + phase identity, and assembles the
- * `PhaseMeta`. The actual `runtime.invoke()` call is supplied as a
- * function so the same lifecycle code path covers two callers:
+ * One parent-side invocation of a phase. Sits behind the dispatcher
+ * seam: emits the phase lifecycle (`phase.started` /
+ * `phase.runtime.completed` / `phase.failed`), tags raw `RuntimeEvent`s
+ * with run + phase identity, and assembles the `PhaseMeta`. The actual
+ * `runtime.invoke()` call is supplied as a function so the same
+ * lifecycle code path covers two callers:
  *
- *   - `HarnessRuntime.dispatchPhase` — invoke = "spawn the sandboxed
- *     worker, stream JSONL events from its stdout, read the result file
- *     it writes on exit".
+ *   - `PhaseDispatcher.dispatch` — invoke = "spawn the sandboxed worker,
+ *     stream JSONL events from its stdout, read the result file it
+ *     writes on exit".
  *   - in-process tests / fixtures — invoke = "call `runtime.invoke()`
  *     directly in this process".
  *
- * Phase B (sandboxing roadmap) moved this from `src/worker/` to here so
- * lifecycle bookkeeping is parent-side and the worker stays as close as
- * possible to "the runtime adapter and nothing else".
+ * Distinct from `PhaseTransaction` (engine-level: artefact pre/post-
+ * flight, planning, dispatch handoff, gate). They sit on opposite sides
+ * of the dispatcher seam: a transaction asks the dispatcher to invoke,
+ * the dispatcher constructs a `PhaseInvocation` to do the parent-side
+ * bookkeeping around the runtime call.
  */
-export interface PhaseExecutionContext {
+export interface PhaseInvocationContext {
   readonly runId: string;
   readonly runDir: string;
   readonly iteration: number;
@@ -35,23 +38,23 @@ export interface PhaseExecutionContext {
 
 export type RuntimeInvoke = (req: InvokeRequest) => Promise<InvokeResult>;
 
-export interface PhaseExecutionRequest {
+export interface PhaseInvocationRequest {
   readonly preview: PhasePreview;
   readonly runtimeName: string;
   readonly invoke: RuntimeInvoke;
-  readonly context: PhaseExecutionContext;
+  readonly context: PhaseInvocationContext;
   readonly emit: (event: RunEvent) => void;
   readonly abortSignal?: AbortSignal;
 }
 
-export interface PhaseRunResult {
+export interface PhaseInvocationResult {
   readonly meta: PhaseMeta;
   readonly invokeResult: InvokeResult;
   readonly events: readonly RuntimeEvent[];
 }
 
-export class PhaseRunner {
-  async run(req: PhaseExecutionRequest): Promise<PhaseRunResult> {
+export class PhaseInvocation {
+  async run(req: PhaseInvocationRequest): Promise<PhaseInvocationResult> {
     const { preview, runtimeName, invoke, context, emit } = req;
 
     const phaseMeta: PhaseMeta = {
@@ -121,7 +124,8 @@ export class PhaseRunner {
 
 /**
  * Convenience for in-process callers (tests, eval suite): wrap an
- * `AgentRuntime` instance as the `invoke` callback the runner expects.
+ * `AgentRuntime` instance as the `invoke` callback `PhaseInvocation`
+ * expects.
  */
 export function invokeWithRuntime(runtime: AgentRuntime): RuntimeInvoke {
   return (req) => runtime.invoke(req);

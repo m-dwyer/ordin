@@ -11,7 +11,7 @@ import type { SandboxMode } from "../domain/config";
 import { shutdownTracing, startTracing } from "../observability/tracing";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
-import type { PhaseRunResult } from "../orchestrator/phase-runner";
+import type { PhaseInvocationResult } from "../orchestrator/phase-invocation";
 import { selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
 import { type EgressApproval, EgressApprovalStore } from "./egress-store";
@@ -33,7 +33,7 @@ import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
  */
 export interface RunExecutionOverrides {
   readonly dispatchPhaseOverride:
-    | ((request: PhaseDispatchRequest) => Promise<PhaseRunResult>)
+    | ((request: PhaseDispatchRequest) => Promise<PhaseInvocationResult>)
     | undefined;
   readonly egressGatePrompter:
     | ((req: { host: string; port: number | undefined }) => Promise<boolean>)
@@ -89,7 +89,7 @@ export class DefaultRunExecution implements RunExecution {
     };
   }
 
-  dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
+  dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseInvocationResult> {
     if (this.opts.dispatchPhaseOverride) return this.opts.dispatchPhaseOverride;
 
     const infra = this.requireInfra();

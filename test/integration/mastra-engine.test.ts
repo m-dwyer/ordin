@@ -11,7 +11,7 @@ import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
 import { MastraEngine } from "../../src/orchestrator/mastra";
-import { invokeWithRuntime, PhaseRunner } from "../../src/orchestrator/phase-runner";
+import { invokeWithRuntime, PhaseInvocation } from "../../src/orchestrator/phase-invocation";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
   AgentRuntime,
@@ -124,7 +124,7 @@ async function runWithMastra(
   const engine = new MastraEngine();
   const program = engine.compile(harness.workflow);
   const services = makeServices(harness, runtime);
-  const runner = new PhaseRunner();
+  const runner = new PhaseInvocation();
   return engine.run(
     program,
     {

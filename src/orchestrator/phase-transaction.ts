@@ -8,7 +8,7 @@ import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
 import { diagnoseMissingOutputs } from "./phase-diagnostics";
-import type { PhaseRunResult } from "./phase-runner";
+import type { PhaseInvocationResult } from "./phase-invocation";
 import type { PhaseMeta, RunMeta } from "./run-store";
 
 export type EngineOutcome = "halted" | "failed";
@@ -37,13 +37,13 @@ export interface PhaseExecutionOutcome {
   readonly approved: boolean;
 }
 
-interface PhaseInvocationPlan {
+interface InvocationPlan {
   readonly preview: PhasePreview;
   readonly runtimeName: string;
 }
 
 type PlanningResult =
-  | { readonly ok: true; readonly plan: PhaseInvocationPlan }
+  | { readonly ok: true; readonly plan: InvocationPlan }
   | { readonly ok: false; readonly error: string };
 
 /**
@@ -166,7 +166,7 @@ class PhaseTransaction {
     return { ok: true, plan: { preview, runtimeName: preview.runtimeName } };
   }
 
-  private async invoke(plan: PhaseInvocationPlan, iteration: number): Promise<PhaseRunResult> {
+  private async invoke(plan: InvocationPlan, iteration: number): Promise<PhaseInvocationResult> {
     const runDir = await this.ctx.services.runStore.ensureRunDir(this.ctx.runId);
     return this.ctx.input.dispatchPhase({
       runId: this.ctx.runId,
@@ -192,7 +192,7 @@ class PhaseTransaction {
    * Records a phase failure that happened before the runtime got
    * involved (missing input artefacts, agent lookup miss). PhaseMeta
    * has no runtime/model in this case — they're decided inside
-   * `PhaseRunner.run()`, which we never reached.
+   * `PhaseInvocation.run()`, which we never reached.
    */
   private async failBeforeRuntime(
     phase: Phase,

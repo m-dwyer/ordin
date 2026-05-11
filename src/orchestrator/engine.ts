@@ -4,7 +4,7 @@ import type { PhasePreview } from "../domain/phase-preview";
 import type { GateKind, WorkflowManifest } from "../domain/workflow";
 import type { GateArtefact, GateDecision } from "../gates/types";
 import type { RunEvent } from "./events";
-import type { PhaseRunResult } from "./phase-runner";
+import type { PhaseInvocationResult } from "./phase-invocation";
 import type { RunMeta, RunStore } from "./run-store";
 import type { ExecutionPlan } from "./workflow-plan";
 
@@ -34,7 +34,7 @@ export interface WorkflowProgram {
 
 /**
  * Per-run dependencies used by compiled workflows. The engine owns
- * phase execution internally — it constructs its own `PhaseRunner`
+ * phase execution internally — it constructs its own `PhaseInvocation`
  * from these lower-level deps. Gates are not here: the engine is
  * gate-agnostic and surfaces decision points via `onGateRequested`
  * on `EngineRunInput`.
@@ -84,7 +84,7 @@ export interface EngineRunInput {
    * dispatcher decides *where* (in-process, sandboxed worker, remote
    * runner). HarnessRuntime supplies this per-run.
    */
-  readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseRunResult>;
+  readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseInvocationResult>;
   readonly abortSignal: AbortSignal | undefined;
 }
 

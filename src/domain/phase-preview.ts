@@ -18,7 +18,7 @@ import {
  *
  * Sharing this type across both paths means there is exactly one
  * composition pipeline. Dry-run prints the prompt; real run hands
- * the same prompt to `PhaseRunner` for invocation. On `on_reject`
+ * the same prompt to `PhaseInvocation` for execution. On `on_reject`
  * retries, the engine re-prepares the looped phase with feedback —
  * composition is cheap string assembly, so re-running it is fine.
  */

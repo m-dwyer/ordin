@@ -4,9 +4,9 @@ import { type Mock, vi } from "vitest";
 import type { PhaseDispatchRequest } from "../../src/orchestrator/engine";
 import {
   invokeWithRuntime,
-  PhaseRunner,
-  type PhaseRunResult,
-} from "../../src/orchestrator/phase-runner";
+  PhaseInvocation,
+  type PhaseInvocationResult,
+} from "../../src/orchestrator/phase-invocation";
 import type {
   AgentRuntime,
   InvokeRequest,
@@ -77,13 +77,13 @@ export function makeStubRuntime(): StubRuntime {
  * Wraps an `AgentRuntime` as a `dispatchPhase` callback. Tests pass
  * this as `HarnessRuntimeOptions.dispatchPhase` to short-circuit the
  * worker spawn — the runtime's `invoke` is called directly in-process
- * via the parent-side `PhaseRunner`, which emits the same lifecycle
+ * via the parent-side `PhaseInvocation`, which emits the same lifecycle
  * events the production sandboxed path emits.
  */
 export function dispatchFromRuntime(
   runtime: AgentRuntime,
-): (req: PhaseDispatchRequest) => Promise<PhaseRunResult> {
-  const runner = new PhaseRunner();
+): (req: PhaseDispatchRequest) => Promise<PhaseInvocationResult> {
+  const runner = new PhaseInvocation();
   return (req) =>
     runner.run({
       preview: req.preview,
