@@ -71,6 +71,37 @@ describe("ProjectRegistry", () => {
     expect(() => registry.get("ghost")).toThrow(/"ghost" not registered/);
   });
 
+  it("resolves a relative path against the projects file's dir, not process.cwd", async () => {
+    const dir = await tempDir();
+    const sharedPath = join(dir, "projects.yaml");
+    await writeYaml(
+      sharedPath,
+      `projects:
+  fixture:
+    path: .scratch/target-repo
+`,
+    );
+    const registry = await new ProjectRegistryLoader().load(sharedPath);
+    expect(registry.get("fixture").path).toBe(join(dir, ".scratch/target-repo"));
+  });
+
+  it("local entries anchor relative paths to the local file's dir", async () => {
+    const sharedDir = await tempDir();
+    const localDir = await tempDir();
+    const sharedPath = join(sharedDir, "projects.yaml");
+    const localPath = join(localDir, "projects.local.yaml");
+    await writeYaml(sharedPath, "projects: {}\n");
+    await writeYaml(
+      localPath,
+      `projects:
+  here:
+    path: ./local-workspace
+`,
+    );
+    const registry = await new ProjectRegistryLoader().load(sharedPath, localPath);
+    expect(registry.get("here").path).toBe(join(localDir, "local-workspace"));
+  });
+
   it("carries standards_overlay through to the resolved entry", async () => {
     const dir = await tempDir();
     const sharedPath = join(dir, "projects.yaml");
