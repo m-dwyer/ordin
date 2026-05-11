@@ -161,17 +161,9 @@ for (const name of await readdir(bundlesRoot)) {
   actions.push({ kind: "copy", from: src, to: join(opts.home, "bundles", name) });
 }
 
-// Tree-sitter worker + its WASM siblings. @opentui/core's TreeSitterClient
-// spawns this as a Worker; Bun's --compile VFS can't host a Worker entry,
-// so we ship the worker bundle next to the binary and point the runtime
-// at it via $OTUI_TREE_SITTER_WORKER_PATH.
-const distDir = join(repoRoot, "dist");
-const libDest = join(opts.home, "lib");
-for (const name of await readdir(distDir).catch(() => [])) {
-  if (name === "parser.worker.js" || name.endsWith(".wasm")) {
-    actions.push({ kind: "copy", from: join(distDir, name), to: join(libDest, name) });
-  }
-}
+// (Tree-sitter Worker and its wasm sibling are embedded directly in
+// the compiled binary; setupCompiledRuntime extracts them to a cache
+// dir on first run. No sibling files to copy.)
 
 for (const action of actions) {
   const tag = describe(action);

@@ -1,6 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  PARSER_WORKER_JS_BASE64,
+  TREE_SITTER_WASM_BASE64,
+  TREE_SITTER_WASM_FILENAME,
+} from "./embedded-assets.generated";
 
 /**
  * `__ORDIN_COMPILED__` is replaced with the literal `true` at build
@@ -20,13 +26,14 @@ declare const __ORDIN_COMPILED__: boolean | undefined;
  *     tokens, etc. from a stable file under the config root. Existing
  *     env vars win (file values don't clobber a shell export).
  *
- *   - `OTUI_TREE_SITTER_WORKER_PATH` → the bundled `parser.worker.js`
- *     we ship alongside the binary. `@opentui/core` spawns this as a
- *     Worker; Bun's compile VFS can't host a Worker entry point, so
- *     we keep the worker as a sibling file (installed under
- *     `~/.ordin/lib/`) and point OpenTUI at it via env. The TreeSitter
- *     client reads this env var on construction — must be set before
- *     any `.tsx` import that pulls in OpenTUI's renderables.
+ *   - Extracts the tree-sitter Worker JS + wasm (embedded in the
+ *     binary as base64 by `scripts/package.ts`) to a cache dir under
+ *     `~/.cache/ordin/lib-<hash>/`. `@opentui/core` spawns the worker
+ *     as a Web Worker; Bun's --compile VFS can't host a Worker entry,
+ *     so we materialize both files on real disk at first run and
+ *     point OpenTUI at them via `OTUI_TREE_SITTER_WORKER_PATH`. Cache
+ *     key includes the content hash, so binary upgrades repopulate
+ *     and stale caches get garbage-collected by `~/.cache` cleanup.
  *
  * No-op in dev runs (the bundle exports a real worker via
  * `import.meta.url` lookup, and mise handles env).
@@ -38,10 +45,36 @@ export function setupCompiledRuntime(): void {
     : join(homedir(), ".ordin");
   const envFile = join(home, ".env");
   if (existsSync(envFile)) loadEnvFile(envFile);
-  const workerPath = join(home, "lib", "parser.worker.js");
-  if (existsSync(workerPath)) {
-    process.env["OTUI_TREE_SITTER_WORKER_PATH"] = workerPath;
+  const workerPath = extractTreeSitterWorker();
+  if (workerPath) process.env["OTUI_TREE_SITTER_WORKER_PATH"] = workerPath;
+}
+
+/**
+ * Decode the embedded worker + wasm to `~/.cache/ordin/lib-<hash>/` if
+ * not already present. Returns the worker path, or undefined when the
+ * binary was built without embedded assets (e.g. unit tests against
+ * the dev-tree stub).
+ */
+function extractTreeSitterWorker(): string | undefined {
+  if (!PARSER_WORKER_JS_BASE64 || !TREE_SITTER_WASM_BASE64) return undefined;
+  const cacheRoot = join(homedir(), ".cache", "ordin");
+  // Hash worker + wasm bytes together so cache invalidates whenever
+  // either changes. 12 hex chars is plenty for collision-avoidance at
+  // our content-volume scale (one binary version per user).
+  const hash = createHash("sha256")
+    .update(PARSER_WORKER_JS_BASE64)
+    .update(TREE_SITTER_WASM_BASE64)
+    .digest("hex")
+    .slice(0, 12);
+  const libDir = join(cacheRoot, `lib-${hash}`);
+  const workerPath = join(libDir, "parser.worker.js");
+  const wasmPath = join(libDir, TREE_SITTER_WASM_FILENAME);
+  if (!existsSync(workerPath) || !existsSync(wasmPath)) {
+    mkdirSync(libDir, { recursive: true });
+    writeFileSync(workerPath, Buffer.from(PARSER_WORKER_JS_BASE64, "base64"));
+    writeFileSync(wasmPath, Buffer.from(TREE_SITTER_WASM_BASE64, "base64"));
   }
+  return workerPath;
 }
 
 /**
