@@ -19,9 +19,12 @@ export interface RunCommandDeps {
    * `previewRun`; this seam exists so tests can supply a fake without
    * spinning up the full Harness.
    */
-  readonly createDryRunRuntime?: (opts: { workflow?: string }) => Pick<Harness, "previewRun">;
+  readonly createDryRunRuntime?: (opts: {
+    bundle: string;
+    bundleDir?: string;
+  }) => Pick<Harness, "previewRun">;
   /** Override the runtime factory used for command resolution and live runs. Test seam. */
-  readonly createRuntime?: (opts: { workflow?: string }) => Harness;
+  readonly createRuntime?: (opts: { bundle: string; bundleDir?: string }) => Harness;
   /** Override the dry-run renderer. Test seam. */
   readonly renderPreviews?: (
     previews: readonly PhasePreview[],
@@ -38,7 +41,8 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
   program
     .command("run [task...]")
     .description("Run a workflow")
-    .option("-w, --workflow <name>", "Workflow name from workflows/<name>.yaml")
+    .option("-b, --bundle <name>", "Bundle to execute (resolved against bundle search path)")
+    .option("--bundle-dir <path>", "Explicit bundle directory; bypasses the search path")
     .option("-p, --project <name>", "Target project name from projects.yaml")
     .option("-r, --repo <path>", "Target repo path (overrides --project)")
     .option("-t, --tier <tier>", "Task tier (S|M|L)", parseTier)
@@ -70,10 +74,14 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
       const createRuntime = deps.createRuntime ?? ordin;
       const resolved = await resolveRunCommand(taskParts ?? [], opts, createRuntime);
       const input = resolved.input;
-      const runtime = createRuntime({ workflow: resolved.workflow });
+      const runtimeOpts = {
+        bundle: resolved.bundle,
+        ...(resolved.bundleDir ? { bundleDir: resolved.bundleDir } : {}),
+      };
+      const runtime = createRuntime(runtimeOpts);
 
       if (opts.dryRun) {
-        const runtime = (deps.createDryRunRuntime ?? ordin)({ workflow: resolved.workflow });
+        const runtime = (deps.createDryRunRuntime ?? ordin)(runtimeOpts);
         const previews = await runtime.previewRun(input);
         await (deps.renderPreviews ?? renderDryRun)(previews, input.task);
         return;
@@ -84,7 +92,7 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
       }
 
       const session = await (deps.createSession ?? ordinRunSession)({
-        workflow: resolved.workflow,
+        ...runtimeOpts,
         ...(resolved.sandbox ? { sandboxMode: resolved.sandbox } : {}),
         ...(opts.script ? { scriptPath: opts.script } : {}),
         header: resolved.header,

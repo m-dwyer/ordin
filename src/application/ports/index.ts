@@ -1,6 +1,7 @@
 export type {
   HarnessPaths,
   HarnessStateLoader,
+  LoadedBundleInfo,
   LoadedHarnessState,
 } from "./harness-state-loader";
 export type {

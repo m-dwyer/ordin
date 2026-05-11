@@ -98,7 +98,7 @@ async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
   const repoPath = await mkdtemp(join(tmpdir(), "ordin-start-run-repo-"));
   const loader = new DefaultHarnessStateLoader({
     root,
-    workflowName: "software-delivery",
+    bundleName: "software-delivery",
     engineName: "mastra",
     engines: undefined,
   });

@@ -11,6 +11,7 @@ describe("RunStore", () => {
     const meta: RunMeta = {
       runId: generateRunId("test-slug"),
       workflow: "wf",
+      bundle: { name: "wf", version: "0", hash: "0".repeat(64) },
       tier: "M",
       task: "do the thing",
       slug: "test-slug",
@@ -30,6 +31,7 @@ describe("RunStore", () => {
     const a: RunMeta = {
       runId: generateRunId("a", new Date("2025-01-01T00:00:00Z")),
       workflow: "w",
+      bundle: { name: "w", version: "0", hash: "0".repeat(64) },
       tier: "M",
       task: "t",
       slug: "a",

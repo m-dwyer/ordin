@@ -65,7 +65,7 @@ function BreadcrumbLine(props: { header?: RunHeader }) {
 function metaLine(header?: RunHeader): string | null {
   if (!header) return null;
   const parts: string[] = [];
-  if (header.workflow) parts.push(header.workflow);
+  if (header.bundle) parts.push(header.bundle);
   if (header.project) parts.push(header.project);
   // runId is `<timestamp>_<slug>` — slug duplicates the task already
   // in the breadcrumb above; display only the timestamp portion.

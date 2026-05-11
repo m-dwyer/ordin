@@ -8,12 +8,12 @@ describe("registerRun", () => {
     const program = new Command();
     program.exitOverride();
 
-    let workflow: string | undefined;
+    let bundle: string | undefined;
     let startRunInput: StartRunInput | undefined;
 
     registerRun(program, {
       createSession: async (opts) => {
-        workflow = opts.workflow;
+        bundle = opts.bundle;
         return {
           runtime: {
             startRun: async (input: StartRunInput) => {
@@ -48,7 +48,7 @@ describe("registerRun", () => {
         "node",
         "ordin",
         "run",
-        "--workflow",
+        "--bundle",
         "custom",
         "--repo",
         ".scratch/repo",
@@ -64,7 +64,7 @@ describe("registerRun", () => {
       { from: "node" },
     );
 
-    expect(workflow).toBe("custom");
+    expect(bundle).toBe("custom");
     expect(startRunInput).toMatchObject({
       task: "Ship it",
       slug: "ship-it",

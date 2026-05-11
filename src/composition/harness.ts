@@ -34,13 +34,15 @@ export type { PendingGate, RunSession } from "./run-session";
  * runtime.
  */
 export interface HarnessOptions {
-  /** Harness repo root. Defaults to the repo this module lives in. */
+  /** Harness config root (where ordin.config.yaml + projects.yaml live). */
   readonly root?: string;
   /**
-   * Which workflow to execute. Defaults to "software-delivery".
-   * Resolved as `<root>/workflows/<name>.yaml`.
+   * Bundle to execute. Resolved against the search path:
+   *   --bundle-dir override → $ORDIN_BUNDLE_PATH → <cwd>/bundles → ~/.ordin/bundles
    */
-  readonly workflow?: string;
+  readonly bundle: string;
+  /** Explicit bundle directory; bypasses search-path resolution. */
+  readonly bundleDir?: string;
   /** Engine adapter used to compile and run workflows. Defaults to "mastra". */
   readonly engine?: string;
   /** Additional engine adapters that can be selected via `engine`. */
@@ -105,14 +107,14 @@ export class Harness {
   private readonly sandboxModeOverride: SandboxMode | undefined;
   private readonly workspaceResolver: WorkspaceResolver;
 
-  constructor(opts: HarnessOptions = {}) {
+  constructor(opts: HarnessOptions) {
     const root = opts.root ?? defaultRoot();
-    const workflowName = opts.workflow ?? "software-delivery";
     const engineName = opts.engine ?? "mastra";
 
     this.loader = new DefaultHarnessStateLoader({
       root,
-      workflowName,
+      bundleName: opts.bundle,
+      ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
       engineName,
       engines: opts.engines,
     });
@@ -238,9 +240,16 @@ export class Harness {
   paths(): HarnessPaths {
     return this.loader.paths();
   }
+
+  /** Resolved bundle directory (search-path lookup; throws if not found). */
+  bundleDir(): Promise<string> {
+    return this.loader.bundleDir();
+  }
 }
 
 function defaultRoot(): string {
   // Walk up from this file: src/composition/harness.ts → src/composition → src → root.
+  // This is the *config* root (ordin.config.yaml, projects.yaml) — bundles
+  // are resolved separately via the bundle search path.
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }

@@ -1,0 +1,7 @@
+name: sandbox-validation
+version: 0.1.0
+description: >
+  End-to-end sandbox validation using a deterministic scripted runtime.
+  Exercises Read, Write, Glob, and Bash tools against the workspace and
+  produces a report artefact. Pure infrastructure check — no LLM call.
+runtime: scripted

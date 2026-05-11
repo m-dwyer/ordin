@@ -6,7 +6,6 @@ import { WorkflowManifest } from "../../src/domain/workflow";
 
 const agent: Agent = {
   name: "planner",
-  runtime: "agent-runtime",
   body: "Plan.",
   source: "/tmp/agents/planner.md",
   skills: [],
@@ -23,7 +22,7 @@ const config = new HarnessConfig(
 );
 
 describe("PhasePreparer", () => {
-  it("resolves runtime precedence from phase, workflow, agent, then config default", () => {
+  it("resolves runtime precedence from phase, then workflow, then config default", () => {
     const preparer = new PhasePreparer();
     const phase = { id: "plan", agent: "planner", gate: "auto" as const };
 
@@ -63,22 +62,9 @@ describe("PhasePreparer", () => {
     });
     expect(withPhase.runtimeName).toBe("phase-runtime");
 
-    const withAgent = preparer.prepare({
-      phase,
-      agent,
-      workflow: new WorkflowManifest({ name: "wf", version: "1", phases: [phase] }),
-      config,
-      task: "t",
-      cwd: "/repo",
-      tier: "M",
-      artefactInputs: [],
-      artefactOutputs: [],
-    });
-    expect(withAgent.runtimeName).toBe("agent-runtime");
-
     const withDefault = preparer.prepare({
       phase,
-      agent: { ...agent, runtime: undefined },
+      agent,
       workflow: new WorkflowManifest({ name: "wf", version: "1", phases: [phase] }),
       config,
       task: "t",

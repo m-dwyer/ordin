@@ -17,6 +17,7 @@ describe("Harness", () => {
 
     const runtime = new Harness({
       root,
+      bundle: "software-delivery",
       dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
 
@@ -51,6 +52,7 @@ describe("Harness", () => {
 
     const runtime = new Harness({
       root,
+      bundle: "software-delivery",
       dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
 

@@ -63,6 +63,9 @@ export class MastraEngine implements Engine {
       {
         "ordin.run_id": runId,
         "ordin.workflow": program.manifest.name,
+        "ordin.bundle.name": services.bundle.name,
+        "ordin.bundle.version": services.bundle.version,
+        "ordin.bundle.hash": services.bundle.hash,
         "ordin.tier": input.tier,
         "ordin.slug": input.slug,
         "ordin.task": input.task.slice(0, 256),
@@ -76,6 +79,7 @@ export class MastraEngine implements Engine {
         const meta: RunMeta = {
           runId,
           workflow: program.manifest.name,
+          bundle: { ...services.bundle },
           tier: input.tier,
           task: input.task,
           slug: input.slug,

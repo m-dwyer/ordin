@@ -73,7 +73,6 @@ allowed_tools: []
 
 const fakeAgent = (name: string): Agent => ({
   name,
-  runtime: "fake",
   body: `system prompt for ${name}`,
   source: `/virtual/${name}.md`,
   skills: [],
@@ -106,6 +105,7 @@ function makeServices(harness: Harness, runtime: AgentRuntime): EngineServices {
     agents: harness.agents,
     runtimeNames: new Set([runtime.name]),
     runStore: harness.runStore,
+    bundle: { name: "fake-bundle", version: "0", hash: "0".repeat(64) },
   };
 }
 

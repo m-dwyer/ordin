@@ -1,6 +1,5 @@
 ---
 name: planner
-runtime: claude-cli-provider
 description: Turns a problem statement into a reviewable RFC
 skills: [rfc-template, engineering-principles]
 ---

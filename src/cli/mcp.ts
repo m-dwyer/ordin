@@ -19,8 +19,13 @@ export function registerMcp(program: Command): void {
   program
     .command("mcp")
     .description("Run the MCP server over stdio (launched as a subprocess by an MCP host)")
-    .action(async () => {
-      const service = new RunService();
+    .requiredOption("-b, --bundle <name>", "Bundle to serve")
+    .option("--bundle-dir <path>", "Explicit bundle directory; bypasses search path")
+    .action(async (opts: { bundle: string; bundleDir?: string }) => {
+      const service = new RunService({
+        bundle: opts.bundle,
+        ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
+      });
       const server = createMcpServer(service);
       const transport = new StdioServerTransport();
 

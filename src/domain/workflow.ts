@@ -163,10 +163,9 @@ export class WorkflowManifest {
 export function resolvePhaseRuntime(
   phase: Phase,
   workflow: WorkflowManifest,
-  agentRuntime: string | undefined,
   defaultRuntime: string,
 ): string {
-  return phase.runtime ?? workflow.runtime ?? agentRuntime ?? defaultRuntime;
+  return phase.runtime ?? workflow.runtime ?? defaultRuntime;
 }
 
 export interface ResolvedPromptDefaults {

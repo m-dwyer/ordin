@@ -163,13 +163,18 @@ async function checkClaudeBinary(): Promise<DoctorResult> {
 }
 
 async function checkOrdinFiles(): Promise<DoctorResult> {
-  const paths = ordin().paths();
-  for (const p of [paths.configFile, paths.workflowFile, paths.agentsDir, paths.skillsDir]) {
-    try {
-      await stat(p);
-    } catch {
-      return { label: "ordin files", ok: false, detail: `missing: ${p}` };
-    }
+  const harness = ordin();
+  const paths = harness.paths();
+  try {
+    await stat(paths.configFile);
+  } catch {
+    return { label: "ordin files", ok: false, detail: `missing: ${paths.configFile}` };
+  }
+  try {
+    const bundleDir = await harness.bundleDir();
+    await stat(bundleDir);
+  } catch (err) {
+    return { label: "ordin files", ok: false, detail: (err as Error).message };
   }
   return { label: "ordin files", ok: true };
 }

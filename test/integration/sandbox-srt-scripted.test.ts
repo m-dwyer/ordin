@@ -21,7 +21,7 @@ describe.skipIf(!hasSrt)("srt sandbox scripted e2e", () => {
       ]);
       const harness = new Harness({
         root: repoRoot,
-        workflow: "sandbox-validation",
+        bundle: "sandbox-validation",
         sandboxMode: "srt",
       });
 

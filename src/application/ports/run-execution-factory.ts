@@ -21,7 +21,7 @@ export interface RunExecution {
  */
 export interface RunExecutionPrepareOptions {
   readonly root: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
   readonly config: HarnessConfig;
   readonly workspaceRoot: string;
   readonly projectName: string | undefined;

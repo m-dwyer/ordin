@@ -126,6 +126,7 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     const toolNames = deriveToolPolicy({
       allowedTools: req.prompt.tools,
       hasSkills: req.prompt.skills.length > 0,
+      cwd: req.prompt.cwd,
     }).toolNames;
     const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 };
 

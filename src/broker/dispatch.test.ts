@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Skill } from "../domain/skill";
+import { deriveToolPolicy } from "./client/tool-authority";
 import { BrokerDispatch } from "./dispatch";
 
 interface AuditAppendCall {
@@ -168,6 +169,32 @@ describe("BrokerDispatch.requestApproval", () => {
     const approval = await broker.requestApproval({
       tool: "Write",
       input: { file_path: "docs/rfcs/example-rfc.md", content: "ok" },
+      runId: "run1",
+      phaseId: "plan",
+      cwd,
+      skills: NO_SKILLS,
+    });
+
+    expect(approval.ok).toBe(true);
+  });
+
+  it("resolves absolute file paths against the phase cwd before pattern matching", async () => {
+    const audit = new RecordingAudit();
+    const broker = new BrokerDispatch({ audit });
+    const cwd = await mkdtemp(join(tmpdir(), "broker-abs-path-"));
+    broker.registerPhase(
+      "run1",
+      "plan",
+      deriveToolPolicy({
+        allowedTools: ["Write(docs/rfcs/*)"],
+        hasSkills: false,
+        cwd,
+      }),
+    );
+
+    const approval = await broker.requestApproval({
+      tool: "Write",
+      input: { file_path: join(cwd, "docs/rfcs/abs-rfc.md"), content: "ok" },
       runId: "run1",
       phaseId: "plan",
       cwd,

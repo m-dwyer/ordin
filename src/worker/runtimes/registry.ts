@@ -9,7 +9,7 @@ import type { AgentRuntime } from "./types";
  */
 export interface RuntimeBuildContext {
   readonly harnessRoot: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
   /** Default transcript dir; runtimes use this when `InvokeRequest.runDir` is unset. */
   readonly runsDir: string;
   /** Optional override for `ScriptedRuntime`'s plan file path. */
@@ -66,7 +66,7 @@ export async function buildRuntime(
     case "scripted": {
       const { ScriptedRuntime } = await import("./scripted");
       return ScriptedRuntime.fromConfig(configSlice, {
-        workflowName: ctx.workflowName,
+        bundleName: ctx.bundleName,
         harnessRoot: ctx.harnessRoot,
         runsDirFallback: ctx.runsDir,
         broker: requireBroker(ctx, "scripted"),

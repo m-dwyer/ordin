@@ -96,7 +96,7 @@ describe("claude-cli-provider registry", () => {
     const runtime = await buildRuntime(
       "claude-cli-provider",
       { bin: "claude", max_steps: 2 },
-      { harnessRoot: "/harness", workflowName: "w", runsDir: "/tmp/runs", broker },
+      { harnessRoot: "/harness", bundleName: "w", runsDir: "/tmp/runs", broker },
     );
     expect(runtime.name).toBe("claude-cli-provider");
   });

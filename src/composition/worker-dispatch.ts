@@ -9,7 +9,7 @@ import type { InvokeRequest, InvokeResult, RuntimeEvent } from "../worker/runtim
 
 export interface WorkerDispatchConfig {
   readonly harnessRoot: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
   readonly runsDir: string;
   readonly scriptPath?: string;
   readonly workerEnv: NodeJS.ProcessEnv;
@@ -32,7 +32,7 @@ export async function prepareWorkerDispatch(
   );
   const plan = {
     harnessRoot: config.harnessRoot,
-    workflowName: config.workflowName,
+    bundleName: config.bundleName,
     ...(config.scriptPath ? { scriptPath: config.scriptPath } : {}),
     runsDir: config.runsDir,
     runId: req.runId,

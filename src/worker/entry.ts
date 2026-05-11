@@ -35,7 +35,7 @@ import type { RuntimeEvent } from "./runtimes/types";
 
 interface WorkerPlan {
   readonly harnessRoot: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
   readonly scriptPath?: string;
   readonly runsDir: string;
   readonly runId: string;
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   const broker = brokerClientFromEnv();
   const runtime = await buildRuntime(plan.runtimeName, plan.runtimeConfig, {
     harnessRoot: plan.harnessRoot,
-    workflowName: plan.workflowName,
+    bundleName: plan.bundleName,
     runsDir: plan.runsDir,
     ...(plan.scriptPath ? { scriptPath: plan.scriptPath } : {}),
     ...(broker ? { broker } : {}),

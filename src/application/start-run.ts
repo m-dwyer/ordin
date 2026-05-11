@@ -23,7 +23,7 @@ export class StartRunUseCase {
     const program = state.engine.compile(workflowForRun(state.workflow, input));
     const execution = await this.factory({
       root: this.loader.root,
-      workflowName: this.loader.workflowName,
+      bundleName: this.loader.bundleName,
       config: state.config,
       workspaceRoot,
       projectName: input.projectName,
@@ -69,5 +69,6 @@ function engineServices(state: LoadedHarnessState): EngineServices {
     agents: state.agents,
     runtimeNames: state.runtimeNames,
     runStore: state.runStore,
+    bundle: state.bundle,
   };
 }

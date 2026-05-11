@@ -19,9 +19,11 @@ export function registerServe(program: Command): void {
   program
     .command("serve")
     .description("Run the HTTP server (POST /runs, SSE /runs/:id/events, /openapi.json)")
+    .requiredOption("-b, --bundle <name>", "Bundle to serve")
+    .option("--bundle-dir <path>", "Explicit bundle directory; bypasses search path")
     .option("-p, --port <port>", "TCP port", parsePort, 8787)
     .option("-h, --host <host>", "Bind host", "127.0.0.1")
-    .action(async (opts: { port: number; host: string }) => {
+    .action(async (opts: { bundle: string; bundleDir?: string; port: number; host: string }) => {
       const token = tokenFromEnv();
       if (!token && !isLoopbackHost(opts.host)) {
         process.stderr.write(
@@ -31,7 +33,10 @@ export function registerServe(program: Command): void {
         process.exit(2);
       }
 
-      const service = new RunService();
+      const service = new RunService({
+        bundle: opts.bundle,
+        ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
+      });
       const app = createHttpApp(service, token ? { auth: { token } } : {});
       const server = await startHttpServer(app, { port: opts.port, hostname: opts.host });
 

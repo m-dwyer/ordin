@@ -12,7 +12,7 @@ export interface RunHeader {
   task: string;
   slug: string;
   tier: string;
-  workflow?: string;
+  bundle?: string;
   project?: string;
   repoPath?: string;
   runId?: string;

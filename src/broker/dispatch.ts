@@ -1,3 +1,4 @@
+import { isAbsolute, relative } from "node:path";
 import { deriveToolPolicy, type ToolPolicy } from "./client/tool-authority";
 import type {
   ApprovalResult,
@@ -71,7 +72,9 @@ export class BrokerDispatch implements BrokerClient {
   registerPhase(runId: string, phaseId: string, policy: ToolPolicy | readonly string[]): void {
     this.acls.set(
       aclKey(runId, phaseId),
-      isToolPolicy(policy) ? policy : deriveToolPolicy({ allowedTools: policy, hasSkills: false }),
+      isToolPolicy(policy)
+        ? policy
+        : deriveToolPolicy({ allowedTools: policy, hasSkills: false, cwd: "" }),
     );
   }
 
@@ -165,20 +168,33 @@ function checkPatternAcl(policy: ToolPolicy, intent: ToolIntent): ToolError | un
   if (specs.length === 0) return undefined;
   if (specs.some((spec) => !spec.pattern)) return undefined;
 
-  const value = patternValue(intent);
-  if (value === undefined) {
+  const rawValue = patternValue(intent);
+  if (rawValue === undefined) {
     return {
       kind: "denied",
       message: `Tool "${intent.tool}" requires a pattern match, but its input has no matchable field.`,
     };
   }
+  const value = normalizeForMatch(intent.tool, rawValue, policy.cwd);
   if (specs.some((spec) => spec.pattern && globMatches(spec.pattern, value))) {
     return undefined;
   }
   return {
     kind: "denied",
-    message: `Tool "${intent.tool}" input "${value}" does not match this phase's allowed_tools patterns.`,
+    message: `Tool "${intent.tool}" input "${rawValue}" does not match this phase's allowed_tools patterns.`,
   };
+}
+
+/**
+ * Resolve absolute filesystem inputs against the phase cwd so that
+ * relative allowed_tools patterns (`Write(docs/rfcs/*)`) match the
+ * absolute paths Claude's tool surface emits. Path-bearing tools only;
+ * Bash command / Glob pattern / Skill name aren't filesystem paths.
+ */
+function normalizeForMatch(tool: string, value: string, cwd: string): string {
+  if (!cwd || !isAbsolute(value)) return value;
+  if (tool !== "Read" && tool !== "Write" && tool !== "Edit" && tool !== "Grep") return value;
+  return relative(cwd, value);
 }
 
 function patternValue(intent: ToolIntent): string | undefined {

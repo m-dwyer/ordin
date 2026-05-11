@@ -13,7 +13,6 @@ const phase: Phase = {
 
 const agent: Agent = {
   name: "planner",
-  runtime: "claude-cli-provider",
   body: "You are a planner.",
   source: "/tmp/agents/planner.md",
   skills: [],

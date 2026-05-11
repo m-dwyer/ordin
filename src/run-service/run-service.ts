@@ -31,7 +31,7 @@ export type StartRunRequest = Omit<StartRunInput, "onEvent" | "gateForKind">;
 export class RunService {
   private readonly harness: Harness;
 
-  constructor(opts: RunServiceOptions = {}) {
+  constructor(opts: RunServiceOptions) {
     this.harness = new Harness({
       ...opts,
       sandboxMode: opts.sandboxMode ?? "passthrough",

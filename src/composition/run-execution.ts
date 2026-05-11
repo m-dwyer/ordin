@@ -95,7 +95,7 @@ export class DefaultRunExecution implements RunExecution {
     const infra = this.requireInfra();
     const ctx: RuntimeContext = {
       harnessRoot: this.opts.root,
-      workflowName: this.opts.workflowName,
+      bundleName: this.opts.bundleName,
       runsDir: this.opts.config.runStoreDir(),
       scriptPath: this.opts.scriptPathOverride,
       runtimeConfigFor: (name) => resolveRuntimeConfig(name, this.opts.config.runtimeConfig(name)),

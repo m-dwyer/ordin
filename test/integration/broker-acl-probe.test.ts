@@ -16,7 +16,7 @@ describe("broker ACL e2e", () => {
 
     const harness = new Harness({
       root: repoRoot,
-      workflow: "broker-acl-probe",
+      bundle: "broker-acl-probe",
       sandboxMode: "passthrough",
     });
 

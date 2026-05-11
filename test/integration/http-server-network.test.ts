@@ -21,6 +21,7 @@ describe("HTTP server (real port)", () => {
     const root = await makeHarnessRoot();
     const service = new RunService({
       root,
+      bundle: "software-delivery",
       dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
     server = await startHttpServer(createHttpApp(service), { port: 0 });

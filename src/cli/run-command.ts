@@ -4,7 +4,8 @@ import type { Phase, WorkflowManifest } from "../domain/workflow";
 import { captureFixture, seedFromFixture, seedPhaseInputsFromRun } from "./run-seed";
 
 export interface RunCommandOpts {
-  readonly workflow?: string;
+  readonly bundle?: string;
+  readonly bundleDir?: string;
   readonly project?: string;
   readonly repo?: string;
   readonly tier?: "S" | "M" | "L";
@@ -22,14 +23,15 @@ export interface RunCommandOpts {
 }
 
 export interface ResolvedRunCommand {
-  readonly workflow?: string;
+  readonly bundle: string;
+  readonly bundleDir?: string;
   readonly sandbox?: SandboxMode;
   readonly input: NormalizedStartRunInput;
   readonly header: {
     readonly task: string;
     readonly slug: string;
     readonly tier: "S" | "M" | "L";
-    readonly workflow?: string;
+    readonly bundle: string;
     readonly repoPath?: string;
     readonly project?: string;
   };
@@ -58,22 +60,31 @@ type SeedPlan =
       readonly sourcePhase?: Phase;
     };
 
-type RuntimeForWorkflow = (opts: { workflow?: string }) => Harness;
+type RuntimeForBundle = (opts: { bundle: string; bundleDir?: string }) => Harness;
 
 export async function resolveRunCommand(
   taskParts: readonly string[],
   opts: RunCommandOpts,
-  runtimeForWorkflow: RuntimeForWorkflow,
+  runtimeForBundle: RuntimeForBundle,
 ): Promise<ResolvedRunCommand> {
   validateRunOpts(opts);
 
-  const initialRuntime = runtimeForWorkflow({ workflow: opts.workflow });
+  // Bundle name is required: either from --bundle, or carried over from
+  // --again/--from-run via RunMeta.bundle.name.
+  const initialBundle = opts.bundle ?? "software-delivery";
+  const initialRuntime = runtimeForBundle({
+    bundle: initialBundle,
+    ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
+  });
   const [again, fromRun] = await Promise.all([
     opts.again ? initialRuntime.getRun(opts.again) : undefined,
     opts.fromRun ? initialRuntime.getRun(opts.fromRun) : undefined,
   ]);
-  const workflow = opts.workflow ?? again?.workflow ?? fromRun?.workflow;
-  const runtime = workflow === opts.workflow ? initialRuntime : runtimeForWorkflow({ workflow });
+  const bundle = opts.bundle ?? again?.bundle?.name ?? fromRun?.bundle?.name ?? initialBundle;
+  const runtime =
+    bundle === initialBundle
+      ? initialRuntime
+      : runtimeForBundle({ bundle, ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}) });
   const input = buildRunInput(taskParts, opts, { again, fromRun });
   const phaseId = opts.only ?? opts.from;
   const needsSeedPlan = opts.fixture || opts.fromRun || opts.captureFixture;
@@ -83,10 +94,11 @@ export async function resolveRunCommand(
   const sandbox = opts.sandbox ?? again?.sandboxMode;
 
   return {
-    ...(workflow ? { workflow } : {}),
+    bundle,
+    ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
     ...(sandbox ? { sandbox } : {}),
     input,
-    header: buildHeader(input, workflow),
+    header: buildHeader(input, bundle),
     ...(needsSeedPlan
       ? {
           seed: opts.captureFixture
@@ -195,15 +207,12 @@ function validateRunOpts(opts: RunCommandOpts): void {
   }
 }
 
-function buildHeader(
-  input: NormalizedStartRunInput,
-  workflow?: string,
-): ResolvedRunCommand["header"] {
+function buildHeader(input: NormalizedStartRunInput, bundle: string): ResolvedRunCommand["header"] {
   return {
     task: input.task,
     slug: input.slug,
     tier: input.tier,
-    ...(workflow ? { workflow } : {}),
+    bundle,
     ...(input.repoPath
       ? { repoPath: input.repoPath, project: basename(input.repoPath) }
       : input.projectName

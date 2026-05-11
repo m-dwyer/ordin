@@ -65,7 +65,7 @@ export interface ScriptedRuntimeOptions {
 export const ScriptedConfigSchema = z.object({
   /**
    * Default plan path. If unset, the runtime auto-detects
-   * `<harnessRoot>/scripts/<workflowName>.yaml`. Overridden at run
+   * `<harnessRoot>/scripts/<bundleName>.yaml`. Overridden at run
    * time by the CLI's `--script <path>` flag.
    */
   script_path: z.string().min(1).optional(),
@@ -74,7 +74,7 @@ export type ScriptedConfigRaw = z.infer<typeof ScriptedConfigSchema>;
 
 export interface ScriptedRuntimeFromConfigExtras {
   /** Workflow name, used to auto-detect `scripts/<name>.yaml`. */
-  readonly workflowName: string;
+  readonly bundleName: string;
   /** Harness content root — base for the `scripts/` directory. */
   readonly harnessRoot: string;
   /** Run-store fallback for transcript writes. */
@@ -114,7 +114,7 @@ export class ScriptedRuntime implements AgentRuntime {
    * harness) supplies workflow + harness-root context so the runtime
    * can auto-detect `scripts/<workflow-name>.yaml`. Resolution order
    * for the plan path: `extras.scriptPath` (CLI flag) > `config.script_path`
-   * (config file) > `<harnessRoot>/scripts/<workflowName>.yaml`
+   * (config file) > `<harnessRoot>/scripts/<bundleName>.yaml`
    * (convention).
    */
   static fromConfig(raw: unknown, extras: ScriptedRuntimeFromConfigExtras): ScriptedRuntime {
@@ -122,7 +122,7 @@ export class ScriptedRuntime implements AgentRuntime {
     const planPath =
       extras.scriptPath ??
       config.script_path ??
-      join(extras.harnessRoot, "scripts", `${extras.workflowName}.yaml`);
+      join(extras.harnessRoot, "scripts", `${extras.bundleName}.yaml`);
     const loader = new ScriptedPlanLoader();
     return new ScriptedRuntime({
       planLoader: () => loader.load(planPath),

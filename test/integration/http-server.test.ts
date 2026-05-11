@@ -155,6 +155,7 @@ async function makeApp(): Promise<{ app: ReturnType<typeof createHttpApp>; servi
   const root = await makeHarnessRoot();
   const service = new RunService({
     root,
+    bundle: "software-delivery",
     dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
   });
   return { app: createHttpApp(service), service };

@@ -6,11 +6,20 @@ export interface ToolSpec {
 export interface ToolPolicyInput {
   readonly allowedTools: readonly string[];
   readonly hasSkills: boolean;
+  /**
+   * Phase working directory. Used to resolve absolute path inputs
+   * (Read/Write/Edit file_path, Grep path) to cwd-relative form before
+   * matching against allowed_tools patterns — workflow authors write
+   * relative patterns (`Write(docs/rfcs/*)`), agents pass absolute
+   * paths, and the matcher bridges them.
+   */
+  readonly cwd: string;
 }
 
 export interface ToolPolicy {
   readonly specs: readonly ToolSpec[];
   readonly toolNames: readonly string[];
+  readonly cwd: string;
 }
 
 /** Parse allowlist entries like `Read`, `Write(docs/rfcs/*)`, `Bash(git diff*)`. */
@@ -30,7 +39,7 @@ export function deriveToolPolicy(input: ToolPolicyInput): ToolPolicy {
   if (input.hasSkills && !toolNames.includes("Skill")) {
     toolNames.push("Skill");
   }
-  return { specs, toolNames };
+  return { specs, toolNames, cwd: input.cwd };
 }
 
 function dedupeSpecs(specs: readonly ToolSpec[]): ToolSpec[] {

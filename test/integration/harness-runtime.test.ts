@@ -39,7 +39,12 @@ describe("Harness", () => {
     };
 
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-custom-repo-"));
-    const harness = new Harness({ root, engine: "custom", engines: [engine] });
+    const harness = new Harness({
+      root,
+      bundle: "software-delivery",
+      engine: "custom",
+      engines: [engine],
+    });
 
     const previews = await harness.previewRun({
       task: "Use custom engine",
@@ -52,18 +57,16 @@ describe("Harness", () => {
     expect(previews[0]?.prompt.userPrompt).toBe("Use custom engine");
   });
 
-  it("exposes stable harness paths from the facade", async () => {
+  it("exposes stable harness paths and resolves the bundle dir", async () => {
     const root = await makeHarnessRoot();
-    const harness = new Harness({ root });
+    const harness = new Harness({ root, bundle: "software-delivery" });
 
     expect(harness.paths()).toMatchObject({
       root,
       configFile: join(root, "ordin.config.yaml"),
-      workflowFile: join(root, "workflows", "software-delivery.yaml"),
-      agentsDir: join(root, "agents"),
-      skillsDir: join(root, "skills"),
       projectsFile: join(root, "projects.yaml"),
       projectsLocalFile: join(root, "projects.local.yaml"),
     });
+    expect(await harness.bundleDir()).toBe(join(root, "bundles", "software-delivery"));
   });
 });

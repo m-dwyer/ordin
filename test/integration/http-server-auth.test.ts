@@ -98,6 +98,7 @@ async function makeApp(opts: { token?: string } = {}): Promise<ReturnType<typeof
   const root = await makeHarnessRoot();
   const service = new RunService({
     root,
+    bundle: "software-delivery",
     dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
   });
   return createHttpApp(service, opts.token ? { auth: { token: opts.token } } : {});

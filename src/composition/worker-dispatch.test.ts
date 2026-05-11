@@ -47,7 +47,7 @@ describe("prepareWorkerDispatch", () => {
 
     const plan = JSON.parse(await readFile(planPath, "utf8")) as {
       harnessRoot: string;
-      workflowName: string;
+      bundleName: string;
       runsDir: string;
       runId: string;
       runtimeName: string;
@@ -56,7 +56,7 @@ describe("prepareWorkerDispatch", () => {
     };
     expect(plan).toMatchObject({
       harnessRoot: root,
-      workflowName: "software-delivery",
+      bundleName: "software-delivery",
       runsDir: join(root, "runs"),
       runId: "run-1",
       runtimeName: "scripted",
@@ -181,7 +181,7 @@ class FakeSandbox implements Sandbox {
 function workerConfig(root: string) {
   return {
     harnessRoot: root,
-    workflowName: "software-delivery",
+    bundleName: "software-delivery",
     runsDir: join(root, "runs"),
     workerEnv: { BASE: "1" },
     runtimeConfigFor: (runtimeName: string) => ({ name: runtimeName }),

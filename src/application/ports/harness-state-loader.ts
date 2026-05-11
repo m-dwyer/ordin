@@ -6,13 +6,18 @@ import type { Engine } from "../../orchestrator/engine";
 import type { RunStore } from "../../orchestrator/run-store";
 
 export interface HarnessPaths {
+  /** Harness config root (where ordin.config.yaml + projects.yaml live). */
   readonly root: string;
   readonly configFile: string;
-  readonly workflowFile: string;
-  readonly agentsDir: string;
-  readonly skillsDir: string;
   readonly projectsFile: string;
   readonly projectsLocalFile: string;
+}
+
+/** Provenance for the loaded bundle — flowed into RunMeta and OTel spans. */
+export interface LoadedBundleInfo {
+  readonly name: string;
+  readonly version: string;
+  readonly hash: string;
 }
 
 export interface LoadedHarnessState {
@@ -23,12 +28,15 @@ export interface LoadedHarnessState {
   readonly runStore: RunStore;
   readonly engine: Engine;
   readonly runtimeNames: ReadonlySet<string>;
+  readonly bundle: LoadedBundleInfo;
 }
 
 export interface HarnessStateLoader {
   readonly root: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
   paths(): HarnessPaths;
+  /** Resolved bundle directory (search-path lookup; throws if not found). */
+  bundleDir(): Promise<string>;
   load(): Promise<LoadedHarnessState>;
   runStore(): Promise<RunStore>;
 }

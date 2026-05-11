@@ -1,39 +1,47 @@
 import { join } from "node:path";
 import type { HarnessPaths, HarnessStateLoader, LoadedHarnessState } from "../application/ports";
-import { AgentLoader } from "../infrastructure/agent-loader";
+import { BundleLoader } from "../infrastructure/bundle-loader";
+import { BundleResolver } from "../infrastructure/bundle-resolver";
 import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
-import { SkillLoader } from "../infrastructure/skill-loader";
-import { WorkflowLoader } from "../infrastructure/workflow-loader";
 import { type Engine, EngineRegistry } from "../orchestrator/engine";
 import { MastraEngine } from "../orchestrator/mastra";
 import { RunStore } from "../orchestrator/run-store";
 import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
 
 export interface DefaultHarnessStateLoaderOptions {
+  /** Where ordin.config.yaml + projects.yaml live (the harness config root). */
   readonly root: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
+  /** Explicit bundle directory; bypasses search-path lookup when set. */
+  readonly bundleDir?: string;
   readonly engineName: string;
   readonly engines: Iterable<Engine> | undefined;
 }
 
 /**
- * Adapter that materialises HarnessStateLoader from disk: YAML configs,
- * markdown agents and skills, plus engine registration. Memoizes the
- * in-flight load promise so concurrent callers share one read; the
- * cheap runStore() path memoizes config separately to avoid pulling
- * agents/skills/projects when only the run store is needed.
+ * Adapter that materialises HarnessStateLoader from disk: harness config
+ * + projects from `root`; workflow + agents + skills from a bundle
+ * directory resolved via BundleResolver. Memoizes the in-flight load
+ * promise so concurrent callers share one read; the cheap runStore()
+ * path memoizes config separately to avoid pulling the bundle when
+ * only the run store is needed.
  */
 export class DefaultHarnessStateLoader implements HarnessStateLoader {
   readonly root: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
+  private readonly resolver: BundleResolver;
   private readonly engines: EngineRegistry;
+  private bundleDirPromise?: Promise<string>;
   private loadingPromise?: Promise<LoadedHarnessState>;
   private configPromise?: ReturnType<HarnessConfigLoader["load"]>;
 
   constructor(private readonly opts: DefaultHarnessStateLoaderOptions) {
     this.root = opts.root;
-    this.workflowName = opts.workflowName;
+    this.bundleName = opts.bundleName;
+    // The harness config root doubles as the bundle search-path root —
+    // `<root>/bundles/<name>` is the dev-tree convention.
+    this.resolver = new BundleResolver({ cwd: opts.root });
     this.engines = new EngineRegistry([new MastraEngine(), ...(opts.engines ?? [])]);
   }
 
@@ -41,12 +49,16 @@ export class DefaultHarnessStateLoader implements HarnessStateLoader {
     return {
       root: this.opts.root,
       configFile: join(this.opts.root, "ordin.config.yaml"),
-      workflowFile: join(this.opts.root, "workflows", `${this.opts.workflowName}.yaml`),
-      agentsDir: join(this.opts.root, "agents"),
-      skillsDir: join(this.opts.root, "skills"),
       projectsFile: join(this.opts.root, "projects.yaml"),
       projectsLocalFile: join(this.opts.root, "projects.local.yaml"),
     };
+  }
+
+  bundleDir(): Promise<string> {
+    this.bundleDirPromise ??= this.opts.bundleDir
+      ? Promise.resolve(this.opts.bundleDir)
+      : this.resolver.resolve(this.opts.bundleName);
+    return this.bundleDirPromise;
   }
 
   load(): Promise<LoadedHarnessState> {
@@ -61,21 +73,25 @@ export class DefaultHarnessStateLoader implements HarnessStateLoader {
 
   private async doLoad(): Promise<LoadedHarnessState> {
     const paths = this.paths();
-    const [config, workflow, skills, projects] = await Promise.all([
+    const bundleDir = await this.bundleDir();
+    const [config, bundle, projects] = await Promise.all([
       this.loadConfig(),
-      new WorkflowLoader().load(paths.workflowFile),
-      new SkillLoader().loadAll(paths.skillsDir),
+      new BundleLoader().load(bundleDir),
       new ProjectRegistryLoader().load(paths.projectsFile, paths.projectsLocalFile),
     ]);
-    const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
     return {
       config,
-      workflow,
-      agents,
+      workflow: bundle.workflow,
+      agents: bundle.agents,
       projects,
       runStore: new RunStore(config.runStoreDir()),
       engine: this.engines.get(this.opts.engineName),
       runtimeNames: new Set(KNOWN_RUNTIME_NAMES),
+      bundle: {
+        name: bundle.manifest.name,
+        version: bundle.manifest.version,
+        hash: bundle.hash.bundle,
+      },
     };
   }
 

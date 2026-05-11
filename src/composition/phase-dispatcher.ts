@@ -32,7 +32,7 @@ export interface WorkerInvokeSource {
  */
 export interface RuntimeContext {
   readonly harnessRoot: string;
-  readonly workflowName: string;
+  readonly bundleName: string;
   readonly runsDir: string;
   readonly scriptPath: string | undefined;
   readonly runtimeConfigFor: (name: string) => unknown;
@@ -50,7 +50,7 @@ export class InProcessInvokeSource implements WorkerInvokeSource {
       this.ctx.runtimeConfigFor(req.runtimeName),
       {
         harnessRoot: this.ctx.harnessRoot,
-        workflowName: this.ctx.workflowName,
+        bundleName: this.ctx.bundleName,
         runsDir: this.ctx.runsDir,
         ...(this.ctx.scriptPath ? { scriptPath: this.ctx.scriptPath } : {}),
         broker: this.broker,
@@ -70,7 +70,7 @@ export class SandboxedInvokeSource implements WorkerInvokeSource {
   async prepare(req: PhaseDispatchRequest): Promise<RuntimeInvoke> {
     const worker = await prepareWorkerDispatch(this.sandbox, req, {
       harnessRoot: this.ctx.harnessRoot,
-      workflowName: this.ctx.workflowName,
+      bundleName: this.ctx.bundleName,
       ...(this.ctx.scriptPath ? { scriptPath: this.ctx.scriptPath } : {}),
       runsDir: this.ctx.runsDir,
       workerEnv: this.workerEnv,
@@ -100,6 +100,7 @@ export class PhaseDispatcher {
     const policy = deriveToolPolicy({
       allowedTools: preview.prompt.tools,
       hasSkills: preview.prompt.skills.length > 0,
+      cwd: preview.prompt.cwd,
     });
     this.brokerDispatch.registerPhase(runId, phaseId, policy);
     try {

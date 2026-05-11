@@ -46,29 +46,8 @@ phases:
     const wf = await loader.load(path);
 
     expect(wf.runtime).toBe("ai-sdk");
-    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, undefined, "fallback")).toBe("ai-sdk");
-    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, undefined, "fallback")).toBe(
-      "claude-cli-provider",
-    );
-  });
-
-  it("uses agent runtime when phase and workflow do not override it", async () => {
-    const path = await writeTempYaml(
-      `name: t
-version: 1
-phases:
-  - { id: plan, agent: p, gate: human }
-  - { id: review, agent: r, runtime: claude-cli-provider, gate: human }
-`,
-    );
-    const wf = await loader.load(path);
-
-    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "agent-runtime", "fallback")).toBe(
-      "agent-runtime",
-    );
-    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "agent-runtime", "fallback")).toBe(
-      "claude-cli-provider",
-    );
+    expect(resolvePhaseRuntime(wf.findPhase("plan"), wf, "fallback")).toBe("ai-sdk");
+    expect(resolvePhaseRuntime(wf.findPhase("review"), wf, "fallback")).toBe("claude-cli-provider");
   });
 
   it("loads duplicate phase ids for the workflow compiler to reject", async () => {

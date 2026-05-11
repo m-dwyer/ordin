@@ -1,0 +1,7 @@
+name: broker-acl-probe
+version: 0.1.0
+description: >
+  Deterministic broker-ACL probe. Exercises one allow + one deny tool
+  dispatch in a single phase so the audit chain pins both envelope
+  shapes end-to-end. No LLM call.
+runtime: scripted

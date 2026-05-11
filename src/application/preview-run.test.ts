@@ -15,7 +15,7 @@ describe("PreviewRunUseCase", () => {
     const runtime = new FakeRuntime();
     const loader = new DefaultHarnessStateLoader({
       root,
-      workflowName: "software-delivery",
+      bundleName: "software-delivery",
       engineName: "mastra",
       engines: undefined,
     });

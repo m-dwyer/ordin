@@ -95,6 +95,7 @@ async function makePair(): Promise<{ client: Client }> {
   const root = await makeHarnessRoot();
   const service = new RunService({
     root,
+    bundle: "software-delivery",
     dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
   });
   const server = createMcpServer(service);

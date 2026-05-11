@@ -27,6 +27,7 @@ describe("deriveToolPolicy", () => {
       deriveToolPolicy({
         allowedTools: ["Read", "Read", "Bash(git diff*)", "Bash(git status*)"],
         hasSkills: false,
+        cwd: "/cwd",
       }),
     ).toEqual({
       specs: [
@@ -35,6 +36,7 @@ describe("deriveToolPolicy", () => {
         { name: "Bash", pattern: "git status*" },
       ],
       toolNames: ["Read", "Bash"],
+      cwd: "/cwd",
     });
   });
 
@@ -43,6 +45,7 @@ describe("deriveToolPolicy", () => {
       deriveToolPolicy({
         allowedTools: ["Read"],
         hasSkills: true,
+        cwd: "/cwd",
       }).toolNames,
     ).toEqual(["Read", "Skill"]);
   });
@@ -52,6 +55,7 @@ describe("deriveToolPolicy", () => {
       deriveToolPolicy({
         allowedTools: ["Skill"],
         hasSkills: true,
+        cwd: "/cwd",
       }).toolNames,
     ).toEqual(["Skill"]);
   });
@@ -61,10 +65,12 @@ describe("deriveToolPolicy", () => {
       deriveToolPolicy({
         allowedTools: ["Hammer"],
         hasSkills: false,
+        cwd: "/cwd",
       }),
     ).toEqual({
       specs: [{ name: "Hammer", pattern: undefined }],
       toolNames: ["Hammer"],
+      cwd: "/cwd",
     });
   });
 });

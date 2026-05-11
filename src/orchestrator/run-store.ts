@@ -14,6 +14,8 @@ import { join } from "node:path";
 export interface RunMeta {
   runId: string;
   workflow: string;
+  /** Bundle that produced this run; the hash pins the exact loaded content. */
+  bundle: { name: string; version: string; hash: string };
   tier: "S" | "M" | "L";
   task: string;
   slug: string;

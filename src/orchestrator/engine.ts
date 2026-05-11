@@ -50,6 +50,12 @@ export interface EngineServices {
    */
   readonly runtimeNames: ReadonlySet<string>;
   readonly runStore: RunStore;
+  /**
+   * Bundle that produced this run — name + version + content hash.
+   * Persisted in `RunMeta.bundle` and emitted as `ordin.bundle.*` span
+   * attributes so traces can be sliced by exact loaded content.
+   */
+  readonly bundle: { readonly name: string; readonly version: string; readonly hash: string };
 }
 
 /**

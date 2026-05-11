@@ -1,0 +1,7 @@
+name: software-delivery
+version: 0.1.0
+description: >
+  Personal-first software delivery pipeline: turn a problem statement into a
+  reviewable RFC, then a PR-ready branch, then an independent review.
+runtime: ai-sdk
+model: qwen3.6:latest

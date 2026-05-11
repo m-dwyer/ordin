@@ -25,7 +25,7 @@ describe("run command resolution", () => {
       () => fakeRuntime({ runs: { old: prior } }),
     );
 
-    expect(resolved.workflow).toBe("software-delivery");
+    expect(resolved.bundle).toBe("software-delivery");
     expect(resolved.sandbox).toBe("srt");
     expect(resolved.input).toMatchObject({
       task: "Old task",
@@ -179,9 +179,6 @@ function fakeRuntime(opts: {
     paths: () => ({
       root: opts.root ?? "/harness",
       configFile: "",
-      workflowFile: "",
-      agentsDir: "",
-      skillsDir: "",
       projectsFile: "",
       projectsLocalFile: "",
     }),
@@ -193,6 +190,7 @@ function runMeta(overrides: Partial<RunMeta>): RunMeta {
   return {
     runId: "run",
     workflow: "software-delivery",
+    bundle: { name: "software-delivery", version: "0", hash: "0".repeat(64) },
     tier: "M",
     task: "Task",
     slug: "task",

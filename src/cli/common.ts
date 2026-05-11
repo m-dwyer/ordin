@@ -20,7 +20,8 @@ export function parseSandboxMode(value: string): SandboxMode {
 }
 
 export interface OrdinCliOptions {
-  readonly workflow?: string;
+  readonly bundle?: string;
+  readonly bundleDir?: string;
   readonly sandboxMode?: SandboxMode;
   readonly scriptPath?: string;
 }
@@ -37,7 +38,8 @@ export interface OrdinCliOptions {
  */
 export function ordin(opts: OrdinCliOptions = {}): Harness {
   return new Harness({
-    ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    bundle: opts.bundle ?? "software-delivery",
+    ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
     ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
     ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
   });
@@ -70,13 +72,15 @@ export interface OrdinRunSession {
  * load `common.ts` but never trigger the renderer load.
  */
 export async function ordinRunSession(opts: {
-  readonly workflow?: string;
+  readonly bundle: string;
+  readonly bundleDir?: string;
   readonly sandboxMode?: SandboxMode;
   readonly scriptPath?: string;
   readonly header: RunHeader;
 }): Promise<OrdinRunSession> {
   const sharedOpts = {
-    ...(opts.workflow ? { workflow: opts.workflow } : {}),
+    bundle: opts.bundle,
+    ...(opts.bundleDir ? { bundleDir: opts.bundleDir } : {}),
     ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
     ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
   };

@@ -25,7 +25,6 @@ export function registerRemote(program: Command): void {
   remote
     .command("start <task...>")
     .description("POST /runs — start a workflow on the remote server")
-    .option("-w, --workflow <name>", "Workflow name")
     .option("-p, --project <name>", "Project from server's projects.yaml")
     .option("-r, --repo <path>", "Absolute repo path on the server")
     .option("-t, --tier <tier>", "Task tier (S|M|L)", parseTier, "M" as const)
@@ -44,7 +43,6 @@ export function registerRemote(program: Command): void {
   remote
     .command("preview <task...>")
     .description("POST /preview — composed prompts without running anything")
-    .option("-w, --workflow <name>", "Workflow name")
     .option("-p, --project <name>", "Project from server's projects.yaml")
     .option("-r, --repo <path>", "Absolute repo path on the server")
     .option("-t, --tier <tier>", "Task tier (S|M|L)", parseTier, "M" as const)
@@ -134,7 +132,6 @@ interface RemoteOptions {
 }
 
 interface StartOptions {
-  readonly workflow?: string;
   readonly project?: string;
   readonly repo?: string;
   readonly tier: "S" | "M" | "L";
