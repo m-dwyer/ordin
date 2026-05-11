@@ -9,7 +9,7 @@
  * gate handling.
  */
 import type { Phase } from "../../domain/workflow";
-import { gateResolverFor } from "../../gates/resolver";
+import { gateResolverFor } from "../../gates/dispatch";
 import type { Gate, GateContext, GateDecision, GatePrompter } from "../../gates/types";
 import type { RunEvent } from "../../runtime/harness";
 import { firstLine, formatDuration, summariseToolInput } from "./format";

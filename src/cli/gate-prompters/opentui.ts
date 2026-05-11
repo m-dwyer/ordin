@@ -11,7 +11,7 @@
  * controller exactly the way it used the Clack one.
  */
 import type { Phase } from "../../domain/workflow";
-import { gateResolverFor } from "../../gates/resolver";
+import { gateResolverFor } from "../../gates/dispatch";
 import type { Gate, GateContext, GateDecision, GatePrompter } from "../../gates/types";
 import type { OpenTuiRunController } from "../tui/controller";
 

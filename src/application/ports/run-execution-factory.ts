@@ -28,22 +28,10 @@ export interface RunExecutionPrepareOptions {
   readonly onEvent: ((event: RunEvent) => void) | undefined;
 }
 
-export interface RunExecutionFactory {
-  prepare(opts: RunExecutionPrepareOptions): Promise<RunExecution>;
-}
-
 /**
- * Session-scoped overrides applied to every `prepare()` call. The
- * composition root pre-binds these at factory construction so use
- * cases can stay ignorant of sandbox / dispatcher injection.
+ * Application-layer port for constructing a per-run `RunExecution`.
+ * Composition roots build the closure with session-scoped overrides
+ * (sandbox mode, dispatch shim, egress prompter) pre-bound, so use
+ * cases stay ignorant of how the execution is wired.
  */
-export interface RunExecutionFactoryOverrides {
-  readonly dispatchPhaseOverride:
-    | ((request: PhaseDispatchRequest) => Promise<PhaseRunResult>)
-    | undefined;
-  readonly egressGatePrompter:
-    | ((req: { host: string; port: number | undefined }) => Promise<boolean>)
-    | undefined;
-  readonly sandboxModeOverride: SandboxMode | undefined;
-  readonly scriptPathOverride: string | undefined;
-}
+export type RunExecutionFactory = (opts: RunExecutionPrepareOptions) => Promise<RunExecution>;

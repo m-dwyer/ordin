@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
-import type { RunExecution } from "../application/ports";
+import type { RunExecution, RunExecutionPrepareOptions } from "../application/ports";
 import { Broker } from "../broker";
 import { AuditService } from "../broker/audit-service";
 import { InProcessBrokerClient } from "../broker/client/in-process";
 import type { BrokerClient } from "../broker/client/types";
 import { BrokerDispatch } from "../broker/dispatch";
 import { makeToolServiceHandler } from "../broker/tool-service";
-import type { HarnessConfig, SandboxMode } from "../domain/config";
+import type { SandboxMode } from "../domain/config";
 import { shutdownTracing, startTracing } from "../observability/tracing";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
@@ -25,13 +25,13 @@ import {
 import { resolveClaudeBin } from "./resolve-claude-bin";
 import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
 
-export interface RunExecutionOptions {
-  readonly root: string;
-  readonly workflowName: string;
-  readonly config: HarnessConfig;
-  readonly workspaceRoot: string;
-  readonly projectName: string | undefined;
-  readonly onEvent: ((event: RunEvent) => void) | undefined;
+/**
+ * Session-scoped overrides applied to every prepared `RunExecution`.
+ * The composition root captures these once and merges them with
+ * per-run `RunExecutionPrepareOptions` inside its `RunExecutionFactory`
+ * closure, so application use cases never see them.
+ */
+export interface RunExecutionOverrides {
   readonly dispatchPhaseOverride:
     | ((request: PhaseDispatchRequest) => Promise<PhaseRunResult>)
     | undefined;
@@ -42,18 +42,32 @@ export interface RunExecutionOptions {
   readonly scriptPathOverride: string | undefined;
 }
 
+export type RunExecutionOptions = RunExecutionPrepareOptions & RunExecutionOverrides;
+
 /**
  * Per-run execution plumbing — the concrete adapter behind the
  * application-layer `RunExecution` port. Owns broker/audit/sandbox
  * lifecycle and constructs the `PhaseDispatcher` that drives each phase.
- * Constructed via `DefaultRunExecutionFactory.prepare`; use cases never
- * `new` this class directly.
+ * Use cases never `new` this class directly; the composition root's
+ * `RunExecutionFactory` closure calls `DefaultRunExecution.prepare`.
  */
 export class DefaultRunExecution implements RunExecution {
   private infra?: RunInfra;
   private tracingStarted = false;
 
   constructor(private readonly opts: RunExecutionOptions) {}
+
+  /**
+   * Build a prepared `DefaultRunExecution` in one step. Equivalent to
+   * `new DefaultRunExecution(opts)` followed by `prepareInfra()`, but
+   * gives the composition root a single call to invoke from its factory
+   * closure.
+   */
+  static async prepare(opts: RunExecutionOptions): Promise<DefaultRunExecution> {
+    const execution = new DefaultRunExecution(opts);
+    await execution.prepareInfra();
+    return execution;
+  }
 
   async prepareInfra(): Promise<void> {
     const egress = await this.prepareEgressStore();

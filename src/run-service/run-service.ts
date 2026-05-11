@@ -3,7 +3,6 @@ import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
 import type { GateDecision } from "../gates/types";
 import type { RunEvent } from "../orchestrator/events";
-import type { PendingGate } from "../runtime/deferred-gate-prompter";
 import {
   HarnessRuntime,
   type HarnessRuntimeOptions,
@@ -11,6 +10,7 @@ import {
   type RunSession,
   type StartRunInput,
 } from "../runtime/harness";
+import type { PendingGate } from "../runtime/run-session";
 
 /**
  * HTTP/MCP-shaped facade over `HarnessRuntime`. Server-mode entry point:

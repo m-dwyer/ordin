@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { dispatchFromRuntime, FakeRuntime } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { AutoGate } from "../gates/auto";
+import { AutoGate } from "../gates/dispatch";
 import type { RunEvent } from "../orchestrator/events";
 import { HarnessRuntime } from "./harness";
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AutoGate } from "../../src/gates/auto";
+import { AutoGate } from "../../src/gates/dispatch";
 import { HarnessRuntime } from "../../src/runtime/harness";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");

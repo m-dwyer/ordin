@@ -1,25 +1,27 @@
 import { requireSlug } from "../domain/slug";
 import type { Phase } from "../domain/workflow";
-import { AutoGate } from "../gates/auto";
+import { gateResolverFor } from "../gates/dispatch";
 import type { Gate } from "../gates/types";
 import type { EngineRunInput, EngineServices, GateRequest } from "../orchestrator/engine";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { HarnessStateLoader, LoadedHarnessState, RunExecutionFactory } from "./ports";
 import type { StartRunInput } from "./types";
 import { workflowForRun } from "./workflow-slice";
+import type { WorkspaceResolver } from "./workspace-resolver";
 
 export class StartRunUseCase {
   constructor(
     private readonly loader: HarnessStateLoader,
     private readonly factory: RunExecutionFactory,
+    private readonly workspaceResolver: WorkspaceResolver,
   ) {}
 
   async execute(input: StartRunInput): Promise<RunMeta> {
     const state = await this.loader.load();
     const slug = requireSlug(input.slug);
-    const workspaceRoot = await this.loader.resolveWorkspace(input);
+    const workspaceRoot = await this.workspaceResolver.resolve(input);
     const program = state.engine.compile(workflowForRun(state.workflow, input));
-    const execution = await this.factory.prepare({
+    const execution = await this.factory({
       root: this.loader.root,
       workflowName: this.loader.workflowName,
       config: state.config,
@@ -27,7 +29,7 @@ export class StartRunUseCase {
       projectName: input.projectName,
       onEvent: input.onEvent,
     });
-    const gateForKind = input.gateForKind ?? defaultGateResolver;
+    const gateForKind = input.gateForKind ?? gateResolverFor();
     try {
       await execution.enter();
       const runInput: EngineRunInput = {
@@ -59,32 +61,6 @@ function handleGateRequest(gateForKind: (kind: Phase["gate"]) => Gate, request: 
     artefacts: request.artefacts,
     summary: request.summary,
   });
-}
-
-/**
- * Strict default: only `auto` gates are auto-approved. `human` and
- * `pre-commit` require an explicit `gateForKind` resolver — the CLI
- * wires clack + HumanGate, headless callers wrap session.resolveGate,
- * eval/CI callers supply `() => new AutoGate()` to opt into headless
- * approval. Failing closed here prevents a caller from silently
- * shipping past a human checkpoint by forgetting to wire a resolver.
- */
-function defaultGateResolver(kind: Phase["gate"]): Gate {
-  switch (kind) {
-    case "auto":
-      return new AutoGate();
-    case "human":
-    case "pre-commit":
-      throw new Error(
-        `Gate kind "${kind}" requires an explicit gate resolver. Pass StartRunInput.gateForKind ` +
-          "(e.g. clack-backed HumanGate for CLI, deferred prompter for HTTP/MCP, or " +
-          "`() => new AutoGate()` for headless).",
-      );
-    default: {
-      const _exhaustive: never = kind;
-      throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
-    }
-  }
 }
 
 function engineServices(state: LoadedHarnessState): EngineServices {

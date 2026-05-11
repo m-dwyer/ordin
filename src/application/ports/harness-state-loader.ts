@@ -1,5 +1,5 @@
 import type { Agent } from "../../domain/agent";
-import type { HarnessConfig, SandboxMode } from "../../domain/config";
+import type { HarnessConfig } from "../../domain/config";
 import type { ProjectRegistry } from "../../domain/project";
 import type { WorkflowManifest } from "../../domain/workflow";
 import type { Engine } from "../../orchestrator/engine";
@@ -31,9 +31,4 @@ export interface HarnessStateLoader {
   paths(): HarnessPaths;
   load(): Promise<LoadedHarnessState>;
   runStore(): Promise<RunStore>;
-  resolveWorkspace(input: {
-    readonly projectName?: string;
-    readonly repoPath?: string;
-  }): Promise<string>;
-  sandboxMode(): Promise<SandboxMode>;
 }

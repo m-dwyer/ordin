@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AutoGate } from "../../src/gates/auto";
-import { HumanGate } from "../../src/gates/human";
+import { AutoGate, HumanGate } from "../../src/gates/dispatch";
 import type { GateContext, GateDecision, GatePrompter } from "../../src/gates/types";
 
 describe("AutoGate", () => {

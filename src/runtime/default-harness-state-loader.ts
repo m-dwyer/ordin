@@ -1,7 +1,5 @@
-import { stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { HarnessPaths, HarnessStateLoader, LoadedHarnessState } from "../application/ports";
-import type { SandboxMode } from "../domain/config";
 import { AgentLoader } from "../infrastructure/agent-loader";
 import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
@@ -17,7 +15,6 @@ export interface DefaultHarnessStateLoaderOptions {
   readonly workflowName: string;
   readonly engineName: string;
   readonly engines: Iterable<Engine> | undefined;
-  readonly sandboxModeOverride: SandboxMode | undefined;
 }
 
 /**
@@ -62,32 +59,6 @@ export class DefaultHarnessStateLoader implements HarnessStateLoader {
     return new RunStore(config.runStoreDir());
   }
 
-  async resolveWorkspace(input: {
-    readonly projectName?: string;
-    readonly repoPath?: string;
-  }): Promise<string> {
-    if (input.repoPath && input.projectName) {
-      throw new Error(
-        "startRun accepts either `projectName` (registry) or `repoPath`, not both — " +
-          "pick the one that names the workspace you mean to run against.",
-      );
-    }
-    if (!input.repoPath && !input.projectName) {
-      throw new Error("startRun requires either `projectName` (registry) or `repoPath`");
-    }
-    const workspaceRoot = input.repoPath
-      ? resolve(input.repoPath)
-      : (await this.load()).projects.get(input.projectName ?? "").path;
-    await assertWorkspaceDirectory(workspaceRoot);
-    return workspaceRoot;
-  }
-
-  async sandboxMode(): Promise<SandboxMode> {
-    if (this.opts.sandboxModeOverride) return this.opts.sandboxModeOverride;
-    const config = await this.loadConfig();
-    return config.sandboxMode();
-  }
-
   private async doLoad(): Promise<LoadedHarnessState> {
     const paths = this.paths();
     const [config, workflow, skills, projects] = await Promise.all([
@@ -111,22 +82,5 @@ export class DefaultHarnessStateLoader implements HarnessStateLoader {
   private loadConfig() {
     this.configPromise ??= new HarnessConfigLoader().load(this.paths().configFile);
     return this.configPromise;
-  }
-}
-
-async function assertWorkspaceDirectory(path: string): Promise<void> {
-  let info: Awaited<ReturnType<typeof stat>>;
-  try {
-    info = await stat(path);
-  } catch (err) {
-    const code =
-      typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-    if (code === "ENOENT") {
-      throw new Error(`Workspace path does not exist: ${path}`);
-    }
-    throw err;
-  }
-  if (!info.isDirectory()) {
-    throw new Error(`Workspace path is not a directory: ${path}`);
   }
 }

@@ -6,6 +6,7 @@ import { FakeRuntime } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
 import { DefaultHarnessStateLoader } from "../runtime/default-harness-state-loader";
 import { PreviewRunUseCase } from "./preview-run";
+import { WorkspaceResolver } from "./workspace-resolver";
 
 describe("PreviewRunUseCase", () => {
   it("returns composed prompts without invoking a runtime", async () => {
@@ -17,10 +18,9 @@ describe("PreviewRunUseCase", () => {
       workflowName: "software-delivery",
       engineName: "mastra",
       engines: undefined,
-      sandboxModeOverride: undefined,
     });
 
-    const previews = await new PreviewRunUseCase(loader).execute({
+    const previews = await new PreviewRunUseCase(loader, new WorkspaceResolver(loader)).execute({
       task: "Preview the whole thing",
       slug: "preview-it",
       repoPath,

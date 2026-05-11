@@ -1,10 +1,11 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { HarnessPaths } from "../application/ports";
+import type { HarnessPaths, RunExecutionFactory } from "../application/ports";
 import { PreviewRunUseCase } from "../application/preview-run";
 import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "../application/run-queries";
 import { StartRunUseCase } from "../application/start-run";
 import type { StartRunInput } from "../application/types";
+import { WorkspaceResolver } from "../application/workspace-resolver";
 import type { VerifyResult } from "../broker/audit-chain";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
@@ -14,7 +15,7 @@ import type { PhaseRunResult } from "../orchestrator/phase-runner";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
-import { DefaultRunExecutionFactory } from "./default-run-execution-factory";
+import { DefaultRunExecution } from "./run-execution";
 import { DefaultRunSession, type RunSession } from "./run-session";
 
 export type { StartRunInput } from "../application/types";
@@ -25,8 +26,7 @@ export type { Phase } from "../domain/workflow";
 export type { Gate } from "../gates/types";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
-export type { PendingGate } from "./deferred-gate-prompter";
-export type { RunSession } from "./run-session";
+export type { PendingGate, RunSession } from "./run-session";
 
 /**
  * Stable library surface. The CLI is the Stage 1 client; HTTP and MCP
@@ -85,8 +85,9 @@ export interface HarnessRuntimeOptions {
 /**
  * Composition root. Wires the application-layer use cases to their
  * adapter implementations: `DefaultHarnessStateLoader` reads disk and
- * registers engines; `DefaultRunExecutionFactory` constructs broker /
- * sandbox / dispatcher per run.
+ * registers engines; a closure over the constructor's session-scoped
+ * overrides serves as the `RunExecutionFactory`, delegating to
+ * `DefaultRunExecution.prepare` for each run.
  *
  * Active runs are tracked by `runId` while in flight; `findSession`
  * lets multi-tenant transports (HTTP, MCP) look up the live handle for
@@ -101,6 +102,8 @@ export class HarnessRuntime {
   private readonly getRun_: GetRunUseCase;
   private readonly verifyAudit_: VerifyAuditUseCase;
   private readonly sessions = new Map<string, RunSession>();
+  private readonly sandboxModeOverride: SandboxMode | undefined;
+  private readonly workspaceResolver: WorkspaceResolver;
 
   constructor(opts: HarnessRuntimeOptions = {}) {
     const root = opts.root ?? defaultRoot();
@@ -112,17 +115,21 @@ export class HarnessRuntime {
       workflowName,
       engineName,
       engines: opts.engines,
-      sandboxModeOverride: opts.sandboxMode,
     });
-    const factory = new DefaultRunExecutionFactory({
-      dispatchPhaseOverride: opts.dispatchPhase,
-      egressGatePrompter: opts.egressGatePrompter,
-      sandboxModeOverride: opts.sandboxMode,
-      scriptPathOverride: opts.scriptPath,
-    });
+    this.sandboxModeOverride = opts.sandboxMode;
+    const factory: RunExecutionFactory = (prepareOpts) =>
+      DefaultRunExecution.prepare({
+        ...prepareOpts,
+        dispatchPhaseOverride: opts.dispatchPhase,
+        egressGatePrompter: opts.egressGatePrompter,
+        sandboxModeOverride: opts.sandboxMode,
+        scriptPathOverride: opts.scriptPath,
+      });
+    const workspaceResolver = new WorkspaceResolver(this.loader);
 
-    this.startRun_ = new StartRunUseCase(this.loader, factory);
-    this.previewRun_ = new PreviewRunUseCase(this.loader);
+    this.workspaceResolver = workspaceResolver;
+    this.startRun_ = new StartRunUseCase(this.loader, factory, workspaceResolver);
+    this.previewRun_ = new PreviewRunUseCase(this.loader, workspaceResolver);
     this.listRuns_ = new ListRunsUseCase(this.loader);
     this.getRun_ = new GetRunUseCase(this.loader);
     this.verifyAudit_ = new VerifyAuditUseCase(this.loader);
@@ -213,7 +220,7 @@ export class HarnessRuntime {
   }
 
   resolveRunWorkspace(input: Pick<StartRunInput, "projectName" | "repoPath">): Promise<string> {
-    return this.loader.resolveWorkspace(input);
+    return this.workspaceResolver.resolve(input);
   }
 
   /**
@@ -221,8 +228,10 @@ export class HarnessRuntime {
    * `sandboxMode` constructor override > config file). Used by the
    * doctor command for diagnostic reporting.
    */
-  sandboxMode(): Promise<SandboxMode> {
-    return this.loader.sandboxMode();
+  async sandboxMode(): Promise<SandboxMode> {
+    if (this.sandboxModeOverride) return this.sandboxModeOverride;
+    const state = await this.loader.load();
+    return state.config.sandboxMode();
   }
 
   /** Paths ordin knows about — useful for the CLI `doctor` command. */

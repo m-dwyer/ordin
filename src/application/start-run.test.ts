@@ -8,11 +8,13 @@ import {
   makeStubRuntime,
 } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { AutoGate } from "../gates/auto";
+import { AutoGate } from "../gates/dispatch";
 import { DefaultHarnessStateLoader } from "../runtime/default-harness-state-loader";
-import { DefaultRunExecutionFactory } from "../runtime/default-run-execution-factory";
+import { DefaultRunExecution } from "../runtime/run-execution";
 import type { AgentRuntime } from "../worker/runtimes/types";
+import type { RunExecutionFactory } from "./ports";
 import { StartRunUseCase } from "./start-run";
+import { WorkspaceResolver } from "./workspace-resolver";
 
 describe("StartRunUseCase", () => {
   it("passes phase-specific artefact inputs through a full run", async () => {
@@ -99,15 +101,19 @@ async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
     workflowName: "software-delivery",
     engineName: "mastra",
     engines: undefined,
-    sandboxModeOverride: undefined,
   });
-  const factory = new DefaultRunExecutionFactory({
-    dispatchPhaseOverride: dispatchFromRuntime(runtime),
-  });
+  const factory: RunExecutionFactory = (opts) =>
+    DefaultRunExecution.prepare({
+      ...opts,
+      dispatchPhaseOverride: dispatchFromRuntime(runtime),
+      egressGatePrompter: undefined,
+      sandboxModeOverride: undefined,
+      scriptPathOverride: undefined,
+    });
   return {
     root,
     repoPath,
     runtime,
-    useCase: new StartRunUseCase(loader, factory),
+    useCase: new StartRunUseCase(loader, factory, new WorkspaceResolver(loader)),
   };
 }

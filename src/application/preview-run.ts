@@ -4,14 +4,18 @@ import type { PreviewInput, PreviewServices } from "../orchestrator/engine";
 import type { HarnessStateLoader } from "./ports";
 import type { StartRunInput } from "./types";
 import { workflowForRun } from "./workflow-slice";
+import type { WorkspaceResolver } from "./workspace-resolver";
 
 export class PreviewRunUseCase {
-  constructor(private readonly loader: HarnessStateLoader) {}
+  constructor(
+    private readonly loader: HarnessStateLoader,
+    private readonly workspaceResolver: WorkspaceResolver,
+  ) {}
 
   async execute(input: StartRunInput): Promise<readonly PhasePreview[]> {
     const state = await this.loader.load();
     const slug = requireSlug(input.slug);
-    const workspaceRoot = await this.loader.resolveWorkspace(input);
+    const workspaceRoot = await this.workspaceResolver.resolve(input);
     const program = state.engine.compile(workflowForRun(state.workflow, input));
     const previewInput: PreviewInput = {
       task: input.task,

@@ -6,6 +6,5 @@ export type {
 export type {
   RunExecution,
   RunExecutionFactory,
-  RunExecutionFactoryOverrides,
   RunExecutionPrepareOptions,
 } from "./run-execution-factory";
