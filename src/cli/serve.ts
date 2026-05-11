@@ -1,5 +1,7 @@
 import type { Command } from "commander";
-import { createHttpApp, isLoopbackHost, startHttpServer, tokenFromEnv } from "../http";
+import { createHttpApp } from "../http/app";
+import { isLoopbackHost, tokenFromEnv } from "../http/auth";
+import { startHttpServer } from "../http/server";
 import { RunService } from "../run-service/run-service";
 import { printBlank, printCommandHeader, printHint, printKeyValue, styled } from "./tui/print";
 import { PALETTE } from "./tui/theme";
