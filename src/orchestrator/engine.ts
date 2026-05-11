@@ -1,7 +1,7 @@
 import type { Agent } from "../domain/agent";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
-import type { GateKind, Phase, WorkflowManifest } from "../domain/workflow";
+import type { GateKind, WorkflowManifest } from "../domain/workflow";
 import type { GateArtefact, GateDecision } from "../gates/types";
 import type { RunEvent } from "./events";
 import type { PhaseRunResult } from "./phase-runner";
@@ -28,7 +28,6 @@ export interface Engine {
 }
 
 export interface WorkflowProgram {
-  readonly engineName: string;
   readonly manifest: WorkflowManifest;
   readonly plan: ExecutionPlan;
 }
@@ -98,7 +97,6 @@ export interface PhaseDispatchRequest {
   readonly runId: string;
   readonly runDir: string;
   readonly iteration: number;
-  readonly phase: Phase;
   readonly preview: PhasePreview;
   readonly runtimeName: string;
   readonly emit: (event: RunEvent) => void;

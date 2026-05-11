@@ -20,7 +20,7 @@ export type EngineOutcome = "halted" | "failed";
  * arrive via the `onGateRequested` callback the application supplied
  * on `EngineRunInput`.
  */
-export interface PhaseExecutorContext {
+export interface PhaseTransactionContext {
   readonly runId: string;
   readonly meta: RunMeta;
   readonly manifest: WorkflowManifest;
@@ -73,7 +73,7 @@ class PhaseTransaction {
   private readonly artefacts: ArtefactManager;
   private readonly gate: GateCoordinator;
 
-  constructor(private readonly ctx: PhaseExecutorContext) {
+  constructor(private readonly ctx: PhaseTransactionContext) {
     this.artefacts = new ArtefactManager(ctx.input.workspaceRoot);
     this.gate = new GateCoordinator({
       runId: ctx.runId,
@@ -101,11 +101,7 @@ class PhaseTransaction {
       return await this.failBeforeRuntime(phase, iteration, planning.error);
     }
 
-    const {
-      meta: phaseMeta,
-      invokeResult,
-      events,
-    } = await this.invoke(phase, planning.plan, iteration);
+    const { meta: phaseMeta, invokeResult, events } = await this.invoke(planning.plan, iteration);
     await this.recordRunResult(phaseMeta);
 
     if (phaseMeta.status === "failed") {
@@ -170,17 +166,12 @@ class PhaseTransaction {
     return { ok: true, plan: { preview, runtimeName: preview.runtimeName } };
   }
 
-  private async invoke(
-    phase: Phase,
-    plan: PhaseInvocationPlan,
-    iteration: number,
-  ): Promise<PhaseRunResult> {
+  private async invoke(plan: PhaseInvocationPlan, iteration: number): Promise<PhaseRunResult> {
     const runDir = await this.ctx.services.runStore.ensureRunDir(this.ctx.runId);
     return this.ctx.input.dispatchPhase({
       runId: this.ctx.runId,
       runDir,
       iteration,
-      phase,
       preview: plan.preview,
       runtimeName: plan.runtimeName,
       emit: this.ctx.emit,
@@ -263,7 +254,7 @@ function formatMissing(suffix: string, phase: Phase, missing: readonly ArtefactP
  */
 export async function executePhase(
   phase: Phase,
-  ctx: PhaseExecutorContext,
+  ctx: PhaseTransactionContext,
 ): Promise<PhaseExecutionOutcome> {
   const iteration = (ctx.iterations.get(phase.id) ?? 0) + 1;
   return withSpan(
@@ -299,7 +290,7 @@ function phaseFailure(meta: RunMeta, phaseId: string, iteration: number): string
 
 function phaseOutput(
   approved: boolean,
-  outcome: PhaseExecutorContext["outcome"],
+  outcome: PhaseTransactionContext["outcome"],
   failure: string | undefined,
 ): string {
   if (failure) return `outcome=${outcome ?? "failed"}\nerror=${failure}`;

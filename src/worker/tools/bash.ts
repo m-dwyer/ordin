@@ -13,6 +13,13 @@ export interface BashInput {
  * `src/runtime/worker-policy.ts`: the basics needed for shell
  * commands (HOME / PATH / TERM / locale) plus tracing context.
  *
+ * `HTTP_PROXY` is deliberately excluded: under non-srt modes its value
+ * carries the per-run broker auth credential (`http://ordin:<token>@…`),
+ * and bash runs broker-side with direct host network access — tunneling
+ * subprocess egress through the broker is theatre, not a real boundary,
+ * so leaking the credential buys nothing. Real bash isolation is the
+ * Phase C follow-up in docs/worker-trust-boundary-plan.md.
+ *
  * Independent allowlist (no cross-layer import) so the broker layer
  * stays self-contained — `src/runtime/` is the harness, broker shouldn't
  * reach into it.
@@ -27,11 +34,6 @@ const BASH_ENV_ALLOWLIST = new Set([
   "LANG",
   "LC_ALL",
   "TRACEPARENT",
-  // HTTP_PROXY is the worker → broker tunnel under non-srt subprocess
-  // mode; harmless inside the broker's bash since the broker IS the
-  // proxy target. Allowed so bash-spawned tooling that honors
-  // HTTP_PROXY (curl etc.) sees a consistent environment.
-  "HTTP_PROXY",
 ]);
 
 export async function executeBash(cwd: string, input: BashInput): Promise<string> {

@@ -24,7 +24,6 @@ import { readFile, writeFile } from "node:fs/promises";
 import { HttpBrokerClient } from "../broker/client/http";
 import type { BrokerClient } from "../broker/client/types";
 import type { PhasePreview } from "../domain/phase-preview";
-import type { Phase } from "../domain/workflow";
 import {
   shutdownWorkerTracing,
   startWorkerTracing,
@@ -42,7 +41,6 @@ interface WorkerPlan {
   readonly runId: string;
   readonly runDir: string;
   readonly iteration: number;
-  readonly phase: Phase;
   readonly preview: PhasePreview;
   readonly runtimeName: string;
   readonly runtimeConfig: unknown;

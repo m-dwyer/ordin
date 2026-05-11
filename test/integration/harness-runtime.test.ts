@@ -13,7 +13,6 @@ describe("HarnessRuntime", () => {
     const engine: Engine = {
       name: "custom",
       compile: (manifest) => ({
-        engineName: "custom",
         manifest,
         plan: compileWorkflowPlan(manifest),
       }),

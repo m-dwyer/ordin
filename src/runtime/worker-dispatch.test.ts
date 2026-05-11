@@ -199,7 +199,6 @@ function phaseDispatchRequest(root: string, runDir: string): PhaseDispatchReques
     runId: "run-1",
     runDir,
     iteration: 1,
-    phase,
     preview: phasePreview(root, phase),
     runtimeName: "scripted",
     emit: () => {},

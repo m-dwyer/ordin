@@ -12,7 +12,7 @@ import type {
   WorkflowProgram,
 } from "../engine";
 import type { RunEvent } from "../events";
-import { executePhase, type PhaseExecutorContext } from "../phase-executor";
+import { executePhase, type PhaseTransactionContext } from "../phase-transaction";
 import { generateRunId, type RunMeta } from "../run-store";
 import { compileWorkflowPlan, type ExecutionPlan } from "../workflow-plan";
 
@@ -31,7 +31,7 @@ import { compileWorkflowPlan, type ExecutionPlan } from "../workflow-plan";
  */
 const GateResult = z.object({ approved: z.boolean().optional() });
 
-type RunCtx = PhaseExecutorContext;
+type RunCtx = PhaseTransactionContext;
 
 /**
  * Mastra step `bail(result)` ends the workflow cleanly with status
@@ -47,7 +47,6 @@ export class MastraEngine implements Engine {
 
   compile(manifest: WorkflowManifest): WorkflowProgram {
     return {
-      engineName: this.name,
       manifest,
       plan: compileWorkflowPlan(manifest),
     };

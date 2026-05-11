@@ -25,8 +25,11 @@ export async function prepareWorkerDispatch(
   req: PhaseDispatchRequest,
   config: WorkerDispatchConfig,
 ): Promise<PreparedWorkerDispatch> {
-  const planPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.plan.json`);
-  const resultPath = join(req.runDir, `worker-${req.phase.id}-${req.iteration}.result.json`);
+  const planPath = join(req.runDir, `worker-${req.preview.phase.id}-${req.iteration}.plan.json`);
+  const resultPath = join(
+    req.runDir,
+    `worker-${req.preview.phase.id}-${req.iteration}.result.json`,
+  );
   const plan = {
     harnessRoot: config.harnessRoot,
     workflowName: config.workflowName,
@@ -35,7 +38,6 @@ export async function prepareWorkerDispatch(
     runId: req.runId,
     runDir: req.runDir,
     iteration: req.iteration,
-    phase: req.phase,
     preview: req.preview,
     runtimeName: req.runtimeName,
     runtimeConfig: config.runtimeConfigFor(req.runtimeName),
@@ -50,7 +52,7 @@ export async function prepareWorkerDispatch(
         workerEnv: config.workerEnv,
         planPath,
         resultPath,
-        phaseId: req.phase.id,
+        phaseId: req.preview.phase.id,
         iteration: req.iteration,
         invokeReq,
       }),

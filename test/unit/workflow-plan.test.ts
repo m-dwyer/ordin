@@ -144,7 +144,6 @@ describe("EngineRegistry", () => {
   const fakeEngine: Engine = {
     name: "fake",
     compile: (manifest) => ({
-      engineName: "fake",
       manifest,
       plan: compileWorkflowPlan(manifest),
     }),
