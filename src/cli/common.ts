@@ -97,6 +97,13 @@ export async function ordinRunSession(opts: {
     };
   }
 
+  // Tee stderr to ~/.ordin/logs/latest.log BEFORE anything that might
+  // write to it: tree-sitter worker errors, runtime telemetry, etc.
+  // The TUI's alt-screen masks live stderr, so capturing to disk is
+  // the only way to surface failures after the run ends.
+  const { installStderrTee, stripAnsi } = await import("./run-log");
+  const stderrTee = installStderrTee();
+
   // Under L2, the parent owns the TUI for the entire run. Mounting it
   // up-front (before the runtime ever spawns a worker) means there's no
   // alt-screen race with sandboxed children — the inner is just a
@@ -135,6 +142,23 @@ export async function ordinRunSession(opts: {
       // Final summary lands AFTER renderer teardown, on plain stdout —
       // sidesteps OpenTUI's destroy-time scrollback re-flush.
       controller.printFinalSummary();
+      // Surface any stderr captured during the run (tree-sitter,
+      // runtime warnings, etc.). The TUI swallowed them while mounted;
+      // this is the only place the user reliably sees them. Trim heavy
+      // ANSI to keep the printout readable.
+      const captured = stderrTee.readSnapshot().trim();
+      if (captured.length > 0) {
+        process.stdout.write(`\n  stderr captured at ${stderrTee.path}:\n`);
+        const lines = captured.split("\n");
+        const tail = lines.slice(-30);
+        for (const line of tail) {
+          process.stdout.write(`    ${stripAnsi(line)}\n`);
+        }
+        if (lines.length > tail.length) {
+          process.stdout.write(`    … (${lines.length - tail.length} earlier lines)\n`);
+        }
+      }
+      await stderrTee.close();
     },
   };
 }
