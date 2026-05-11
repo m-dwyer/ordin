@@ -23,8 +23,8 @@ import { applyGain, type CliRenderer, createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
+import type { RunEvent, RunMeta } from "../../composition/harness";
 import type { GateContext, GateDecision } from "../../gates/types";
-import type { RunEvent, RunMeta } from "../../runtime/harness";
 import {
   ansiStyled,
   buildEditDiff,

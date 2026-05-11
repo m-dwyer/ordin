@@ -93,9 +93,9 @@ _Avoid_: mock runtime, test runner
 
 ### Orchestration And Clients
 
-**Harness Runtime**:
-The stable client-facing seam for starting, previewing, and inspecting runs.
-_Avoid_: app service, runtime service
+**Harness**:
+The stable client-facing seam (composition root) for starting, previewing, and inspecting runs.
+_Avoid_: harness runtime, app service, runtime service
 
 **Run Execution**:
 The per-run lifecycle module for broker, audit, sandbox, egress, tracing, worker dispatch, and phase ACLs.
@@ -110,7 +110,7 @@ The parent-side driver for one prepared phase invocation.
 _Avoid_: phase executor, runtime wrapper
 
 **Run Service**:
-The server-friendly layer that turns blocking **Harness Runtime** calls into background runs with subscriptions and deferred gates.
+The server-friendly layer that turns blocking **Harness** calls into background runs with subscriptions and deferred gates.
 _Avoid_: HTTP service, run manager
 
 **Client Interface**:
@@ -181,7 +181,7 @@ _Avoid_: sample app, test repo
 - A **Gate** decides the handoff after a **Phase** invocation.
 - **Feedback** is produced by a rejected **Gate** and consumed by a later **Phase** invocation.
 - A **Runtime** may call a **Provider** to reach a **Backend / Model**.
-- A **Client Interface** calls **Harness Runtime** or **Run Service** to control runs.
+- A **Client Interface** calls **Harness** or **Run Service** to control runs.
 - **Run Execution** supplies **Phase Runner** with dispatch behavior for each **Phase**.
 - A **Worker** reports a **Tool Intent** to **Broker Dispatch**.
 - **Tool Authority** derives the **Allowed Tools** policy registered with **Broker Dispatch**.
@@ -200,7 +200,7 @@ _Avoid_: sample app, test repo
 
 ## Flagged Ambiguities
 
-- "runtime" can mean **Harness Runtime** or **Runtime**. Use **Harness Runtime** for the client-facing seam and **Runtime** for phase execution adapters.
+- "runtime" was previously ambiguous between the harness's client-facing seam and phase execution adapters. **Harness** is now the client-facing seam; **Runtime** is reserved for phase execution adapters.
 - "provider" and "model" are often conflated with **Runtime**. Use **Provider** for the API endpoint and **Backend / Model** for the model string.
 - "tool call" is ambiguous between model output and broker policy. Use **Tool Intent** for the broker-approved request.
 - "file" is too broad for phase handoff. Use **Artefact** for durable phase inputs/outputs and **Run Metadata** only when referring to harness-internal persistence.

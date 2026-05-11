@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import type { RunMeta } from "../runtime/harness";
+import type { RunMeta } from "../composition/harness";
 import { ordin } from "./common";
 import {
   colorForRunStatus,

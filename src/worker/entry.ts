@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Per-phase sandboxed worker. The parent (HarnessRuntime) writes a
+ * Per-phase sandboxed worker. The parent (Harness) writes a
  * plan JSON file, spawns this entrypoint via `Sandbox.spawnWorker`,
  * streams `RuntimeEvent`s from this process's stdout (one JSON object
  * per line), and reads `result.json` after the worker exits. One phase

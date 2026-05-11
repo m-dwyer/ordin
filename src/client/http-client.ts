@@ -1,4 +1,5 @@
 import type { z } from "@hono/zod-openapi";
+import type { RunEvent } from "../composition/harness";
 import type {
   GateDecisionSchema,
   PendingGateSchema,
@@ -6,7 +7,6 @@ import type {
   RunMetaSchema,
   StartRunRequestSchema,
 } from "../http/schemas";
-import type { RunEvent } from "../runtime/harness";
 
 /**
  * Hand-written HTTP client over the routes in `src/http/`. Same wire

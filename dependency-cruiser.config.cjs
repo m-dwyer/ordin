@@ -22,7 +22,7 @@ module.exports = {
       comment:
         "Domain is pure TypeScript and must not know about the orchestrator.",
       from: { path: "^src/domain" },
-      to: { path: "^src/(orchestrator|runtime|cli|infrastructure)/" },
+      to: { path: "^src/(orchestrator|composition|cli|infrastructure)/" },
     },
     {
       name: "domain-cannot-depend-on-runtimes",
@@ -36,23 +36,23 @@ module.exports = {
       name: "infrastructure-cannot-depend-on-application-layers",
       severity: "error",
       comment:
-        "Infrastructure adapts disk/YAML/frontmatter into domain objects; it must not depend on orchestrator, runtimes, gates, clients, or the harness runtime.",
+        "Infrastructure adapts disk/YAML/frontmatter into domain objects; it must not depend on orchestrator, runtimes, gates, clients, or the harness.",
       from: { path: "^src/infrastructure" },
-      to: { path: "^src/(orchestrator|runtime|application|worker|gates|cli)/" },
+      to: { path: "^src/(orchestrator|composition|application|worker|gates|cli)/" },
     },
     {
-      name: "application-cannot-depend-on-runtime-or-cli",
+      name: "application-cannot-depend-on-composition-or-cli",
       severity: "error",
       comment:
-        "Application use cases depend on ports (interfaces). Concrete adapters live in runtime; runtime injects them. Production code never reaches the other way; co-located *.test.ts files are exempt because they wire real adapters to exercise the use cases end-to-end.",
+        "Application use cases depend on ports (interfaces). Concrete adapters live in composition; composition injects them. Production code never reaches the other way; co-located *.test.ts files are exempt because they wire real adapters to exercise the use cases end-to-end.",
       from: { path: "^src/application", pathNot: "\\.test\\.ts$" },
-      to: { path: "^src/(runtime|cli)/" },
+      to: { path: "^src/(composition|cli)/" },
     },
     {
       name: "application-cannot-depend-on-infrastructure",
       severity: "error",
       comment:
-        "Application orchestrates over abstractions. Infrastructure (disk loaders) is injected via runtime through ports.",
+        "Application orchestrates over abstractions. Infrastructure (disk loaders) is injected via composition through ports.",
       from: { path: "^src/application", pathNot: "\\.test\\.ts$" },
       to: { path: "^src/infrastructure/" },
     },
@@ -68,13 +68,13 @@ module.exports = {
       name: "gates-cannot-depend-on-orchestrator",
       severity: "error",
       from: { path: "^src/gates" },
-      to: { path: "^src/(orchestrator|runtime|cli)/" },
+      to: { path: "^src/(orchestrator|composition|cli)/" },
     },
     {
-      name: "cli-cannot-reach-past-harness-runtime",
+      name: "cli-cannot-reach-past-harness",
       severity: "error",
       comment:
-        "Client interfaces (CLI) only use HarnessRuntime. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ and src/cli/tui/ are CLI-side adapters that legitimately import gates/* (Gate/HumanGate/AutoGate + the Phase type) and the runtime's own RunEvent/RunMeta type re-exports. Also exempt: src/cli/run-command.ts and src/cli/run-seed.ts — CLI-flag-to-StartRunInput resolvers that need domain workflow/phase types to reconstruct prior runs (--again) and to seed/capture artefact fixtures by phase id.",
+        "Client interfaces (CLI) only use Harness. Never reach into domain/runtimes/orchestrator/infrastructure directly. Exception: src/cli/gate-prompters/ and src/cli/tui/ are CLI-side adapters that legitimately import gates/* (Gate/HumanGate/AutoGate + the Phase type) and the harness's own RunEvent/RunMeta type re-exports. Also exempt: src/cli/run-command.ts and src/cli/run-seed.ts — CLI-flag-to-StartRunInput resolvers that need domain workflow/phase types to reconstruct prior runs (--again) and to seed/capture artefact fixtures by phase id.",
       from: {
         path: "^src/cli",
         pathNot: "^src/cli/(gate-prompters|tui)/|^src/cli/run-(command|seed)\\.ts$",
@@ -85,7 +85,7 @@ module.exports = {
       name: "cli-adapters-scoped",
       severity: "error",
       comment:
-        "CLI-side adapters (gate-prompters, tui) may import the gate layer + Phase type, but never the concrete runtimes or the orchestrator's internals. Event/Run types are accessed through runtime/harness re-exports.",
+        "CLI-side adapters (gate-prompters, tui) may import the gate layer + Phase type, but never the concrete runtimes or the orchestrator's internals. Event/Run types are accessed through composition/harness re-exports.",
       from: { path: "^src/cli/(gate-prompters|tui)/" },
       to: { path: "^src/(worker|orchestrator)/" },
     },
@@ -96,7 +96,7 @@ module.exports = {
         "Sandbox is a self-contained isolation primitive. It is consumed by the harness and CLI; it must not depend on other ordin layers.",
       from: { path: "^src/sandbox" },
       to: {
-        path: "^src/(domain|orchestrator|worker|gates|cli|infrastructure|runtime|run-service|observability)/",
+        path: "^src/(domain|orchestrator|worker|gates|cli|infrastructure|composition|run-service|observability)/",
       },
     },
     {
@@ -118,7 +118,7 @@ module.exports = {
       name: "no-parent-value-imports-of-worker",
       severity: "error",
       comment:
-        "Parent code (anything outside src/worker/) must not value-import worker implementation modules. Two value-imports are legal: (1) src/worker/locator.ts — the argv prefix the parent uses to spawn the worker; (2) src/worker/runtimes/registry.ts — the KNOWN_RUNTIME_NAMES set the engine validates against. Both are contract surfaces, not implementation. Type-only imports of worker types (PhaseRunResult, AgentRuntime, etc.) are fine — erased at build.",
+        "Parent code (anything outside src/worker/) must not value-import worker implementation modules. Two value-imports are legal: (1) src/worker/locator.ts — the argv prefix the parent uses to spawn the worker; (2) src/worker/runtimes/registry.ts — the KNOWN_RUNTIME_NAMES set the engine validates against. Both are contract surfaces, not implementation. Type-only imports of worker types (PhaseInvocationResult, AgentRuntime, etc.) are fine — erased at build.",
       from: {
         path: "^src/(?!worker/)",
         pathNot: "^src/worker/",

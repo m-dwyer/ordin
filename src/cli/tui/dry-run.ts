@@ -5,7 +5,7 @@
  * paths like tests + --help); non-TTY falls back to plain stdout
  * via the `print.ts` helpers.
  */
-import type { PhasePreview } from "../../runtime/harness";
+import type { PhasePreview } from "../../composition/harness";
 import {
   printBlank,
   printHint,

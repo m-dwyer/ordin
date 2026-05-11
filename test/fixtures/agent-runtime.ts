@@ -15,7 +15,7 @@ import type {
 } from "../../src/worker/runtimes/types";
 
 /**
- * Stand-in agent runtime used across HarnessRuntime / RunService /
+ * Stand-in agent runtime used across Harness / RunService /
  * HTTP tests. Records invocations and materialises any output paths
  * the prompt declares — mimics a real agent calling `Write` so the
  * engine's post-phase artefact verification is satisfied without
@@ -75,7 +75,7 @@ export function makeStubRuntime(): StubRuntime {
 
 /**
  * Wraps an `AgentRuntime` as a `dispatchPhase` callback. Tests pass
- * this as `HarnessRuntimeOptions.dispatchPhase` to short-circuit the
+ * this as `HarnessOptions.dispatchPhase` to short-circuit the
  * worker spawn — the runtime's `invoke` is called directly in-process
  * via the parent-side `PhaseInvocation`, which emits the same lifecycle
  * events the production sandboxed path emits.

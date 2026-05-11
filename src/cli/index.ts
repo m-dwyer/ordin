@@ -10,7 +10,7 @@ import { registerServe } from "./serve";
 import { registerStatus } from "./status";
 
 /**
- * CLI is the Stage 1 client. Every command goes through `HarnessRuntime`
+ * CLI is the Stage 1 client. Every command goes through `Harness`
  * — no reaching around it into domain/runtimes/orchestrator directly.
  */
 const program = new Command();

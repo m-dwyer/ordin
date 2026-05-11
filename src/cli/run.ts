@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import type { HarnessRuntime, PhasePreview } from "../runtime/harness";
+import type { Harness, PhasePreview } from "../composition/harness";
 import { ordin, ordinRunSession, parseSandboxMode, parseTier } from "./common";
 import { applySeedPlan, type RunCommandOpts, resolveRunCommand } from "./run-command";
 import { renderDryRun } from "./tui/dry-run";
@@ -17,13 +17,11 @@ export interface RunCommandDeps {
    * Override the runtime used for `--dry-run`. Dry-run never starts a
    * phase, so it bypasses the live-run session and just calls
    * `previewRun`; this seam exists so tests can supply a fake without
-   * spinning up the full HarnessRuntime.
+   * spinning up the full Harness.
    */
-  readonly createDryRunRuntime?: (opts: {
-    workflow?: string;
-  }) => Pick<HarnessRuntime, "previewRun">;
+  readonly createDryRunRuntime?: (opts: { workflow?: string }) => Pick<Harness, "previewRun">;
   /** Override the runtime factory used for command resolution and live runs. Test seam. */
-  readonly createRuntime?: (opts: { workflow?: string }) => HarnessRuntime;
+  readonly createRuntime?: (opts: { workflow?: string }) => Harness;
   /** Override the dry-run renderer. Test seam. */
   readonly renderPreviews?: (
     previews: readonly PhasePreview[],

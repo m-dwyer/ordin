@@ -6,16 +6,16 @@ import { dispatchFromRuntime, FakeRuntime } from "../../test/fixtures/agent-runt
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
 import { AutoGate } from "../gates/dispatch";
 import type { RunEvent } from "../orchestrator/events";
-import { HarnessRuntime } from "./harness";
+import { Harness } from "./harness";
 
-describe("HarnessRuntime", () => {
+describe("Harness", () => {
   it("runs a workflow end-to-end with broker, audit, and passthrough sandbox", async () => {
     const root = await makeHarnessRoot();
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-harness-repo-"));
     await mkdir(repoPath, { recursive: true });
     const events: RunEvent[] = [];
 
-    const runtime = new HarnessRuntime({
+    const runtime = new Harness({
       root,
       dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });
@@ -49,7 +49,7 @@ describe("HarnessRuntime", () => {
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-harness-repo-"));
     await mkdir(repoPath, { recursive: true });
 
-    const runtime = new HarnessRuntime({
+    const runtime = new Harness({
       root,
       dispatchPhase: dispatchFromRuntime(new FakeRuntime()),
     });

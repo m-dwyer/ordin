@@ -33,7 +33,7 @@ export type { PendingGate, RunSession } from "./run-session";
  * adapters call through `RunService` which itself goes through this
  * runtime.
  */
-export interface HarnessRuntimeOptions {
+export interface HarnessOptions {
   /** Harness repo root. Defaults to the repo this module lives in. */
   readonly root?: string;
   /**
@@ -94,7 +94,7 @@ export interface HarnessRuntimeOptions {
  * out-of-band gate resolution and event subscription. Sessions are
  * evicted on completion — historical runs go through `RunStore`.
  */
-export class HarnessRuntime {
+export class Harness {
   private readonly loader: DefaultHarnessStateLoader;
   private readonly startRun_: StartRunUseCase;
   private readonly previewRun_: PreviewRunUseCase;
@@ -105,7 +105,7 @@ export class HarnessRuntime {
   private readonly sandboxModeOverride: SandboxMode | undefined;
   private readonly workspaceResolver: WorkspaceResolver;
 
-  constructor(opts: HarnessRuntimeOptions = {}) {
+  constructor(opts: HarnessOptions = {}) {
     const root = opts.root ?? defaultRoot();
     const workflowName = opts.workflow ?? "software-delivery";
     const engineName = opts.engine ?? "mastra";
@@ -241,6 +241,6 @@ export class HarnessRuntime {
 }
 
 function defaultRoot(): string {
-  // Walk up from this file: src/runtime/harness.ts → src/runtime → src → root.
+  // Walk up from this file: src/composition/harness.ts → src/composition → src → root.
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }

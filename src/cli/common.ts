@@ -1,12 +1,12 @@
 import { InvalidArgumentError } from "commander";
 import {
   type Gate,
-  HarnessRuntime,
+  Harness,
   type Phase,
   type RunEvent,
   type RunMeta,
   type SandboxMode,
-} from "../runtime/harness";
+} from "../composition/harness";
 import type { RunHeader } from "./tui/types";
 
 export function parseTier(value: string): "S" | "M" | "L" {
@@ -26,7 +26,7 @@ export interface OrdinCliOptions {
 }
 
 /**
- * Build a HarnessRuntime for the read-only CLI commands (`runs`,
+ * Build a Harness for the read-only CLI commands (`runs`,
  * `retro`, `status`, `doctor`, `serve`, `mcp`, `remote`). These don't
  * trigger phase execution locally, so they don't need a gate prompter
  * — the runtime's default `AutoGate` is safe.
@@ -35,8 +35,8 @@ export interface OrdinCliOptions {
  * which wires the OpenTUI gate prompter (or the non-TTY fallback)
  * around the runtime.
  */
-export function ordin(opts: OrdinCliOptions = {}): HarnessRuntime {
-  return new HarnessRuntime({
+export function ordin(opts: OrdinCliOptions = {}): Harness {
+  return new Harness({
     ...(opts.workflow ? { workflow: opts.workflow } : {}),
     ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
     ...(opts.scriptPath ? { scriptPath: opts.scriptPath } : {}),
@@ -44,7 +44,7 @@ export function ordin(opts: OrdinCliOptions = {}): HarnessRuntime {
 }
 
 export interface OrdinRunSession {
-  readonly runtime: HarnessRuntime;
+  readonly runtime: Harness;
   readonly onEvent: (event: RunEvent) => void;
   readonly gateForKind: (kind: Phase["gate"]) => Gate;
   readonly finish: (summary: { runId: string; status: RunMeta["status"] }) => void;
@@ -85,7 +85,7 @@ export async function ordinRunSession(opts: {
     const { nonTtyRunSession } = await import("./tui/non-tty-sink");
     const session = nonTtyRunSession();
     return {
-      runtime: new HarnessRuntime(sharedOpts),
+      runtime: new Harness(sharedOpts),
       onEvent: session.onEvent,
       gateForKind: session.gateForKind,
       finish: () => session.finish(),
@@ -102,7 +102,7 @@ export async function ordinRunSession(opts: {
     "./gate-prompters/opentui"
   );
   const controller = new OpenTuiRunController();
-  const runtime = new HarnessRuntime({
+  const runtime = new Harness({
     ...sharedOpts,
     egressGatePrompter: openTuiEgressGatePrompter(controller),
   });

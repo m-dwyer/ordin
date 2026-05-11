@@ -15,7 +15,7 @@ export interface RunExecution {
  * Internal option shapes use `T | undefined` (required, explicit
  * undefined allowed) so the composition root can do plain assignment
  * without `...(opts.X ? { X: opts.X } : {})` ceremony under
- * `exactOptionalPropertyTypes`. The public `HarnessRuntimeOptions`
+ * `exactOptionalPropertyTypes`. The public `HarnessOptions`
  * keeps `T?` because omission is the natural way external callers
  * decline an option.
  */

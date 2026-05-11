@@ -20,7 +20,7 @@ export interface PendingGate {
 
 /**
  * Live handle for a running invocation. Returned by
- * `HarnessRuntime.prepareRun` once the engine has emitted `run.started`
+ * `Harness.prepareRun` once the engine has emitted `run.started`
  * and a `runId` is available.
  *
  * Owns the per-run event stream, the pending-gate registry, and the

@@ -1,38 +1,38 @@
 import type { VerifyResult } from "../broker/audit-chain";
+import {
+  Harness,
+  type HarnessOptions,
+  type RunMeta,
+  type RunSession,
+  type StartRunInput,
+} from "../composition/harness";
+import type { PendingGate } from "../composition/run-session";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
 import type { GateDecision } from "../gates/types";
 import type { RunEvent } from "../orchestrator/events";
-import {
-  HarnessRuntime,
-  type HarnessRuntimeOptions,
-  type RunMeta,
-  type RunSession,
-  type StartRunInput,
-} from "../runtime/harness";
-import type { PendingGate } from "../runtime/run-session";
 
 /**
- * HTTP/MCP-shaped facade over `HarnessRuntime`. Server-mode entry point:
+ * HTTP/MCP-shaped facade over `Harness`. Server-mode entry point:
  *
  *   - Forces `sandboxMode: "passthrough"` per ADR-008 — wrapping the
  *     server itself is nonsensical, so any `srt`/`broker` from
  *     config is ignored unless the caller overrides explicitly.
  *   - Resolves runId-keyed lookups by delegating to
- *     `HarnessRuntime.findSession` — sessions own events, pending
+ *     `Harness.findSession` — sessions own events, pending
  *     gates, and gate resolution.
  *   - Read-only operations (listRuns, getRun, verifyAudit, preview,
  *     workflowDefinition) pass straight through.
  */
-export type RunServiceOptions = HarnessRuntimeOptions;
+export type RunServiceOptions = HarnessOptions;
 
 export type StartRunRequest = Omit<StartRunInput, "onEvent" | "gateForKind">;
 
 export class RunService {
-  private readonly harness: HarnessRuntime;
+  private readonly harness: Harness;
 
   constructor(opts: RunServiceOptions = {}) {
-    this.harness = new HarnessRuntime({
+    this.harness = new Harness({
       ...opts,
       sandboxMode: opts.sandboxMode ?? "passthrough",
     });

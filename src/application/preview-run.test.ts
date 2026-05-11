@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeRuntime } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { DefaultHarnessStateLoader } from "../runtime/default-harness-state-loader";
+import { DefaultHarnessStateLoader } from "../composition/default-harness-state-loader";
 import { PreviewRunUseCase } from "./preview-run";
 import { WorkspaceResolver } from "./workspace-resolver";
 

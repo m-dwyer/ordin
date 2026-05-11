@@ -8,9 +8,9 @@ import {
   makeStubRuntime,
 } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
+import { DefaultHarnessStateLoader } from "../composition/default-harness-state-loader";
+import { DefaultRunExecution } from "../composition/run-execution";
 import { AutoGate } from "../gates/dispatch";
-import { DefaultHarnessStateLoader } from "../runtime/default-harness-state-loader";
-import { DefaultRunExecution } from "../runtime/run-execution";
 import type { AgentRuntime } from "../worker/runtimes/types";
 import type { RunExecutionFactory } from "./ports";
 import { StartRunUseCase } from "./start-run";

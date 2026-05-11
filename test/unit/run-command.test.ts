@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { applySeedPlan, buildRunInput, resolveRunCommand } from "../../src/cli/run-command";
+import type { Harness, RunMeta } from "../../src/composition/harness";
 import { WorkflowManifest } from "../../src/domain/workflow";
-import type { HarnessRuntime, RunMeta } from "../../src/runtime/harness";
 
 describe("run command resolution", () => {
   it("reconstructs --again input and lets explicit flags override reused values", async () => {
@@ -150,7 +150,7 @@ function fakeRuntime(opts: {
   readonly root?: string;
   readonly repo?: string;
   readonly runs?: Record<string, RunMeta>;
-}): HarnessRuntime {
+}): Harness {
   const workflow = new WorkflowManifest({
     name: "software-delivery",
     version: "1",
@@ -186,7 +186,7 @@ function fakeRuntime(opts: {
       projectsLocalFile: "",
     }),
     resolveRunWorkspace: async () => opts.repo ?? "/repo",
-  } as unknown as HarnessRuntime;
+  } as unknown as Harness;
 }
 
 function runMeta(overrides: Partial<RunMeta>): RunMeta {

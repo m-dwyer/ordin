@@ -2,12 +2,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { Harness } from "../../src/composition/harness";
 import type { Engine } from "../../src/orchestrator/engine";
 import { compileWorkflowPlan } from "../../src/orchestrator/workflow-plan";
-import { HarnessRuntime } from "../../src/runtime/harness";
 import { makeHarnessRoot } from "../fixtures/harness-root";
 
-describe("HarnessRuntime", () => {
+describe("Harness", () => {
   it("keeps the public facade wired to an injected engine adapter", async () => {
     const root = await makeHarnessRoot();
     const engine: Engine = {
@@ -39,7 +39,7 @@ describe("HarnessRuntime", () => {
     };
 
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-custom-repo-"));
-    const harness = new HarnessRuntime({ root, engine: "custom", engines: [engine] });
+    const harness = new Harness({ root, engine: "custom", engines: [engine] });
 
     const previews = await harness.previewRun({
       task: "Use custom engine",
@@ -54,7 +54,7 @@ describe("HarnessRuntime", () => {
 
   it("exposes stable harness paths from the facade", async () => {
     const root = await makeHarnessRoot();
-    const harness = new HarnessRuntime({ root });
+    const harness = new Harness({ root });
 
     expect(harness.paths()).toMatchObject({
       root,

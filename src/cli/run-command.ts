@@ -1,6 +1,6 @@
 import { basename, join } from "node:path";
+import type { Harness, RunMeta, SandboxMode, StartRunInput } from "../composition/harness";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
-import type { HarnessRuntime, RunMeta, SandboxMode, StartRunInput } from "../runtime/harness";
 import { captureFixture, seedFromFixture, seedPhaseInputsFromRun } from "./run-seed";
 
 export interface RunCommandOpts {
@@ -58,7 +58,7 @@ type SeedPlan =
       readonly sourcePhase?: Phase;
     };
 
-type RuntimeForWorkflow = (opts: { workflow?: string }) => HarnessRuntime;
+type RuntimeForWorkflow = (opts: { workflow?: string }) => Harness;
 
 export async function resolveRunCommand(
   taskParts: readonly string[],
@@ -113,7 +113,7 @@ export async function resolveRunCommand(
 export async function applySeedPlan(
   plan: SeedPlan | undefined,
   input: NormalizedStartRunInput,
-  runtime: Pick<HarnessRuntime, "resolveRunWorkspace">,
+  runtime: Pick<Harness, "resolveRunWorkspace">,
 ): Promise<"captured" | "seeded" | "none"> {
   if (!plan) return "none";
   if (plan.kind === "capture-fixture") {

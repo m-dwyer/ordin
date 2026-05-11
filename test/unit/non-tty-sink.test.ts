@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonTtyRunSession } from "../../src/cli/tui/non-tty-sink";
-import type { RunEvent } from "../../src/runtime/harness";
+import type { RunEvent } from "../../src/composition/harness";
 
 /**
  * Tests the non-TTY fallback's RunEvent → stdout-line mapping. This

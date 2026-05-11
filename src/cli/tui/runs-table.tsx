@@ -17,7 +17,7 @@
  */
 import { fg as opentuiFg, type TextChunk, TextTableRenderable } from "@opentui/core";
 import { extend, testRender } from "@opentui/solid";
-import type { RunMeta } from "../../runtime/harness";
+import type { RunMeta } from "../../composition/harness";
 import { formatDuration, frameToAnsi } from "./format";
 import { colorForRunStatus, styled } from "./print";
 import { PALETTE } from "./theme";

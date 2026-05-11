@@ -54,7 +54,7 @@ export interface EngineServices {
 
 /**
  * What the engine surfaces at every gate boundary. The application
- * (HarnessRuntime, an HTTP server, a CI driver) decides — engine has
+ * (Harness, an HTTP server, a CI driver) decides — engine has
  * no `Gate` concept, just awaits the returned `GateDecision`. Async
  * by design: a handler may take arbitrary time, persist state, or
  * resume a paused workflow from elsewhere.
@@ -82,7 +82,7 @@ export interface EngineRunInput {
    * How a single phase invocation runs. Engine-neutral: the engine
    * decides *when* to invoke a phase (DAG order, loops, retries); the
    * dispatcher decides *where* (in-process, sandboxed worker, remote
-   * runner). HarnessRuntime supplies this per-run.
+   * runner). Harness supplies this per-run.
    */
   readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseInvocationResult>;
   readonly abortSignal: AbortSignal | undefined;

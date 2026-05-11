@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { Harness } from "../../src/composition/harness";
 import { AutoGate } from "../../src/gates/dispatch";
-import { HarnessRuntime } from "../../src/runtime/harness";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const hasSrt = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
@@ -19,7 +19,7 @@ describe.skipIf(!hasSrt)("srt sandbox scripted e2e", () => {
         findOnPath("bun"),
         join(repoRoot, "src", "worker", "entry.ts"),
       ]);
-      const harness = new HarnessRuntime({
+      const harness = new Harness({
         root: repoRoot,
         workflow: "sandbox-validation",
         sandboxMode: "srt",

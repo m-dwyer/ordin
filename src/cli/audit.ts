@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import type { VerifyResult } from "../runtime/harness";
+import type { VerifyResult } from "../composition/harness";
 import { ordin } from "./common";
 import { printBlank, printCommandHeader, styled, writeLine } from "./tui/print";
 import { PALETTE } from "./tui/theme";

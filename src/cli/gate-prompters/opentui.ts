@@ -30,7 +30,7 @@ export function openTuiGateResolver(
 }
 
 /**
- * `HarnessRuntimeOptions.egressGatePrompter` — wired into the broker
+ * `HarnessOptions.egressGatePrompter` — wired into the broker
  * via the harness so srt's askCallback (broker.askApproval) surfaces
  * the unallowlisted host as a card in the run TUI. Returns true when
  * the user presses `a`; false on `r`.

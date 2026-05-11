@@ -8,10 +8,11 @@
  * + `ordin remote decide` flow, which is the right path for headless
  * gate handling.
  */
+
+import type { RunEvent } from "../../composition/harness";
 import type { Phase } from "../../domain/workflow";
 import { gateResolverFor } from "../../gates/dispatch";
 import type { Gate, GateContext, GateDecision, GatePrompter } from "../../gates/types";
-import type { RunEvent } from "../../runtime/harness";
 import { firstLine, formatDuration, summariseToolInput } from "./format";
 
 export interface NonTtySession {

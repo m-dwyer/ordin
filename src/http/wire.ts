@@ -1,6 +1,6 @@
 import type { z } from "@hono/zod-openapi";
+import type { PendingGate } from "../composition/run-session";
 import type { PhasePreview } from "../domain/phase-preview";
-import type { PendingGate } from "../runtime/run-session";
 import type { PendingGateSchema, PhasePreviewSchema } from "./schemas";
 
 /**

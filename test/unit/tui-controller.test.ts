@@ -32,8 +32,8 @@ vi.mock("../../src/cli/tui/run-app", () => ({
 }));
 
 import { OpenTuiRunController } from "../../src/cli/tui/controller";
+import type { RunEvent } from "../../src/composition/harness";
 import type { GateContext } from "../../src/gates/types";
-import type { RunEvent } from "../../src/runtime/harness";
 
 /**
  * Tests the controller's event-handling and gate-flow logic without

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { resolveClaudeBin } from "../runtime/resolve-claude-bin";
+import { resolveClaudeBin } from "../composition/resolve-claude-bin";
 import { selectSandbox } from "../sandbox";
 import { ordin } from "./common";
 import { printBlank, printCommandHeader, styled, writeLine } from "./tui/print";

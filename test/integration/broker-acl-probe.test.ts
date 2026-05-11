@@ -3,8 +3,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { Harness } from "../../src/composition/harness";
 import { AutoGate } from "../../src/gates/dispatch";
-import { HarnessRuntime } from "../../src/runtime/harness";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -14,7 +14,7 @@ describe("broker ACL e2e", () => {
     await mkdir(workspace, { recursive: true });
     await writeFile(join(workspace, "README.md"), "# fixture\n", "utf8");
 
-    const harness = new HarnessRuntime({
+    const harness = new Harness({
       root: repoRoot,
       workflow: "broker-acl-probe",
       sandboxMode: "passthrough",
