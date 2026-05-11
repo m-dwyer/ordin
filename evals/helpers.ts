@@ -3,18 +3,21 @@ import { cp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { simpleGit } from "simple-git";
+import { InProcessBrokerClient } from "../src/broker/client/in-process";
+import { deriveToolPolicy } from "../src/broker/client/tool-authority";
+import { BrokerDispatch } from "../src/broker/dispatch";
 import type { Artefact } from "../src/domain/artefact";
 import { PhasePreparer, resolveArtefacts } from "../src/domain/phase-preview";
-import { AgentLoader } from "../src/infrastructure/agent-loader";
+import { resolveArtefactPath, type WorkflowManifest } from "../src/domain/workflow";
 import { ArtefactManager } from "../src/infrastructure/artefact-manager";
+import { BundleLoader } from "../src/infrastructure/bundle-loader";
+import { BundleResolver } from "../src/infrastructure/bundle-resolver";
 import { HarnessConfigLoader } from "../src/infrastructure/config-loader";
-import { SkillLoader } from "../src/infrastructure/skill-loader";
-import { WorkflowLoader } from "../src/infrastructure/workflow-loader";
 import { withSpan } from "../src/observability/spans";
 import type { RunEvent } from "../src/orchestrator/events";
-import { PhaseRunner } from "../src/orchestrator/phase-runner";
+import { PhaseInvocation } from "../src/orchestrator/phase-invocation";
 import { generateRunId, RunStore } from "../src/orchestrator/run-store";
-import { AiSdkRuntime } from "../src/runtimes/ai-sdk";
+import { AiSdkRuntime } from "../src/worker/runtimes/ai-sdk";
 import { judgeModel } from "./judge";
 
 /**
@@ -44,21 +47,22 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const TEMPLATE = join(REPO_ROOT, "test/fixtures/target-repo-template");
 export const EVAL_REPO = join(REPO_ROOT, ".scratch/eval-repo");
-const FIXTURES = join(REPO_ROOT, "evals/fixtures");
 
 /**
- * Read a fixture file under `evals/fixtures/<relPath>` as a UTF-8 string.
- * Keeps seeded artefacts (RFCs, diffs, build-notes) as real markdown /
- * text files on disk rather than inline template literals — diffs stay
+ * Read a fixture file under `evals/<bundle>/fixtures/<relPath>` as a
+ * UTF-8 string. Keeps seeded artefacts (RFCs, diffs, build-notes) as
+ * real files on disk rather than inline template literals — diffs stay
  * clean, editors syntax-highlight them, and `cat` shows the fixture
  * author exactly what the agent will see.
  */
-export function loadFixture(relPath: string): string {
-  return readFileSync(join(FIXTURES, relPath), "utf8");
+export function loadFixture(bundle: string, relPath: string): string {
+  return readFileSync(join(REPO_ROOT, "evals", bundle, "fixtures", relPath), "utf8");
 }
 
 export interface RunPhaseInput {
-  readonly phase: "plan" | "build" | "review";
+  /** Bundle name (resolved against the bundle search path). */
+  readonly bundle: string;
+  readonly phase: string;
   readonly task: string;
   readonly slug: string;
   readonly tier?: "S" | "M" | "L";
@@ -93,14 +97,14 @@ export interface RunPhaseInput {
 export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
   judgeModel(); // fail-fast: judge model must be configured
 
-  const model = input.model ?? process.env.ORDIN_EVAL_MODEL;
+  const model = input.model ?? process.env["ORDIN_EVAL_MODEL"];
   if (!model) {
     throw new Error(
       "Agent model not configured. Pass `model` to runPhase or set ORDIN_EVAL_MODEL.",
     );
   }
 
-  const apiKey = process.env.LITELLM_MASTER_KEY;
+  const apiKey = process.env["LITELLM_MASTER_KEY"];
   if (!apiKey) {
     throw new Error(
       "LITELLM_MASTER_KEY is unset. Copy .env.local.example to .env.local and set the key.",
@@ -127,13 +131,12 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
       await stageRepo();
       if (input.seed) await input.seed(EVAL_REPO);
 
-      const paths = harnessPaths();
-      const [config, workflow, skills] = await Promise.all([
-        new HarnessConfigLoader().load(paths.configFile),
-        new WorkflowLoader().load(paths.workflowFile),
-        new SkillLoader().loadAll(paths.skillsDir),
+      const bundleDir = await new BundleResolver({ cwd: REPO_ROOT }).resolve(input.bundle);
+      const [bundle, config] = await Promise.all([
+        new BundleLoader().load(bundleDir),
+        new HarnessConfigLoader().load(join(REPO_ROOT, "ordin.config.yaml")),
       ]);
-      const agents = await new AgentLoader().loadAll(paths.agentsDir, skills);
+      const { workflow, agents } = bundle;
 
       const phase = workflow.findPhase(input.phase);
       const agent = agents.get(phase.agent);
@@ -165,53 +168,60 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
         model,
       });
 
+      // ACL + tool dispatch broker. Evals run in-process (no sandbox),
+      // so an InProcessBrokerClient wired to a BrokerDispatch with a
+      // no-op audit sink is sufficient: ACL checks happen, results are
+      // recorded but not persisted.
+      const brokerDispatch = new BrokerDispatch({ audit: { append: () => {} } });
+      const broker = new InProcessBrokerClient(brokerDispatch);
+      brokerDispatch.registerPhase(
+        runId,
+        phase.id,
+        deriveToolPolicy({
+          allowedTools: preview.prompt.tools,
+          hasSkills: preview.prompt.skills.length > 0,
+          cwd: EVAL_REPO,
+        }),
+      );
+
       const runtime = new AiSdkRuntime({
-        baseUrl: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
+        baseUrl: process.env["ORDIN_EVAL_BASE_URL"] ?? "http://localhost:4000",
         apiKey,
+        broker,
+        runsDir: config.runStoreDir(),
       });
 
       const runStore = new RunStore(config.runStoreDir());
       const runDir = await runStore.ensureRunDir(runId);
 
-      const result = await new PhaseRunner().run({
-        preview,
-        runtime,
-        context: { runId, runDir, iteration: 1 },
-        emit: logEvent,
-      });
+      try {
+        const result = await new PhaseInvocation().run({
+          preview,
+          runtimeName: runtime.name,
+          invoke: (req) => runtime.invoke(req),
+          context: { runId, runDir, iteration: 1 },
+          emit: logEvent,
+        });
 
-      if (result.invokeResult.status === "failed") {
-        throw new Error(result.invokeResult.error ?? `phase "${phase.id}" runtime failed`);
+        if (result.invokeResult.status === "failed") {
+          throw new Error(result.invokeResult.error ?? `phase "${phase.id}" runtime failed`);
+        }
+
+        const missingOut = await artefacts.findMissing(artefactOutputs);
+        if (missingOut.length > 0) {
+          throw new Error(
+            `Phase "${phase.id}" declared outputs that were not written: ${missingOut.map((m) => m.path).join(", ")}`,
+          );
+        }
+
+        const artefact = await artefacts.read(artefactRelPath(workflow, phase.id, slug));
+        span.setAttribute("langfuse.trace.output", artefact.path);
+        return artefact;
+      } finally {
+        brokerDispatch.releasePhase(runId, phase.id);
       }
-
-      const missingOut = await artefacts.findMissing(artefactOutputs);
-      if (missingOut.length > 0) {
-        throw new Error(
-          `Phase "${phase.id}" declared outputs that were not written: ${missingOut.map((m) => m.path).join(", ")}`,
-        );
-      }
-
-      const artefact = await artefacts.read(artefactRelPath(input.phase, slug));
-      span.setAttribute("langfuse.trace.output", artefact.path);
-      return artefact;
     },
   );
-}
-
-interface HarnessPaths {
-  readonly configFile: string;
-  readonly workflowFile: string;
-  readonly agentsDir: string;
-  readonly skillsDir: string;
-}
-
-function harnessPaths(): HarnessPaths {
-  return {
-    configFile: join(REPO_ROOT, "ordin.config.yaml"),
-    workflowFile: join(REPO_ROOT, "workflows", "software-delivery.yaml"),
-    agentsDir: join(REPO_ROOT, "agents"),
-    skillsDir: join(REPO_ROOT, "skills"),
-  };
 }
 
 async function stageRepo(): Promise<void> {
@@ -270,7 +280,7 @@ function logEvent(event: RunEvent): void {
     case "agent.tool.result": {
       const pending = pendingCalls.get(event.id);
       pendingCalls.delete(event.id);
-      writeToolLine(pending, event.ok, event.preview);
+      writeToolLine(pending, event.ok, event.result);
       return;
     }
     case "agent.tokens":
@@ -390,7 +400,7 @@ function renderTool(
  * runtime that emits the same event shape.
  */
 function writeDelta(input: Record<string, unknown>): string {
-  const relPath = typeof input.file_path === "string" ? input.file_path : "";
+  const relPath = typeof input["file_path"] === "string" ? input["file_path"] : "";
   if (!relPath) return "";
   let current: string;
   try {
@@ -427,25 +437,29 @@ function truncate(s: string, max: number): string {
 }
 
 /**
- * Eval-side mirror of `software-delivery.yaml`'s declared phase
- * outputs. Hardcoded here (rather than parsed from YAML) because evals
- * are repo-local and we want assertions to fail loudly if a workflow
- * author changes a path without updating eval expectations.
+ * The artefact under test is the phase's first declared output.
+ * Sourced from the bundle's workflow.yaml — no eval-side path mirror.
  */
-export function artefactPathFor(
-  phase: "plan" | "build" | "review",
-  slug: string,
-): string {
-  switch (phase) {
-    case "plan":
-      return `docs/rfcs/${slug}-rfc.md`;
-    case "build":
-      return `docs/rfcs/${slug}-build-notes.md`;
-    case "review":
-      return `reviews/${slug}-review.md`;
+function artefactRelPath(workflow: WorkflowManifest, phaseId: string, slug: string): string {
+  const phase = workflow.findPhase(phaseId);
+  const out = phase.outputs?.[0];
+  if (!out) {
+    throw new Error(`Phase "${phaseId}" has no declared outputs; cannot select artefact under test`);
   }
+  return resolveArtefactPath(out, slug);
 }
 
-function artefactRelPath(phase: RunPhaseInput["phase"], slug: string): string {
-  return artefactPathFor(phase, slug);
+/**
+ * Look up a phase's declared first-output path against a bundle's
+ * workflow. Used by isolation-per-phase fixtures (e.g. `build.eval.ts`
+ * seeding the RFC at the path Plan declared).
+ */
+export async function phaseOutputPath(
+  bundle: string,
+  phase: string,
+  slug: string,
+): Promise<string> {
+  const bundleDir = await new BundleResolver({ cwd: REPO_ROOT }).resolve(bundle);
+  const loaded = await new BundleLoader().load(bundleDir);
+  return artefactRelPath(loaded.workflow, phase, slug);
 }

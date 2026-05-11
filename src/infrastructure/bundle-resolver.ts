@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 
@@ -42,6 +42,33 @@ export class BundleResolver {
     path.push(join(this.cwd, "bundles"));
     path.push(join(this.home, ".ordin", "bundles"));
     return path;
+  }
+
+  /**
+   * Enumerate every bundle reachable via the search path. Earlier
+   * search-path entries shadow later ones — matching `resolve()`
+   * precedence — so `bundle list` shows the bundle the loader would
+   * actually pick.
+   */
+  async list(): Promise<readonly { name: string; dir: string; source: string }[]> {
+    const seen = new Set<string>();
+    const out: { name: string; dir: string; source: string }[] = [];
+    for (const root of this.searchPath()) {
+      let entries: string[];
+      try {
+        entries = await readdir(root);
+      } catch {
+        continue;
+      }
+      for (const name of entries.sort()) {
+        if (seen.has(name)) continue;
+        const dir = join(root, name);
+        if (!(await hasManifest(dir))) continue;
+        seen.add(name);
+        out.push({ name, dir, source: root });
+      }
+    }
+    return out;
   }
 
   async resolve(name: string, override?: { bundleDir?: string }): Promise<string> {

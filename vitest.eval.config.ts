@@ -36,7 +36,7 @@ class PhaseOrderSequencer extends BaseSequencer {
 
 export default defineConfig({
   test: {
-    include: ["evals/**/*.eval.ts"],
+    include: ["evals/*/**/*.eval.ts"],
     environment: "node",
     globals: false,
     // One fixture may need multiple LLM roundtrips + tool calls. Ten minutes

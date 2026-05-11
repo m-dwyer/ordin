@@ -30,7 +30,7 @@ let initialised = false;
 let resolvedJudgeModel: string | undefined;
 
 export function judgeModel(): string {
-  const model = process.env.ORDIN_EVAL_JUDGE_MODEL ?? process.env.ORDIN_EVAL_MODEL;
+  const model = process.env["ORDIN_EVAL_JUDGE_MODEL"] ?? process.env["ORDIN_EVAL_MODEL"];
   if (!model) {
     throw new Error(
       "Judge model not configured. Set ORDIN_EVAL_MODEL (preferred — the same model judges its own output) or ORDIN_EVAL_JUDGE_MODEL (explicit override).",
@@ -41,7 +41,7 @@ export function judgeModel(): string {
 
 function ensureInit(): void {
   if (initialised) return;
-  const apiKey = process.env.LITELLM_MASTER_KEY;
+  const apiKey = process.env["LITELLM_MASTER_KEY"];
   if (!apiKey) {
     throw new Error(
       "LITELLM_MASTER_KEY is unset. Copy .env.local.example to .env.local and set the key.",
@@ -49,7 +49,7 @@ function ensureInit(): void {
   }
   resolvedJudgeModel = judgeModel();
   const client = new OpenAI({
-    baseURL: process.env.ORDIN_EVAL_BASE_URL ?? "http://localhost:4000",
+    baseURL: process.env["ORDIN_EVAL_BASE_URL"] ?? "http://localhost:4000",
     apiKey,
   });
   init({ client, defaultModel: resolvedJudgeModel });
@@ -89,7 +89,9 @@ export async function judge(output: string, criterion: string): Promise<JudgeRes
   return {
     score: typeof result.score === "number" ? result.score : 0,
     rationale:
-      typeof result.metadata?.rationale === "string" ? result.metadata.rationale : undefined,
+      typeof result.metadata?.["rationale"] === "string"
+        ? result.metadata["rationale"]
+        : undefined,
   };
 }
 

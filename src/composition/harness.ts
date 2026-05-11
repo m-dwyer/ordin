@@ -7,8 +7,11 @@ import { StartRunUseCase } from "../application/start-run";
 import type { StartRunInput } from "../application/types";
 import { WorkspaceResolver } from "../application/workspace-resolver";
 import type { VerifyResult } from "../broker/audit-chain";
+import type { BundleHash } from "../domain/bundle";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
+import { BundleLoader } from "../infrastructure/bundle-loader";
+import { BundleResolver } from "../infrastructure/bundle-resolver";
 import type { Engine, PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import type { PhaseInvocationResult } from "../orchestrator/phase-invocation";
@@ -245,6 +248,60 @@ export class Harness {
   bundleDir(): Promise<string> {
     return this.loader.bundleDir();
   }
+
+  /**
+   * Enumerate bundles reachable via the search path. Static facade for
+   * `ordin bundle list` — does not depend on the configured bundle name
+   * (callers may want to list before picking one).
+   */
+  static listBundles(): Promise<readonly { name: string; dir: string; source: string }[]> {
+    return new BundleResolver().list();
+  }
+
+  /** Search-path entries the resolver walks, in precedence order. */
+  static bundleSearchPath(): readonly string[] {
+    return new BundleResolver().searchPath();
+  }
+
+  /**
+   * Load a bundle by name and return manifest + workflow + per-component
+   * hashes. Facade for `ordin bundle show`.
+   */
+  static async inspectBundle(name: string): Promise<BundleInspection> {
+    const dir = await new BundleResolver().resolve(name);
+    const loaded = await new BundleLoader().load(dir);
+    return {
+      dir,
+      manifest: {
+        name: loaded.manifest.name,
+        version: loaded.manifest.version,
+        description: loaded.manifest.description,
+        runtime: loaded.manifest.runtime,
+        model: loaded.manifest.model,
+      },
+      workflow: {
+        name: loaded.workflow.name,
+        phaseIds: loaded.workflow.phases.map((p) => p.id),
+      },
+      hash: loaded.hash,
+    };
+  }
+}
+
+export interface BundleInspection {
+  readonly dir: string;
+  readonly manifest: {
+    readonly name: string;
+    readonly version: string;
+    readonly description?: string;
+    readonly runtime?: string;
+    readonly model?: string;
+  };
+  readonly workflow: {
+    readonly name: string;
+    readonly phaseIds: readonly string[];
+  };
+  readonly hash: BundleHash;
 }
 
 function defaultRoot(): string {

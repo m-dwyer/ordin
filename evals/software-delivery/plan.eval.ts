@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import type { Artefact } from "../src/domain/artefact";
-import { runPhase } from "./helpers";
-import { rubric } from "./judge";
+import type { Artefact } from "../../src/domain/artefact";
+import { runPhase } from "../helpers";
+import { rubric } from "../judge";
 
 /**
  * Plan-phase evals. Runs the planner against the fixture target repo
@@ -18,6 +18,7 @@ describe("plan: add input validation to the calculator", () => {
 
   beforeAll(async () => {
     rfc = await runPhase({
+      bundle: "software-delivery",
       phase: "plan",
       task: "Add input validation to the calculator — reject non-numeric args with a clear error.",
       slug: "plan-add-input-validation",

@@ -1,9 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { Artefact } from "../src/domain/artefact";
-import { artefactPathFor, EVAL_REPO, loadFixture, runPhase } from "./helpers";
-import { rubric } from "./judge";
+import type { Artefact } from "../../src/domain/artefact";
+import { EVAL_REPO, loadFixture, phaseOutputPath, runPhase } from "../helpers";
+import { rubric } from "../judge";
 
 /**
  * Build-phase evals. Isolation-per-phase: seed an approved RFC into the
@@ -31,14 +31,19 @@ describe("build: implement divide with zero-guard", () => {
   beforeAll(async () => {
     try {
       notes = await runPhase({
+        bundle: "software-delivery",
         phase: "build",
         task: "Implement `divide` in the calculator per the approved RFC.",
         slug: SLUG,
         tier: "S",
         seed: async (repo) => {
-          const rfcPath = join(repo, artefactPathFor("plan", SLUG));
+          const rfcPath = join(repo, await phaseOutputPath("software-delivery", "plan", SLUG));
           await mkdir(dirname(rfcPath), { recursive: true });
-          await writeFile(rfcPath, loadFixture("divide-with-zero-guard/rfc.md"), "utf8");
+          await writeFile(
+            rfcPath,
+            loadFixture("software-delivery", "divide-with-zero-guard/rfc.md"),
+            "utf8",
+          );
         },
       });
     } catch (err) {

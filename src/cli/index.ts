@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { registerAudit } from "./audit";
+import { registerBundle } from "./bundle";
 import { registerDoctor } from "./doctor";
 import { registerMcp } from "./mcp";
 import { registerRemote } from "./remote";
@@ -25,6 +26,7 @@ registerRuns(program);
 registerRetro(program);
 registerStatus(program);
 registerDoctor(program);
+registerBundle(program);
 registerServe(program);
 registerRemote(program);
 registerMcp(program);
