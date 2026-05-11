@@ -66,6 +66,15 @@ run = "docker compose -f infra/docker-compose.yml logs -f langfuse-web"
 description = "Run the eval suite (requires `mise run litellm-up` first)"
 run = "bun run eval"
 
+[tasks.package]
+description = "Compile the ordin CLI into dist/ordin (host platform target)"
+run = "bun scripts/package.ts"
+
+[tasks.install]
+description = "Install dist/ordin + bundles + starter config into ~/.local/bin and ~/.ordin"
+depends = ["package"]
+run = "bun scripts/install.ts"
+
 [tasks.check]
 description = "Full pre-commit sweep: typecheck + test + lint + deps-check"
 depends = ["typecheck", "test", "lint", "deps-check"]

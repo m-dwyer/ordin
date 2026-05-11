@@ -115,6 +115,12 @@ export async function ordinRunSession(opts: {
   // as `phase.started` events arrive. workflowDefinition() just loads
   // the YAML — cheap, no composition.
   const manifest = await runtime.workflowDefinition();
+  // Validate run-time infra (broker, audit, sandbox selection, env-var
+  // auth for local_services) BEFORE the renderer mounts. If any of
+  // that throws after the TUI has issued its OSC terminal-capability
+  // probes, the terminal's async responses leak onto the user's shell
+  // when ordin exits. Preflight surfaces those errors as plain stderr.
+  await runtime.preflight();
   await controller.mount(
     opts.header,
     manifest.phases.map((p) => p.id),

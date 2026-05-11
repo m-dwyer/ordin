@@ -41,7 +41,10 @@ export class BundleResolver {
     }
     path.push(join(this.cwd, "bundles"));
     path.push(join(this.home, ".ordin", "bundles"));
-    return path;
+    // Caller-provided cwd can collapse with $HOME/.ordin (e.g. the compiled
+    // binary falls back to ~/.ordin as its config root). Dedupe so error
+    // messages don't show the same path twice.
+    return Array.from(new Set(path));
   }
 
   /**

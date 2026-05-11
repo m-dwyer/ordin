@@ -1,4 +1,5 @@
-import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HarnessPaths, RunExecutionFactory } from "../application/ports";
 import { PreviewRunUseCase } from "../application/preview-run";
@@ -101,6 +102,7 @@ export interface HarnessOptions {
  */
 export class Harness {
   private readonly loader: DefaultHarnessStateLoader;
+  private readonly factory: RunExecutionFactory;
   private readonly startRun_: StartRunUseCase;
   private readonly previewRun_: PreviewRunUseCase;
   private readonly listRuns_: ListRunsUseCase;
@@ -122,7 +124,7 @@ export class Harness {
       engines: opts.engines,
     });
     this.sandboxModeOverride = opts.sandboxMode;
-    const factory: RunExecutionFactory = (prepareOpts) =>
+    this.factory = (prepareOpts) =>
       DefaultRunExecution.prepare({
         ...prepareOpts,
         dispatchPhaseOverride: opts.dispatchPhase,
@@ -133,11 +135,37 @@ export class Harness {
     const workspaceResolver = new WorkspaceResolver(this.loader);
 
     this.workspaceResolver = workspaceResolver;
-    this.startRun_ = new StartRunUseCase(this.loader, factory, workspaceResolver);
+    this.startRun_ = new StartRunUseCase(this.loader, this.factory, workspaceResolver);
     this.previewRun_ = new PreviewRunUseCase(this.loader, workspaceResolver);
     this.listRuns_ = new ListRunsUseCase(this.loader);
     this.getRun_ = new GetRunUseCase(this.loader);
     this.verifyAudit_ = new VerifyAuditUseCase(this.loader);
+  }
+
+  /**
+   * Construct (and discard) the run-time infra so configuration errors
+   * — missing env-var auth on `local_services`, malformed runtime
+   * configs, unreadable egress-approval state — surface BEFORE the
+   * caller does anything observable. The CLI calls this before mounting
+   * the OpenTUI renderer so a crash here doesn't leave terminal-probe
+   * responses leaking onto the user's next shell prompt.
+   *
+   * Pure validation: the broker isn't started, no sockets open, nothing
+   * is entered. The constructed instance falls out of scope on return.
+   */
+  async preflight(): Promise<void> {
+    const state = await this.loader.load();
+    await this.factory({
+      root: this.loader.root,
+      bundleName: this.loader.bundleName,
+      config: state.config,
+      // `enter()` is the only consumer of workspaceRoot; we never call
+      // it. The egress-approval store uses it as a project key but only
+      // reads, so a sentinel here doesn't pollute on-disk state.
+      workspaceRoot: "/",
+      projectName: undefined,
+      onEvent: undefined,
+    });
   }
 
   /**
@@ -304,9 +332,43 @@ export interface BundleInspection {
   readonly hash: BundleHash;
 }
 
+/**
+ * `__ORDIN_COMPILED__` is replaced with the literal `true` at build
+ * time by `scripts/package.ts` via Bun.build's `define` option. In dev
+ * runs the identifier doesn't exist, so the `typeof` guard yields
+ * `"undefined"` and the code branches to the dev walk-up. No filesystem
+ * heuristic, no ambiguity at runtime.
+ */
+declare const __ORDIN_COMPILED__: boolean | undefined;
+
+/**
+ * Resolve the harness config root (where ordin.config.yaml + projects.yaml
+ * live). Precedence:
+ *
+ *   1. $ORDIN_HOME env override — explicit user choice.
+ *   2. Compiled binary → `~/.ordin/`. The dev walk-up via
+ *      `import.meta.url` would resolve to the source repo on the build
+ *      machine, which is meaningless on an installed user's system.
+ *   3. Dev tree → walk up from the source file.
+ *   4. Last-resort fallback → `~/.ordin/`.
+ *
+ * Bundles are resolved separately via the bundle search path.
+ */
 function defaultRoot(): string {
-  // Walk up from this file: src/composition/harness.ts → src/composition → src → root.
-  // This is the *config* root (ordin.config.yaml, projects.yaml) — bundles
-  // are resolved separately via the bundle search path.
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const explicit = process.env["ORDIN_HOME"];
+  if (explicit) return resolve(explicit);
+  if (typeof __ORDIN_COMPILED__ !== "undefined" && __ORDIN_COMPILED__) {
+    return join(homedir(), ".ordin");
+  }
+  const fromSource = devSourceRoot();
+  if (fromSource) return fromSource;
+  return join(homedir(), ".ordin");
+}
+
+function devSourceRoot(): string | undefined {
+  try {
+    return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  } catch {
+    return undefined;
+  }
 }

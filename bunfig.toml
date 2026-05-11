@@ -1,5 +1,5 @@
-# Preload @opentui/solid's Babel transform so Solid JSX in *.tsx files
-# (the run-time TUI) compiles to fine-grained reactive calls. Without
-# this, Bun would treat JSX as plain createElement and Solid's
-# reconciler would never receive the right shape.
-preload = ["@opentui/solid/preload"]
+# Intentionally minimal. The @opentui/solid Babel transform preload
+# moved into `src/cli/index.ts` as an explicit import so the CLI entry
+# is self-contained — same dev semantics (the import runs before any
+# `.tsx` is loaded), and the compiled binary no longer crashes on a
+# preload reference its bundle can't resolve.
