@@ -131,12 +131,7 @@ export class MastraEngine implements Engine {
           meta.completedAt = new Date().toISOString();
           meta.status = "failed";
           await services.runStore.writeMeta(meta);
-          const err = (result as { error?: unknown }).error;
-          if (err instanceof Error && err.message) throw err;
-          throw new Error(
-            `Workflow ${result.status}`,
-            err instanceof Error ? { cause: err } : undefined,
-          );
+          throw extractFailureError(result);
         }
 
         meta.completedAt = new Date().toISOString();
@@ -173,6 +168,25 @@ export class MastraEngine implements Engine {
       });
     });
   }
+}
+
+// Mastra's runtime shape diverges from its types: `result.error` comes
+// back as a plain object (no prototype, no stack) after the durable-
+// operation pipeline serialises/deserialises it. The real `Error`
+// instance lives on `result.steps[<failedStep>].error`. Prefer that;
+// fall back to enriching from the top-level `.message` if no failed
+// step is reachable (suspended/tripwire/etc.).
+function extractFailureError(result: unknown): Error {
+  const r = result as { status: string; error?: unknown; steps?: Record<string, unknown> };
+  for (const stepResult of Object.values(r.steps ?? {})) {
+    const step = stepResult as { status?: string; error?: unknown };
+    if (step.status === "failed" && step.error instanceof Error) return step.error;
+  }
+  const topMsg =
+    r.error && typeof r.error === "object" && "message" in r.error
+      ? String((r.error as { message: unknown }).message)
+      : undefined;
+  return new Error(`Workflow ${r.status}${topMsg ? `: ${topMsg}` : ""}`);
 }
 
 function summariseRunOutput(meta: RunMeta): string {
