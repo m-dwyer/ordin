@@ -46,6 +46,19 @@ registerMcp(program);
 registerAudit(program);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
-  console.error(err instanceof Error ? (err.stack ?? err.message) : err);
+  printError(err);
   process.exit(1);
 });
+
+function printError(err: unknown): void {
+  if (!(err instanceof Error)) {
+    console.error(err);
+    return;
+  }
+  console.error(err.stack ?? `${err.name}: ${err.message}`);
+  const cause = (err as { cause?: unknown }).cause;
+  if (cause !== undefined) {
+    console.error("Caused by:");
+    printError(cause);
+  }
+}

@@ -132,7 +132,11 @@ export class MastraEngine implements Engine {
           meta.status = "failed";
           await services.runStore.writeMeta(meta);
           const err = (result as { error?: unknown }).error;
-          throw err instanceof Error ? err : new Error(`Workflow ${result.status}`);
+          if (err instanceof Error && err.message) throw err;
+          throw new Error(
+            `Workflow ${result.status}`,
+            err instanceof Error ? { cause: err } : undefined,
+          );
         }
 
         meta.completedAt = new Date().toISOString();
