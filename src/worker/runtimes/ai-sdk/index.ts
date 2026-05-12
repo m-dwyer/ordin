@@ -218,7 +218,7 @@ export class AiSdkRuntime implements AgentRuntime {
     } catch (err) {
       status = "failed";
       exitCode = 1;
-      errorText = err instanceof Error ? err.message : String(err);
+      errorText = formatProviderError(err);
       emit({ type: "error", message: errorText });
     } finally {
       transcript.end();
@@ -285,4 +285,38 @@ interface MastraStepLike {
     outputTokens?: number;
     cachedInputTokens?: number;
   };
+}
+
+function formatProviderError(err: unknown): string {
+  const base = err instanceof Error ? err.message : String(err);
+  const details = providerErrorDetails(err);
+  return details.length > 0 ? `${base} (${details.join("; ")})` : base;
+}
+
+function providerErrorDetails(err: unknown): string[] {
+  if (!err || typeof err !== "object") return [];
+  const out: string[] = [];
+  const statusCode = numberProp(err, "statusCode");
+  const url = stringProp(err, "url");
+  if (statusCode !== undefined && url) {
+    out.push(`HTTP ${statusCode} from ${url}`);
+  } else if (statusCode !== undefined) {
+    out.push(`HTTP ${statusCode}`);
+  } else if (url) {
+    out.push(url);
+  }
+
+  const responseBody = stringProp(err, "responseBody")?.trim();
+  if (responseBody) out.push(`response: ${responseBody.slice(0, 500)}`);
+  return out;
+}
+
+function stringProp(value: object, key: string): string | undefined {
+  const prop = (value as Record<string, unknown>)[key];
+  return typeof prop === "string" ? prop : undefined;
+}
+
+function numberProp(value: object, key: string): number | undefined {
+  const prop = (value as Record<string, unknown>)[key];
+  return typeof prop === "number" ? prop : undefined;
 }

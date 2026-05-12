@@ -62,7 +62,12 @@ export function registerDoctor(program: Command): void {
         },
         {
           title: "Files",
-          checks: () => [checkOrdinFiles(), checkPluginManifest()],
+          checks: () => [
+            checkConfigRoot(),
+            checkConfigFile(),
+            checkOrdinFiles(),
+            checkPluginManifest(),
+          ],
         },
         {
           title: "Sandbox",
@@ -177,6 +182,20 @@ async function checkOrdinFiles(): Promise<DoctorResult> {
     return { label: "ordin files", ok: false, detail: (err as Error).message };
   }
   return { label: "ordin files", ok: true };
+}
+
+async function checkConfigRoot(): Promise<DoctorResult> {
+  return { label: "config root", ok: true, detail: ordin().paths().root };
+}
+
+async function checkConfigFile(): Promise<DoctorResult> {
+  const configFile = ordin().paths().configFile;
+  try {
+    await stat(configFile);
+    return { label: "config file", ok: true, detail: configFile };
+  } catch {
+    return { label: "config file", ok: false, detail: `missing: ${configFile}` };
+  }
 }
 
 async function checkSandboxMode(): Promise<DoctorResult> {

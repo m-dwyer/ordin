@@ -115,6 +115,9 @@ export class Composer {
     if (input.artefactOutputs && input.artefactOutputs.length > 0) {
       sections.push("");
       sections.push("## Produce these artefacts");
+      sections.push(
+        "You must create or update every listed artefact at the exact path shown before ending this phase. Use the available file-writing tools; a final text-only answer does not satisfy this phase contract.",
+      );
       for (const a of input.artefactOutputs) {
         const desc = a.description ? ` — ${a.description}` : "";
         sections.push(`- **${a.label}**: \`${a.path}\`${desc}`);

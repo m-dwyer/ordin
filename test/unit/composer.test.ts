@@ -86,6 +86,8 @@ describe("Composer", () => {
     });
     expect(out.userPrompt).toContain("Brief");
     expect(out.userPrompt).toContain("problem.md");
+    expect(out.userPrompt).toContain("Use the available file-writing tools");
+    expect(out.userPrompt).toContain("a final text-only answer does not satisfy");
     expect(out.userPrompt).toContain("docs/rfcs/t-rfc.md");
     expect(out.userPrompt).toContain("rfc-template");
     expect(out.userPrompt).toContain("## Prior-iteration context");

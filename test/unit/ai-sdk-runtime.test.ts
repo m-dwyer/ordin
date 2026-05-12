@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrokerDispatch } from "../../src/broker/dispatch";
 import type { ComposedPrompt } from "../../src/domain/composer";
 import { AiSdkRuntime } from "../../src/worker/runtimes/ai-sdk";
@@ -206,5 +206,34 @@ describe("AiSdkRuntime.invoke event mapping", () => {
 
     expect(events[4]).toEqual({ type: "assistant.text", text: "done" });
     expect(call).toBe(2);
+  });
+
+  it("includes provider HTTP context when stream startup fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const providerError = Object.assign(new Error("No connected db."), {
+      statusCode: 400,
+      url: "http://localhost:4000/v1/chat/completions",
+      responseBody:
+        '{"error":{"message":"No connected db.","type":"no_db_connection","code":"400"}}',
+    });
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        throw providerError;
+      },
+    });
+
+    const runtime = new AiSdkRuntime({ model, broker: noopBroker() });
+    const { request, events } = makeRequest();
+    try {
+      const result = await runtime.invoke(request);
+
+      expect(result.status).toBe("failed");
+      expect(result.error).toContain("No connected db.");
+      expect(result.error).toContain("HTTP 400 from http://localhost:4000/v1/chat/completions");
+      expect(result.error).toContain("no_db_connection");
+      expect(events.at(-1)).toEqual({ type: "error", message: result.error });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
