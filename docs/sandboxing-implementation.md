@@ -52,7 +52,7 @@ Honest asymmetry: the sandbox boundary lives wherever "untrusted execution" actu
 
 **Phase D: bundle + monorepo.**
 
-- `bun build --compile src/worker/entry.ts` produces a single binary. Tree-shakes everything unused; drops the `node_modules` and source-tree dependency at runtime; shrinks srt's filesystem `allowRead` set.
+- **(shipped)** `scripts/package.ts` emits `dist/ordin-worker` alongside `dist/ordin`; `scripts/install.ts` copies it to `~/.ordin/dist/`. `src/worker/locator.ts` already preferred that path. `buildSrtConfig` sniffs `workerArgv[0]` and, when the compiled worker is in use, drops `DEV_TOOLING_ROOTS` (~/.bun, ~/.cargo, ~/.config/mise, ~/.gem, …) from `allowRead`. That's where the credential-bearing dotfiles live; the security win is concentrated there. `harnessRoot` stays in `allowRead` either way — Bun's runtime still reads `bunfig.toml` from there even from a compiled binary, and harnessRoot itself isn't credential-bearing.
 - Promote `src/worker/` → `packages/ordin-worker/` (Bun workspace) when there's a distribution need (versioned releases, downstream pinning). Trivial directory move once the deps-cruiser rule is in place — the boundary is already enforced.
 
 **Out of scope (still):**

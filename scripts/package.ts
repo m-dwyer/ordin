@@ -135,6 +135,30 @@ if (!result.success) {
 }
 console.log(`✓ ${opts.outfile} (${opts.target}, ${Date.now() - start}ms)`);
 
+// ----- Step 3b: build the slim worker binary ------------------------------
+// `src/worker/entry.ts` compiled standalone. No Solid plugin (worker has
+// no JSX), no embedded assets (worker doesn't mount the TUI), no
+// `__ORDIN_COMPILED__` (worker has no compile-vs-dev branch of its own).
+// Locator picks this up via `<harnessRoot>/dist/ordin-worker` when it
+// exists, falling back to `bun src/worker/entry.ts` for dev. srt's
+// `buildSrtConfig` sniffs the argv to drop harnessRoot + dev-tooling
+// roots from `allowRead` when the compiled worker is in use.
+const workerBinStart = Date.now();
+const workerOutfile = join(distDir, "ordin-worker");
+const workerBinResult = await Bun.build({
+  entrypoints: [join(repoRoot, "src", "worker", "entry.ts")],
+  target: "bun",
+  compile: {
+    target: opts.target as Bun.Build.CompileTarget,
+    outfile: workerOutfile,
+  },
+});
+if (!workerBinResult.success) {
+  for (const log of workerBinResult.logs) console.error(log);
+  process.exit(1);
+}
+console.log(`✓ ${workerOutfile} (${opts.target}, ${Date.now() - workerBinStart}ms)`);
+
 // ----- Step 4: clean up build intermediates -------------------------------
 // The worker + wasm are now embedded in the binary; their on-disk
 // copies in dist/ are no longer load-bearing for distribution.

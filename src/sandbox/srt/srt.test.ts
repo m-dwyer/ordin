@@ -91,11 +91,14 @@ describe("buildSrtConfig", () => {
     expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.claude.json`);
   });
 
-  it("allows explicit extra read roots for the worker interpreter", () => {
+  it("derives worker read roots from absolute workerArgv entries", () => {
     const cfg = buildSrtConfig({
       params: {
         ...params,
-        workerReadRoots: ["/Users/test/.local/share/mise/installs/bun/1.3.13/bin"],
+        workerArgv: [
+          "/Users/test/.local/share/mise/installs/bun/1.3.13/bin/bun",
+          `${params.harnessRoot}/src/worker/entry.ts`,
+        ],
       },
       policy: defaultPolicy({ env: {} }),
       homeDir,
@@ -103,6 +106,27 @@ describe("buildSrtConfig", () => {
     expect(cfg.filesystem.allowRead).toContain(
       "/Users/test/.local/share/mise/installs/bun/1.3.13/bin",
     );
+    expect(cfg.filesystem.allowRead).toContain(`${params.harnessRoot}/src/worker`);
+  });
+
+  it("compiled worker (ordin-worker) drops dev-tooling roots from allowRead", () => {
+    const cfg = buildSrtConfig({
+      params: {
+        ...params,
+        workerArgv: [`${homeDir}/.ordin/dist/ordin-worker`],
+      },
+      policy: defaultPolicy({ env: {} }),
+      homeDir,
+    });
+    // Credential-bearing dev-tooling roots fall away under the compiled
+    // worker since it doesn't resolve modules through them.
+    expect(cfg.filesystem.allowRead).not.toContain(`${homeDir}/.bun`);
+    expect(cfg.filesystem.allowRead).not.toContain(`${homeDir}/.cache`);
+    expect(cfg.filesystem.allowRead).not.toContain(`${homeDir}/.config/mise`);
+    // harnessRoot stays — Bun's runtime still reads `bunfig.toml` from
+    // there even from a compiled binary.
+    expect(cfg.filesystem.allowRead).toContain(params.harnessRoot);
+    expect(cfg.filesystem.allowRead).toContain(`${homeDir}/.ordin/dist`);
   });
 
   it("does not include harnessRoot in allowWrite (the allow-only model denies it by default)", () => {

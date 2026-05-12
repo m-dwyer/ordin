@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxParams } from "../types";
 import type { NetworkPolicy } from "./policy";
@@ -67,14 +68,27 @@ export function buildSrtConfig(input: BuildSrtConfigInput): SandboxRuntimeConfig
   const runStoreDir = resolveSafe(params.runStoreDir);
   const harnessRoot = resolveSafe(params.harnessRoot);
   const tempDirResolved = resolveSafe(tempDir);
-  const workerReadRoots = [...(params.workerReadRoots ?? [])].map(resolveSafe);
+  const workerArgv = params.workerArgv ?? [];
+  const workerReadRoots = workerArgv
+    .filter((arg) => arg.startsWith("/"))
+    .map((arg) => resolveSafe(dirname(arg)));
+  // Compiled worker doesn't resolve modules from the per-user dev-
+  // tooling roots (~/.bun, ~/.cargo, ~/.config/mise, ~/.gem, …), so
+  // those drop out of allowRead — that's where the credential-bearing
+  // dotfiles live. `harnessRoot` stays in either mode: even the
+  // compiled binary's Bun runtime still reads `bunfig.toml` from
+  // there on startup, and harnessRoot itself isn't credential-bearing
+  // (it holds bundles + starter configs).
+  const workerIsCompiled = workerArgv[0]?.endsWith("ordin-worker") ?? false;
   const claudeDir = `${home}/.claude`;
   // claude-cli reads `~/.claude.json` (a sibling file, not under
   // `~/.claude/`) on every invocation. Without this allow rule the
   // child silently retries the read forever and never reaches the
   // network — the seatbelt deny is invisible to claude itself.
   const claudeJson = `${home}/.claude.json`;
-  const devToolingRoots = DEV_TOOLING_ROOTS.map((rel) => resolveSafe(`${home}/${rel}`));
+  const devToolingRoots = workerIsCompiled
+    ? []
+    : DEV_TOOLING_ROOTS.map((rel) => resolveSafe(`${home}/${rel}`));
 
   // srt reads are deny-then-allow. Denying the whole home directory
   // and re-allowing only the paths ordin needs is easier to audit than

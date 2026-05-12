@@ -75,9 +75,17 @@ async function spawnWorkerInvoke(args: SpawnWorkerInvokeArgs): Promise<InvokeRes
     args;
   const traceparent = serializeActiveTraceparent();
   const env = traceparent ? { ...workerEnv, TRACEPARENT: traceparent } : workerEnv;
+  // Pin the worker's cwd to the parent's `harnessRoot`. The CLI
+  // chdirs into the workspace before spawning; without this pin the
+  // worker would inherit that cwd, and Bun's dev fallback
+  // (`bun src/worker/entry.ts`) would fail to discover `bunfig.toml`
+  // / `tsconfig.json` and break on the worker's extensionless
+  // imports. Compiled worker doesn't care about cwd; tools execute
+  // parent-side so the agent's perceived workspace is unaffected.
   const handle = sandbox.spawnWorker({
     argv: [...workerArgv({ harnessRoot }), "--plan", planPath],
     env,
+    cwd: harnessRoot,
   });
   const events = consumeRuntimeEvents(handle.stdout, invokeReq.onEvent);
   if (invokeReq.abortSignal) {

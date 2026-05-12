@@ -14,6 +14,7 @@ import type { RunEvent } from "../orchestrator/events";
 import type { PhaseInvocationResult } from "../orchestrator/phase-invocation";
 import { selectSandbox } from "../sandbox";
 import type { Sandbox } from "../sandbox/types";
+import { workerArgv } from "../worker/locator";
 import { type EgressApproval, EgressApprovalStore } from "./egress-store";
 import {
   InProcessInvokeSource,
@@ -23,7 +24,7 @@ import {
   type WorkerInvokeSource,
 } from "./phase-dispatcher";
 import { resolveClaudeBin } from "./resolve-claude-bin";
-import { buildWorkerEnv, workerReadRoots } from "./worker-policy";
+import { buildWorkerEnv } from "./worker-policy";
 
 /**
  * Session-scoped overrides applied to every prepared `RunExecution`.
@@ -120,7 +121,7 @@ export class DefaultRunExecution implements RunExecution {
       workspaceRoot: this.opts.workspaceRoot,
       runStoreDir: this.opts.config.runStoreDir(),
       harnessRoot: this.opts.root,
-      workerReadRoots: workerReadRoots(this.opts.root),
+      workerArgv: workerArgv({ harnessRoot: this.opts.root }),
     });
   }
 

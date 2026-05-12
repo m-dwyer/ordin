@@ -109,9 +109,14 @@ function parseArgs(argv: readonly string[]): InstallOpts {
 const opts = parseArgs(process.argv);
 const repoRoot = resolve(import.meta.dir, "..");
 const binary = join(repoRoot, "dist", "ordin");
+const workerBinary = join(repoRoot, "dist", "ordin-worker");
 
 if (!(await exists(binary))) {
   console.error("dist/ordin not found — run `mise run package` first.");
+  process.exit(1);
+}
+if (!(await exists(workerBinary))) {
+  console.error("dist/ordin-worker not found — run `mise run package` first.");
   process.exit(1);
 }
 
@@ -123,6 +128,15 @@ type Action =
 const actions: Action[] = [];
 
 actions.push({ kind: "copy", from: binary, to: join(opts.binDir, "ordin") });
+
+// Worker binary goes under `<harnessRoot>/dist/ordin-worker` — where
+// `src/worker/locator.ts` already looks. Not in binDir: it's not a
+// user-facing entry point, the parent spawns it directly.
+actions.push({
+  kind: "copy",
+  from: workerBinary,
+  to: join(opts.home, "dist", "ordin-worker"),
+});
 
 // ordin.config.yaml: write a minimal starter, not the dev copy. The dev
 // config is wired for `sandbox: srt` with Langfuse/LiteLLM auth via env

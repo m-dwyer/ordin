@@ -1,6 +1,3 @@
-import { dirname } from "node:path";
-import { workerArgv } from "../worker/locator";
-
 /**
  * Policy for the worker process boundary. `srt` workers are the
  * untrusted side of the sandbox, so they receive only the process vars
@@ -46,12 +43,6 @@ export function buildWorkerEnv(
   // its `parentProxy` userinfo). The per-run secret never enters the
   // worker env.
   return allowlistedSrtWorkerEnv(parentEnv);
-}
-
-export function workerReadRoots(harnessRoot: string): readonly string[] {
-  return workerArgv({ harnessRoot })
-    .filter((arg) => arg.startsWith("/"))
-    .map(dirname);
 }
 
 function allowlistedSrtWorkerEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

@@ -88,8 +88,14 @@ export interface SandboxParams {
   readonly harnessRoot: string;
   /** Per-process temp dir; defaults to `os.tmpdir()` when unset. */
   readonly tempDir?: string;
-  /** Read roots needed to execute the worker binary/interpreter. */
-  readonly workerReadRoots?: readonly string[];
+  /**
+   * Argv the parent will use to launch the worker — `[binary]` for the
+   * compiled `dist/ordin-worker`, `[bun, "<harnessRoot>/src/worker/entry.ts"]`
+   * for the dev fallback. Sandbox implementations derive both read-root
+   * allowances and the "is this a self-contained binary?" decision from
+   * this single source.
+   */
+  readonly workerArgv?: readonly string[];
 }
 
 export interface SandboxReadiness {
