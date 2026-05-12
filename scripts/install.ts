@@ -175,6 +175,22 @@ for (const name of await readdir(bundlesRoot)) {
   actions.push({ kind: "copy", from: src, to: join(opts.home, "bundles", name) });
 }
 
+// `scripts/<bundle>.yaml` is where `ScriptedRuntime.fromConfig` looks
+// by default. Lives at the dev-tree root (not inside the bundle dir)
+// today; copy alongside the bundles so installed scripted runs find
+// their plan. Follow-up: move plans inside bundle dirs.
+const scriptsRoot = join(repoRoot, "scripts");
+if (await isDir(scriptsRoot)) {
+  for (const name of await readdir(scriptsRoot)) {
+    if (!name.endsWith(".yaml") && !name.endsWith(".yml")) continue;
+    actions.push({
+      kind: "copy",
+      from: join(scriptsRoot, name),
+      to: join(opts.home, "scripts", name),
+    });
+  }
+}
+
 // (Tree-sitter Worker and its wasm sibling are embedded directly in
 // the compiled binary; setupCompiledRuntime extracts them to a cache
 // dir on first run. No sibling files to copy.)
