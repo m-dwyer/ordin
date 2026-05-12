@@ -28,6 +28,7 @@ export class StartRunUseCase {
       workspaceRoot,
       projectName: input.projectName,
       onEvent: input.onEvent,
+      bundleScriptPath: state.bundle.scriptPath,
     });
     const gateForKind = input.gateForKind ?? gateResolverFor();
     try {

@@ -43,7 +43,11 @@ export interface RunExecutionOverrides {
   readonly scriptPathOverride: string | undefined;
 }
 
-export type RunExecutionOptions = RunExecutionPrepareOptions & RunExecutionOverrides;
+// `bundleScriptPath` is consumed by the composition root's factory
+// closure (merged with the CLI `--script` override into
+// `scriptPathOverride`); `DefaultRunExecution` never sees it.
+export type RunExecutionOptions = Omit<RunExecutionPrepareOptions, "bundleScriptPath"> &
+  RunExecutionOverrides;
 
 /**
  * Per-run execution plumbing — the concrete adapter behind the

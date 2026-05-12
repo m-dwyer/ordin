@@ -76,9 +76,9 @@ runtimes:
     max_steps: 40
 
   scripted:
-    # Deterministic test runtime — reads a YAML plan, no LLM. Plan path
-    # auto-detects from <root>/scripts/<bundle>.yaml; override per-run
-    # via \`ordin run --script <path>\`.
+    # Deterministic test runtime — reads each bundle's
+    # \`script.yaml\` (no LLM). Override per-run with
+    # \`ordin run --script <path>\`.
     {}
 
 tiers:
@@ -173,22 +173,6 @@ for (const name of await readdir(bundlesRoot)) {
   const src = join(bundlesRoot, name);
   if (!(await isDir(src))) continue;
   actions.push({ kind: "copy", from: src, to: join(opts.home, "bundles", name) });
-}
-
-// `scripts/<bundle>.yaml` is where `ScriptedRuntime.fromConfig` looks
-// by default. Lives at the dev-tree root (not inside the bundle dir)
-// today; copy alongside the bundles so installed scripted runs find
-// their plan. Follow-up: move plans inside bundle dirs.
-const scriptsRoot = join(repoRoot, "scripts");
-if (await isDir(scriptsRoot)) {
-  for (const name of await readdir(scriptsRoot)) {
-    if (!name.endsWith(".yaml") && !name.endsWith(".yml")) continue;
-    actions.push({
-      kind: "copy",
-      from: join(scriptsRoot, name),
-      to: join(opts.home, "scripts", name),
-    });
-  }
 }
 
 // (Tree-sitter Worker and its wasm sibling are embedded directly in

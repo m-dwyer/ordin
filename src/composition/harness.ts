@@ -124,13 +124,16 @@ export class Harness {
       engines: opts.engines,
     });
     this.sandboxModeOverride = opts.sandboxMode;
-    this.factory = (prepareOpts) =>
+    this.factory = ({ bundleScriptPath, ...prepareOpts }) =>
       DefaultRunExecution.prepare({
         ...prepareOpts,
         dispatchPhaseOverride: opts.dispatchPhase,
         egressGatePrompter: opts.egressGatePrompter,
         sandboxModeOverride: opts.sandboxMode,
-        scriptPathOverride: opts.scriptPath,
+        // CLI `--script` wins over the in-bundle `script.yaml`
+        // convention. `bundleScriptPath` is transient — consumed by
+        // this closure, not flowed further down the chain.
+        scriptPathOverride: opts.scriptPath ?? bundleScriptPath,
       });
     const workspaceResolver = new WorkspaceResolver(this.loader);
 
@@ -165,6 +168,7 @@ export class Harness {
       workspaceRoot: "/",
       projectName: undefined,
       onEvent: undefined,
+      bundleScriptPath: state.bundle.scriptPath,
     });
   }
 

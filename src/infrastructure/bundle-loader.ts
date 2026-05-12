@@ -18,6 +18,12 @@ export interface LoadedBundle {
   readonly hash: BundleHash;
   /** Absolute path to the bundle directory. */
   readonly source: string;
+  /**
+   * Absolute path to `<source>/script.yaml` if the file exists. Used
+   * by `ScriptedRuntime` as the default plan-path fallback so the
+   * bundle is self-contained (no parallel `scripts/` directory).
+   */
+  readonly scriptPath?: string;
 }
 
 /**
@@ -69,15 +75,27 @@ export class BundleLoader {
       agentBytes.set(agent.name, await readFile(agent.source, "utf8"));
     }
 
+    const scriptAbsPath = join(bundleDir, "script.yaml");
+    const scriptBody = await readIfPresent(scriptAbsPath);
+
     const hash = computeBundleHash({
       manifest: manifestRaw,
       workflow: workflowRaw,
       workflowRel: manifest.entry,
       agents: agentBytes,
       skills: skillBytes,
+      script: scriptBody,
     });
 
-    return { manifest, workflow, agents, skills, hash, source: bundleDir };
+    return {
+      manifest,
+      workflow,
+      agents,
+      skills,
+      hash,
+      source: bundleDir,
+      ...(scriptBody !== undefined ? { scriptPath: scriptAbsPath } : {}),
+    };
   }
 }
 
@@ -87,6 +105,7 @@ interface HashInputs {
   readonly workflowRel: string;
   readonly agents: ReadonlyMap<string, string>;
   readonly skills: ReadonlyMap<string, string>;
+  readonly script?: string;
 }
 
 function computeBundleHash(inputs: HashInputs): BundleHash {
@@ -102,6 +121,9 @@ function computeBundleHash(inputs: HashInputs): BundleHash {
   ];
   for (const [name, sha] of agentHashes) entries.push({ path: `agents/${name}`, sha });
   for (const [name, sha] of skillHashes) entries.push({ path: `skills/${name}`, sha });
+  if (inputs.script !== undefined) {
+    entries.push({ path: "script.yaml", sha: sha256Hex(inputs.script) });
+  }
   entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const canonical = entries.map((e) => `${e.path}\n${e.sha}\n`).join("");
@@ -122,6 +144,15 @@ async function loadIfPresent<T>(load: () => Promise<Map<string, T>>): Promise<Ma
     return await load();
   } catch (err) {
     if (isMissingDir(err)) return new Map();
+    throw err;
+  }
+}
+
+async function readIfPresent(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    if (isMissingDir(err)) return undefined;
     throw err;
   }
 }

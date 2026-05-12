@@ -58,30 +58,26 @@ export interface ScriptedRuntimeOptions {
 }
 
 /**
- * Validated config slice for ScriptedRuntime — read from
- * `ordin.config.yaml` `runtimes.scripted`. All fields optional;
- * defaults make the runtime usable with zero config.
+ * Validated config slice for ScriptedRuntime. Currently empty —
+ * scripted bundles carry their plan as `<bundleDir>/script.yaml` and
+ * the composition root resolves the path; nothing useful lives in
+ * the per-runtime YAML slice today.
  */
-export const ScriptedConfigSchema = z.object({
-  /**
-   * Default plan path. If unset, the runtime auto-detects
-   * `<harnessRoot>/scripts/<bundleName>.yaml`. Overridden at run
-   * time by the CLI's `--script <path>` flag.
-   */
-  script_path: z.string().min(1).optional(),
-});
+export const ScriptedConfigSchema = z.object({});
 export type ScriptedConfigRaw = z.infer<typeof ScriptedConfigSchema>;
 
 export interface ScriptedRuntimeFromConfigExtras {
-  /** Workflow name, used to auto-detect `scripts/<name>.yaml`. */
+  /** Bundle name — surfaced in errors. */
   readonly bundleName: string;
-  /** Harness content root — base for the `scripts/` directory. */
+  /** Harness content root — used only in error messages. */
   readonly harnessRoot: string;
   /** Run-store fallback for transcript writes. */
   readonly runsDirFallback?: string;
   /**
-   * Per-run override (the CLI's `--script <path>` flag). Beats both
-   * `config.script_path` and the auto-detected location.
+   * Resolved plan-file path. The composition root merges the CLI
+   * `--script` override with the in-bundle `script.yaml` fallback
+   * before constructing this runtime; undefined means the bundle has
+   * no script and no override was given.
    */
   readonly scriptPath?: string;
   /** Broker client for tool dispatch (ADR-016). */
@@ -109,21 +105,16 @@ export class ScriptedRuntime implements AgentRuntime {
     this.broker = opts.broker;
   }
 
-  /**
-   * Validate the config slice and construct a runtime. Caller (the
-   * harness) supplies workflow + harness-root context so the runtime
-   * can auto-detect `scripts/<workflow-name>.yaml`. Resolution order
-   * for the plan path: `extras.scriptPath` (CLI flag) > `config.script_path`
-   * (config file) > `<harnessRoot>/scripts/<bundleName>.yaml`
-   * (convention).
-   */
   static fromConfig(raw: unknown, extras: ScriptedRuntimeFromConfigExtras): ScriptedRuntime {
-    const config = ScriptedConfigSchema.parse(raw ?? {});
-    const planPath =
-      extras.scriptPath ??
-      config.script_path ??
-      join(extras.harnessRoot, "scripts", `${extras.bundleName}.yaml`);
+    ScriptedConfigSchema.parse(raw ?? {});
+    if (!extras.scriptPath) {
+      throw new Error(
+        `ScriptedRuntime: bundle "${extras.bundleName}" has no script.yaml ` +
+          "and no --script override was provided.",
+      );
+    }
     const loader = new ScriptedPlanLoader();
+    const planPath = extras.scriptPath;
     return new ScriptedRuntime({
       planLoader: () => loader.load(planPath),
       broker: extras.broker,

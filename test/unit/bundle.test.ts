@@ -119,6 +119,18 @@ Planner prompt body — REVISED.
     const after = (await loader.load(dir)).hash.bundle;
     expect(after).not.toBe(baseline);
   });
+
+  it("includes script.yaml in the hash and surfaces its path when present", async () => {
+    const dir = await makeBundle();
+    const loader = new BundleLoader();
+    const baseline = await loader.load(dir);
+    expect(baseline.scriptPath).toBeUndefined();
+
+    await write(join(dir, "script.yaml"), "phases: []\n");
+    const withScript = await loader.load(dir);
+    expect(withScript.scriptPath).toBe(join(dir, "script.yaml"));
+    expect(withScript.hash.bundle).not.toBe(baseline.hash.bundle);
+  });
 });
 
 describe("BundleResolver.resolve", () => {

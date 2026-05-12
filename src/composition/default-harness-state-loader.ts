@@ -91,6 +91,7 @@ export class DefaultHarnessStateLoader implements HarnessStateLoader {
         name: bundle.manifest.name,
         version: bundle.manifest.version,
         hash: bundle.hash.bundle,
+        ...(bundle.scriptPath ? { scriptPath: bundle.scriptPath } : {}),
       },
     };
   }

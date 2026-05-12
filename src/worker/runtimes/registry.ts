@@ -12,7 +12,12 @@ export interface RuntimeBuildContext {
   readonly bundleName: string;
   /** Default transcript dir; runtimes use this when `InvokeRequest.runDir` is unset. */
   readonly runsDir: string;
-  /** Optional override for `ScriptedRuntime`'s plan file path. */
+  /**
+   * Resolved plan-file path for `ScriptedRuntime`. The composition root
+   * merges the `--script` CLI override with the in-bundle `script.yaml`
+   * fallback before this context is built, so the runtime sees one
+   * value or undefined.
+   */
   readonly scriptPath?: string;
   /**
    * Broker client passed to runtimes that route tool dispatch through

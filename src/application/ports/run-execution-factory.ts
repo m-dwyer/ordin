@@ -26,6 +26,13 @@ export interface RunExecutionPrepareOptions {
   readonly workspaceRoot: string;
   readonly projectName: string | undefined;
   readonly onEvent: ((event: RunEvent) => void) | undefined;
+  /**
+   * Absolute path to `<bundleDir>/script.yaml` if present. Transient
+   * carrier consumed by the composition root's factory closure: it
+   * resolves `cli --script ?? bundleScriptPath` into the single
+   * `scriptPathOverride` that flows downstream.
+   */
+  readonly bundleScriptPath: string | undefined;
 }
 
 /**

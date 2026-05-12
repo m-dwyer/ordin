@@ -18,6 +18,12 @@ export interface LoadedBundleInfo {
   readonly name: string;
   readonly version: string;
   readonly hash: string;
+  /**
+   * Absolute path to the bundle's `script.yaml`, if present. Picked up
+   * by `ScriptedRuntime` as the third-tier plan-path fallback (after
+   * the `--script` CLI override and the `script_path` config slice).
+   */
+  readonly scriptPath?: string;
 }
 
 export interface LoadedHarnessState {
