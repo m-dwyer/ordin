@@ -1,5 +1,11 @@
-import { isAbsolute, relative } from "node:path";
-import { deriveToolPolicy, type ToolPolicy } from "./client/tool-authority";
+import {
+  deriveToolPolicy,
+  isKnownToolName,
+  knownToolNames,
+  normalizeToolMatchValue,
+  type ToolPolicy,
+  toolMatchValue,
+} from "../domain/tool-authority";
 import type {
   ApprovalResult,
   BrokerClient,
@@ -38,9 +44,6 @@ import type {
  * The audit-chain prefix `broker.tool.*` keeps these envelopes out of
  * the TUI fan-out (`AuditService.onEvent` filters `broker.*`).
  */
-
-export const KNOWN_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"] as const;
-export type KnownTool = (typeof KNOWN_TOOLS)[number];
 
 export interface DispatchAuditSink {
   append(event: {
@@ -112,10 +115,10 @@ export class BrokerDispatch implements BrokerClient {
   }
 
   private checkAcl(intent: ToolIntent): ToolError | undefined {
-    if (!(KNOWN_TOOLS as readonly string[]).includes(intent.tool)) {
+    if (!isKnownToolName(intent.tool)) {
       return {
         kind: "unknown_tool",
-        message: `Unknown tool "${intent.tool}". Known: ${KNOWN_TOOLS.join(", ")}.`,
+        message: `Unknown tool "${intent.tool}". Known: ${knownToolNames().join(", ")}.`,
       };
     }
     const acl = this.acls.get(aclKey(intent.runId, intent.phaseId));
@@ -164,18 +167,19 @@ function isToolPolicy(value: ToolPolicy | readonly string[]): value is ToolPolic
 }
 
 function checkPatternAcl(policy: ToolPolicy, intent: ToolIntent): ToolError | undefined {
+  if (!isKnownToolName(intent.tool)) return undefined;
   const specs = policy.specs.filter((spec) => spec.name === intent.tool);
   if (specs.length === 0) return undefined;
   if (specs.some((spec) => !spec.pattern)) return undefined;
 
-  const rawValue = patternValue(intent);
+  const rawValue = toolMatchValue(intent.tool, intent.input);
   if (rawValue === undefined) {
     return {
       kind: "denied",
       message: `Tool "${intent.tool}" requires a pattern match, but its input has no matchable field.`,
     };
   }
-  const value = normalizeForMatch(intent.tool, rawValue, policy.cwd);
+  const value = normalizeToolMatchValue(intent.tool, rawValue, policy.cwd);
   if (specs.some((spec) => spec.pattern && globMatches(spec.pattern, value))) {
     return undefined;
   }
@@ -183,42 +187,6 @@ function checkPatternAcl(policy: ToolPolicy, intent: ToolIntent): ToolError | un
     kind: "denied",
     message: `Tool "${intent.tool}" input "${rawValue}" does not match this phase's allowed_tools patterns.`,
   };
-}
-
-/**
- * Resolve absolute filesystem inputs against the phase cwd so that
- * relative allowed_tools patterns (`Write(docs/rfcs/*)`) match the
- * absolute paths Claude's tool surface emits. Path-bearing tools only;
- * Bash command / Glob pattern / Skill name aren't filesystem paths.
- */
-function normalizeForMatch(tool: string, value: string, cwd: string): string {
-  if (!cwd || !isAbsolute(value)) return value;
-  if (tool !== "Read" && tool !== "Write" && tool !== "Edit" && tool !== "Grep") return value;
-  return relative(cwd, value);
-}
-
-function patternValue(intent: ToolIntent): string | undefined {
-  switch (intent.tool) {
-    case "Bash":
-      return stringField(intent.input, "command");
-    case "Read":
-    case "Write":
-    case "Edit":
-      return stringField(intent.input, "file_path");
-    case "Grep":
-      return stringField(intent.input, "path");
-    case "Glob":
-      return stringField(intent.input, "pattern");
-    case "Skill":
-      return stringField(intent.input, "name");
-    default:
-      return undefined;
-  }
-}
-
-function stringField(input: Record<string, unknown>, key: string): string | undefined {
-  const value = input[key];
-  return typeof value === "string" ? value : undefined;
 }
 
 function globMatches(pattern: string, value: string): boolean {

@@ -6,8 +6,8 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
-import { deriveToolPolicy } from "../../../broker/client/tool-authority";
 import type { BrokerClient } from "../../../broker/client/types";
+import { deriveToolPolicy } from "../../../domain/tool-authority";
 import type { MastraTracingFactory } from "../../observability/mastra-tracing";
 import { buildDispatcherTools } from "../shared/mastra-tools";
 import type {

@@ -1,6 +1,6 @@
-import { isAbsolute, relative } from "node:path";
 import type { ToolError, ToolResult } from "../../broker/client/types";
 import type { Skill } from "../../domain/skill";
+import { isKnownToolName, normalizeToolPathInput } from "../../domain/tool-authority";
 import { type BashInput, executeBash } from "./bash";
 import { type EditInput, executeEdit } from "./edit";
 import { executeGlob, type GlobInput } from "./glob";
@@ -37,7 +37,7 @@ export async function executeTool(
 ): Promise<ToolResult> {
   let input: Record<string, unknown>;
   try {
-    input = normalizeFilePathInput(tool, rawInput, ctx.cwd);
+    input = isKnownToolName(tool) ? normalizeToolPathInput(tool, rawInput, ctx.cwd) : rawInput;
   } catch (err) {
     return errorResult(err, "input");
   }
@@ -75,29 +75,8 @@ async function runExecutor(
     case "Skill":
       return executeSkill(ctx.skills, skillInput(input));
     default:
-      throw new InputValidationError(`Unknown tool "${name}".`);
+      throw new Error(`Unknown tool "${name}".`);
   }
-}
-
-class InputValidationError extends Error {
-  override readonly name = "InputValidationError";
-}
-
-function normalizeFilePathInput(
-  name: string,
-  input: Record<string, unknown>,
-  cwd: string,
-): Record<string, unknown> {
-  const key = name === "Grep" ? "path" : "file_path";
-  if (!["Read", "Write", "Edit", "Grep"].includes(name)) return input;
-  const value = input[key];
-  if (typeof value !== "string" || !isAbsolute(value)) return input;
-
-  const rel = relative(cwd, value);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    throw new InputValidationError(`${name} path is outside the workspace: ${value}`);
-  }
-  return { ...input, [key]: rel || "." };
 }
 
 function readInput(input: Record<string, unknown>): ReadInput {
@@ -141,7 +120,7 @@ function skillInput(input: Record<string, unknown>): SkillInput {
 function requiredString(input: Record<string, unknown>, key: string): string {
   const value = input[key];
   if (typeof value !== "string") {
-    throw new InputValidationError(`Tool input field "${key}" must be a string.`);
+    throw new Error(`Tool input field "${key}" must be a string.`);
   }
   return value;
 }

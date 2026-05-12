@@ -103,14 +103,14 @@ module.exports = {
       name: "worker-isolation",
       severity: "error",
       comment:
-        "src/worker/** is the sandboxed code path. It may only value-import from src/worker/**, externals, src/broker/client/** (the BrokerClient transport contract — `HttpBrokerClient` runs worker-side, `InProcessBrokerClient` runs parent-side, both speak the same surface), and type-only edges anywhere. Every other value-import is attack surface inside the sandbox.",
+        "src/worker/** is the sandboxed code path. It may only value-import from src/worker/**, externals, src/broker/client/** (the BrokerClient transport contract), and the pure domain Tool Authority rules it must share with Broker Dispatch. Type-only edges are allowed anywhere. Every other value-import is attack surface inside the sandbox.",
       from: {
         path: "^src/worker/",
         pathNot: "\\.test\\.ts$",
       },
       to: {
         path: "^src/",
-        pathNot: ["^src/worker/", "^src/broker/client/"],
+        pathNot: ["^src/worker/", "^src/broker/client/", "^src/domain/tool-authority\\.ts$"],
         dependencyTypesNot: ["type-only"],
       },
     },

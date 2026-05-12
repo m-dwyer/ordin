@@ -1,6 +1,6 @@
-import { deriveToolPolicy } from "../broker/client/tool-authority";
 import type { BrokerClient } from "../broker/client/types";
 import type { BrokerDispatch } from "../broker/dispatch";
+import { deriveToolPolicy } from "../domain/tool-authority";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
 import {
   PhaseInvocation,
