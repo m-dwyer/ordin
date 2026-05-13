@@ -243,8 +243,9 @@ async function stageRepo(): Promise<void> {
  * fall into).
  *
  * Everything here operates on the event stream, which is runtime-
- * neutral: works whether the events came from AiSdkRuntime or a
- * future ClaudeCliRuntime-streamed run.
+ * neutral: any runtime that emits the canonical `RuntimeEvent` shape
+ * (AiSdkRuntime, claude-cli-provider, ScriptedRuntime) feeds it
+ * identically.
  */
 interface PendingCall {
   readonly name: string;

@@ -118,8 +118,8 @@ export class HarnessConfig {
 
   /**
    * Opaque config slice for a named runtime. Callers validate the shape
-   * inside the runtime's own schema (`ClaudeCliRuntime.fromConfig`,
-   * etc.) — the domain never interprets it.
+   * inside the runtime's own schema (`AiSdkRuntime.fromConfig`, etc.)
+   * — the domain never interprets it.
    */
   runtimeConfig(name: string): unknown {
     return this.runtimes[name] ?? {};

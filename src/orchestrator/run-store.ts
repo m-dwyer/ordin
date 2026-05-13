@@ -6,7 +6,7 @@ import { join } from "node:path";
  *
  *   ~/.ordin/runs/<run-id>/
  *     meta.json          — RunMeta (created / updated as phases run)
- *     <phaseId>.jsonl    — transcripts (written by ClaudeCliRuntime)
+ *     <phaseId>.jsonl    — per-phase runtime transcript (events + protocol frames)
  *
  * `git log` is the deliverable ledger. `meta.json` is the harness's
  * internal record for `harness retro` and `harness runs`.

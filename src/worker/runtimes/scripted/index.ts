@@ -20,7 +20,7 @@ export type { ScriptedPhase, ScriptedPlan, ScriptedStep, ScriptedToolCall } from
 /**
  * Deterministic test runtime. Executes a per-phase script of tool
  * calls + text emissions instead of calling an LLM. Same `AgentRuntime`
- * interface as `AiSdkRuntime` and `ClaudeCliRuntime`, same tool
+ * interface as `AiSdkRuntime` (and any future runtime), same tool
  * dispatch path (via `runtimes/shared/dispatcher.ts`), same
  * `RuntimeEvent` stream shape — but reproducible inputs and zero
  * model dependency.

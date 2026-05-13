@@ -1,15 +1,19 @@
 import type { ComposedPrompt } from "../../domain/composer";
 
 /**
- * Runtime contract. Runtimes adapt a specific agent CLI or SDK to the
+ * Runtime contract. Runtimes adapt a specific agent driver to the
  * harness; swapping runtimes is an isolated adapter change.
  *
- * Today's runtimes: `ClaudeCliRuntime` (subprocess `claude -p` — the
- * only way to drive Claude under a Max plan subscription) and
- * `AiSdkRuntime` (Vercel AI SDK against any OpenAI-compatible
- * provider, used for evals). Neither is a committed long-term
- * production choice; both sit behind this interface so the engine
- * swaps one for another without domain changes.
+ * Today's runtimes (all AI SDK-based, varying by provider):
+ *   - `AiSdkRuntime` — Vercel AI SDK against any OpenAI-compatible
+ *     provider (LiteLLM gateway, Ollama, etc.).
+ *   - `claude-cli-provider` — an AI SDK provider implementation that
+ *     wraps the `claude` binary (the programmatic path under a Max
+ *     plan subscription).
+ *   - `ScriptedRuntime` — deterministic YAML-driven runtime for tests.
+ *
+ * All sit behind this interface so the engine swaps one for another
+ * without domain changes.
  */
 export interface AgentRuntime {
   readonly name: string;
