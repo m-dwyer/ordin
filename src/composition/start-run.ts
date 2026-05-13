@@ -4,14 +4,15 @@ import { gateResolverFor } from "../gates/dispatch";
 import type { Gate } from "../gates/types";
 import type { EngineRunInput, EngineServices, GateRequest } from "../orchestrator/engine";
 import type { RunMeta } from "../orchestrator/run-store";
-import type { HarnessStateLoader, LoadedHarnessState, RunExecutionFactory } from "./ports";
-import type { StartRunInput } from "./types";
+import type { DefaultHarnessStateLoader, LoadedHarnessState } from "./default-harness-state-loader";
+import type { RunExecutionFactory } from "./run-execution";
+import type { StartRunInput } from "./start-run-input";
 import { workflowForRun } from "./workflow-slice";
 import type { WorkspaceResolver } from "./workspace-resolver";
 
 export class StartRunUseCase {
   constructor(
-    private readonly loader: HarnessStateLoader,
+    private readonly loader: DefaultHarnessStateLoader,
     private readonly factory: RunExecutionFactory,
     private readonly workspaceResolver: WorkspaceResolver,
   ) {}
@@ -21,7 +22,7 @@ export class StartRunUseCase {
     const slug = requireSlug(input.slug);
     const workspaceRoot = await this.workspaceResolver.resolve(input);
     const program = state.engine.compile(workflowForRun(state.workflow, input));
-    const execution = await this.factory({
+    const execution = await this.factory.prepare({
       root: this.loader.root,
       bundleName: this.loader.bundleName,
       config: state.config,

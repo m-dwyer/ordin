@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { HarnessStateLoader } from "./ports";
+import type { DefaultHarnessStateLoader } from "./default-harness-state-loader";
 
 export interface ResolveWorkspaceInput {
   readonly projectName?: string;
@@ -9,13 +9,13 @@ export interface ResolveWorkspaceInput {
 
 /**
  * Resolves a run's target workspace from caller input. Layered on top
- * of `HarnessStateLoader` so the loader stays focused on disk reads:
+ * of the harness state loader so loader stays focused on disk reads:
  * validation rules ("exactly one of projectName | repoPath", "must be
- * a directory") and the project-registry lookup are application-level
- * policy, not infrastructure.
+ * a directory") and the project-registry lookup are policy, not
+ * infrastructure.
  */
 export class WorkspaceResolver {
-  constructor(private readonly loader: HarnessStateLoader) {}
+  constructor(private readonly loader: DefaultHarnessStateLoader) {}
 
   async resolve(input: ResolveWorkspaceInput): Promise<string> {
     if (input.repoPath && input.projectName) {

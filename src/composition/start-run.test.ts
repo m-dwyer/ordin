@@ -8,11 +8,10 @@ import {
   makeStubRuntime,
 } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { DefaultHarnessStateLoader } from "../composition/default-harness-state-loader";
-import { DefaultRunExecution } from "../composition/run-execution";
 import { AutoGate } from "../gates/dispatch";
 import type { AgentRuntime } from "../worker/runtimes/types";
-import type { RunExecutionFactory } from "./ports";
+import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
+import { RunExecutionFactory } from "./run-execution";
 import { StartRunUseCase } from "./start-run";
 import { WorkspaceResolver } from "./workspace-resolver";
 
@@ -102,14 +101,12 @@ async function makeUseCase(runtime: AgentRuntime = new FakeRuntime()) {
     engineName: "mastra",
     engines: undefined,
   });
-  const factory: RunExecutionFactory = (opts) =>
-    DefaultRunExecution.prepare({
-      ...opts,
-      dispatchPhaseOverride: dispatchFromRuntime(runtime),
-      egressGatePrompter: undefined,
-      sandboxModeOverride: undefined,
-      scriptPathOverride: undefined,
-    });
+  const factory = new RunExecutionFactory({
+    dispatchPhaseOverride: dispatchFromRuntime(runtime),
+    egressGatePrompter: undefined,
+    sandboxModeOverride: undefined,
+    scriptPathOverride: undefined,
+  });
   return {
     root,
     repoPath,

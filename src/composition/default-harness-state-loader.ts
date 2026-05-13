@@ -1,5 +1,8 @@
 import { join } from "node:path";
-import type { HarnessPaths, HarnessStateLoader, LoadedHarnessState } from "../application/ports";
+import type { Agent } from "../domain/agent";
+import type { HarnessConfig } from "../domain/config";
+import type { ProjectRegistry } from "../domain/project";
+import type { WorkflowManifest } from "../domain/workflow";
 import { BundleLoader } from "../infrastructure/bundle-loader";
 import { BundleResolver } from "../infrastructure/bundle-resolver";
 import { HarnessConfigLoader } from "../infrastructure/config-loader";
@@ -8,6 +11,38 @@ import { type Engine, EngineRegistry } from "../orchestrator/engine";
 import { MastraEngine } from "../orchestrator/mastra";
 import { RunStore } from "../orchestrator/run-store";
 import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
+
+export interface HarnessPaths {
+  /** Harness config root (where ordin.config.yaml + projects.yaml live). */
+  readonly root: string;
+  readonly configFile: string;
+  readonly projectsFile: string;
+  readonly projectsLocalFile: string;
+}
+
+/** Provenance for the loaded bundle — flowed into RunMeta and OTel spans. */
+export interface LoadedBundleInfo {
+  readonly name: string;
+  readonly version: string;
+  readonly hash: string;
+  /**
+   * Absolute path to the bundle's `script.yaml`, if present. Picked up
+   * by `ScriptedRuntime` as the third-tier plan-path fallback (after
+   * the `--script` CLI override and the `script_path` config slice).
+   */
+  readonly scriptPath?: string;
+}
+
+export interface LoadedHarnessState {
+  readonly config: HarnessConfig;
+  readonly workflow: WorkflowManifest;
+  readonly agents: ReadonlyMap<string, Agent>;
+  readonly projects: ProjectRegistry;
+  readonly runStore: RunStore;
+  readonly engine: Engine;
+  readonly runtimeNames: ReadonlySet<string>;
+  readonly bundle: LoadedBundleInfo;
+}
 
 export interface DefaultHarnessStateLoaderOptions {
   /** Where ordin.config.yaml + projects.yaml live (the harness config root). */
@@ -20,14 +55,14 @@ export interface DefaultHarnessStateLoaderOptions {
 }
 
 /**
- * Adapter that materialises HarnessStateLoader from disk: harness config
- * + projects from `root`; workflow + agents + skills from a bundle
- * directory resolved via BundleResolver. Memoizes the in-flight load
- * promise so concurrent callers share one read; the cheap runStore()
- * path memoizes config separately to avoid pulling the bundle when
- * only the run store is needed.
+ * Loads the harness state from disk: harness config + projects from
+ * `root`; workflow + agents + skills from a bundle directory resolved
+ * via BundleResolver. Memoizes the in-flight load promise so concurrent
+ * callers share one read; the cheap runStore() path memoizes config
+ * separately to avoid pulling the bundle when only the run store is
+ * needed.
  */
-export class DefaultHarnessStateLoader implements HarnessStateLoader {
+export class DefaultHarnessStateLoader {
   readonly root: string;
   readonly bundleName: string;
   private readonly resolver: BundleResolver;

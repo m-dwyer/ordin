@@ -38,11 +38,21 @@ sandbox/       isolation primitive (leaf — depends on nothing else in src)
 
 ## Style
 
-- Classes for loaders, adapters, and services (WorkflowLoader, HumanGate, ClaudeCliRuntime, MastraEngine, etc.).
+- Classes for loaders, adapters, and services (WorkflowLoader, HumanGate, ClaudeCliRuntime, MastraEngine, etc.). Service-shaped function-type aliases (`(opts) => Promise<X>` that pre-binds config and is constructed once) should be classes too — single concrete class is fine, no interface needed unless there's a real second adapter.
 - Plain `readonly` interfaces for data that flows between layers.
 - Named exports only — no default exports.
 - No `.ts` or `.js` extensions on relative imports (Bundler resolution handles it).
 - Zod schemas are the source of truth at I/O boundaries; `z.infer<typeof Schema>` for types.
+
+### When to introduce an interface
+
+Default to a single concrete class. Add an `interface` (or rename the class to `Default*` and extract an interface) **only when there is a real second implementation that varies the behaviour across a meaningful boundary** — typically:
+
+- A vendor / engine swap (the `Engine` seam — Mastra today, LangGraph future).
+- A transport seam (e.g. `BrokerClient` over in-process vs. HTTP).
+- A trust / process boundary (worker-side vs. parent-side adapters).
+
+Two impls with the same method signature and trivial constructor differences (e.g. "with prompter" vs. "without prompter", "real vs. test fixture") do **not** justify an interface. Express the variation via constructor parameters on one class, or via a small fixture class that implements an existing seam (`AutoApprovePrompter implements GatePrompter`). One adapter = hypothetical seam.
 
 ## Comments
 

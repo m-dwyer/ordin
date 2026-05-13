@@ -1,13 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
-import type { RunExecution, RunExecutionPrepareOptions } from "../application/ports";
 import { Broker } from "../broker";
 import { AuditService } from "../broker/audit-service";
 import { InProcessBrokerClient } from "../broker/client/in-process";
 import type { BrokerClient } from "../broker/client/types";
 import { BrokerDispatch } from "../broker/dispatch";
 import { makeToolServiceHandler } from "../broker/tool-service";
-import type { SandboxMode } from "../domain/config";
+import type { HarnessConfig, SandboxMode } from "../domain/config";
 import { shutdownTracing, startTracing } from "../observability/tracing";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
@@ -27,10 +26,32 @@ import { resolveClaudeBin } from "./resolve-claude-bin";
 import { buildWorkerEnv } from "./worker-policy";
 
 /**
- * Session-scoped overrides applied to every prepared `RunExecution`.
+ * Per-run inputs threaded from `Harness` through the factory closure.
+ * `T | undefined` (required, explicit-undefined-allowed) so the
+ * composition root can do plain assignment without
+ * `...(opts.X ? { X: opts.X } : {})` ceremony under
+ * `exactOptionalPropertyTypes`.
+ */
+export interface RunExecutionPrepareOptions {
+  readonly root: string;
+  readonly bundleName: string;
+  readonly config: HarnessConfig;
+  readonly workspaceRoot: string;
+  readonly projectName: string | undefined;
+  readonly onEvent: ((event: RunEvent) => void) | undefined;
+  /**
+   * Absolute path to `<bundleDir>/script.yaml` if present. Transient
+   * carrier consumed by the composition root's factory closure: it
+   * resolves `cli --script ?? bundleScriptPath` into the single
+   * `scriptPathOverride` that flows downstream.
+   */
+  readonly bundleScriptPath: string | undefined;
+}
+
+/**
+ * Session-scoped overrides applied to every prepared `DefaultRunExecution`.
  * The composition root captures these once and merges them with
- * per-run `RunExecutionPrepareOptions` inside its `RunExecutionFactory`
- * closure, so application use cases never see them.
+ * per-run `RunExecutionPrepareOptions` inside its factory closure.
  */
 export interface RunExecutionOverrides {
   readonly dispatchPhaseOverride:
@@ -50,13 +71,31 @@ export type RunExecutionOptions = Omit<RunExecutionPrepareOptions, "bundleScript
   RunExecutionOverrides;
 
 /**
- * Per-run execution plumbing — the concrete adapter behind the
- * application-layer `RunExecution` port. Owns broker/audit/sandbox
- * lifecycle and constructs the `PhaseDispatcher` that drives each phase.
- * Use cases never `new` this class directly; the composition root's
- * `RunExecutionFactory` closure calls `DefaultRunExecution.prepare`.
+ * Builds a `DefaultRunExecution` per run. Constructed once by `Harness`
+ * with session-scoped overrides pre-bound; use cases call `prepare(opts)`
+ * for each run. Owns the merge of session overrides + per-run options,
+ * including resolving `cli --script` against the bundle's `script.yaml`.
  */
-export class DefaultRunExecution implements RunExecution {
+export class RunExecutionFactory {
+  constructor(private readonly overrides: RunExecutionOverrides) {}
+
+  prepare(opts: RunExecutionPrepareOptions): Promise<DefaultRunExecution> {
+    const { bundleScriptPath, ...prepareOpts } = opts;
+    return DefaultRunExecution.prepare({
+      ...prepareOpts,
+      ...this.overrides,
+      scriptPathOverride: this.overrides.scriptPathOverride ?? bundleScriptPath,
+    });
+  }
+}
+
+/**
+ * Per-run execution plumbing. Owns broker / audit / sandbox lifecycle
+ * and constructs the `PhaseDispatcher` that drives each phase. Use
+ * cases never `new` this class directly; the composition root's
+ * factory closure calls `DefaultRunExecution.prepare`.
+ */
+export class DefaultRunExecution {
   private infra?: RunInfra;
   private tracingStarted = false;
 

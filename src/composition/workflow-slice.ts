@@ -1,5 +1,5 @@
 import type { WorkflowManifest } from "../domain/workflow";
-import type { StartRunInput } from "./types";
+import type { StartRunInput } from "./start-run-input";
 
 export function workflowForRun(workflow: WorkflowManifest, input: StartRunInput): WorkflowManifest {
   if (input.onlyPhases) return workflow.only(input.onlyPhases);

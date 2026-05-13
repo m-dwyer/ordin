@@ -38,31 +38,7 @@ module.exports = {
       comment:
         "Infrastructure adapts disk/YAML/frontmatter into domain objects; it must not depend on orchestrator, runtimes, gates, clients, or the harness.",
       from: { path: "^src/infrastructure" },
-      to: { path: "^src/(orchestrator|composition|application|worker|gates|cli)/" },
-    },
-    {
-      name: "application-cannot-depend-on-composition-or-cli",
-      severity: "error",
-      comment:
-        "Application use cases depend on ports (interfaces). Concrete adapters live in composition; composition injects them. Production code never reaches the other way; co-located *.test.ts files are exempt because they wire real adapters to exercise the use cases end-to-end.",
-      from: { path: "^src/application", pathNot: "\\.test\\.ts$" },
-      to: { path: "^src/(composition|cli)/" },
-    },
-    {
-      name: "application-cannot-depend-on-infrastructure",
-      severity: "error",
-      comment:
-        "Application orchestrates over abstractions. Infrastructure (disk loaders) is injected via composition through ports.",
-      from: { path: "^src/application", pathNot: "\\.test\\.ts$" },
-      to: { path: "^src/infrastructure/" },
-    },
-    {
-      name: "application-cannot-value-import-sandbox-or-worker",
-      severity: "error",
-      comment:
-        "Application may reference Sandbox / worker types via type-only edges; no value imports of either layer.",
-      from: { path: "^src/application", pathNot: "\\.test\\.ts$" },
-      to: { path: "^src/(sandbox|worker)/", dependencyTypesNot: ["type-only"] },
+      to: { path: "^src/(orchestrator|composition|worker|gates|cli)/" },
     },
     {
       name: "gates-cannot-depend-on-orchestrator",
@@ -79,7 +55,7 @@ module.exports = {
         path: "^src/cli",
         pathNot: "^src/cli/(gate-prompters|tui)/|^src/cli/run-(command|seed)\\.ts$",
       },
-      to: { path: "^src/(domain|worker|orchestrator|gates|infrastructure|application)/" },
+      to: { path: "^src/(domain|worker|orchestrator|gates|infrastructure)/" },
     },
     {
       name: "cli-adapters-scoped",

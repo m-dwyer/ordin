@@ -1,14 +1,14 @@
 import type { PhasePreview } from "../domain/phase-preview";
 import { requireSlug } from "../domain/slug";
 import type { PreviewInput, PreviewServices } from "../orchestrator/engine";
-import type { HarnessStateLoader } from "./ports";
-import type { StartRunInput } from "./types";
+import type { DefaultHarnessStateLoader } from "./default-harness-state-loader";
+import type { StartRunInput } from "./start-run-input";
 import { workflowForRun } from "./workflow-slice";
 import type { WorkspaceResolver } from "./workspace-resolver";
 
 export class PreviewRunUseCase {
   constructor(
-    private readonly loader: HarnessStateLoader,
+    private readonly loader: DefaultHarnessStateLoader,
     private readonly workspaceResolver: WorkspaceResolver,
   ) {}
 

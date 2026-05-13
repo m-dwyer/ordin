@@ -1,12 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { HarnessPaths, RunExecutionFactory } from "../application/ports";
-import { PreviewRunUseCase } from "../application/preview-run";
-import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "../application/run-queries";
-import { StartRunUseCase } from "../application/start-run";
-import type { StartRunInput } from "../application/types";
-import { WorkspaceResolver } from "../application/workspace-resolver";
 import type { VerifyResult } from "../broker/audit-chain";
 import type { BundleHash } from "../domain/bundle";
 import type { PhasePreview } from "../domain/phase-preview";
@@ -18,11 +12,15 @@ import type { RunEvent } from "../orchestrator/events";
 import type { PhaseInvocationResult } from "../orchestrator/phase-invocation";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
-import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
-import { DefaultRunExecution } from "./run-execution";
+import { DefaultHarnessStateLoader, type HarnessPaths } from "./default-harness-state-loader";
+import { PreviewRunUseCase } from "./preview-run";
+import { RunExecutionFactory } from "./run-execution";
+import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "./run-queries";
 import { DefaultRunSession, type RunSession } from "./run-session";
+import { StartRunUseCase } from "./start-run";
+import type { StartRunInput } from "./start-run-input";
+import { WorkspaceResolver } from "./workspace-resolver";
 
-export type { StartRunInput } from "../application/types";
 export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
 export type { PhasePreview } from "../domain/phase-preview";
@@ -31,6 +29,7 @@ export type { Gate } from "../gates/types";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
 export type { PendingGate, RunSession } from "./run-session";
+export type { StartRunInput } from "./start-run-input";
 
 /**
  * Stable library surface. The CLI is the Stage 1 client; HTTP and MCP
@@ -124,17 +123,14 @@ export class Harness {
       engines: opts.engines,
     });
     this.sandboxModeOverride = opts.sandboxMode;
-    this.factory = ({ bundleScriptPath, ...prepareOpts }) =>
-      DefaultRunExecution.prepare({
-        ...prepareOpts,
-        dispatchPhaseOverride: opts.dispatchPhase,
-        egressGatePrompter: opts.egressGatePrompter,
-        sandboxModeOverride: opts.sandboxMode,
-        // CLI `--script` wins over the in-bundle `script.yaml`
-        // convention. `bundleScriptPath` is transient — consumed by
-        // this closure, not flowed further down the chain.
-        scriptPathOverride: opts.scriptPath ?? bundleScriptPath,
-      });
+    this.factory = new RunExecutionFactory({
+      dispatchPhaseOverride: opts.dispatchPhase,
+      egressGatePrompter: opts.egressGatePrompter,
+      sandboxModeOverride: opts.sandboxMode,
+      // CLI `--script` wins; the in-bundle `script.yaml` convention is
+      // applied by the factory if --script is absent.
+      scriptPathOverride: opts.scriptPath,
+    });
     const workspaceResolver = new WorkspaceResolver(this.loader);
 
     this.workspaceResolver = workspaceResolver;
@@ -158,7 +154,7 @@ export class Harness {
    */
   async preflight(): Promise<void> {
     const state = await this.loader.load();
-    await this.factory({
+    await this.factory.prepare({
       root: this.loader.root,
       bundleName: this.loader.bundleName,
       config: state.config,

@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type VerifyResult, verifyChainText } from "../broker/audit-chain";
 import type { RunMeta } from "../orchestrator/run-store";
-import type { HarnessStateLoader } from "./ports";
+import type { DefaultHarnessStateLoader } from "./default-harness-state-loader";
 
 export class ListRunsUseCase {
-  constructor(private readonly loader: HarnessStateLoader) {}
+  constructor(private readonly loader: DefaultHarnessStateLoader) {}
 
   async execute(): Promise<RunMeta[]> {
     const runStore = await this.loader.runStore();
@@ -14,7 +14,7 @@ export class ListRunsUseCase {
 }
 
 export class GetRunUseCase {
-  constructor(private readonly loader: HarnessStateLoader) {}
+  constructor(private readonly loader: DefaultHarnessStateLoader) {}
 
   async execute(runId: string): Promise<RunMeta> {
     const runStore = await this.loader.runStore();
@@ -23,7 +23,7 @@ export class GetRunUseCase {
 }
 
 export class VerifyAuditUseCase {
-  constructor(private readonly loader: HarnessStateLoader) {}
+  constructor(private readonly loader: DefaultHarnessStateLoader) {}
 
   async execute(runId: string): Promise<VerifyResult> {
     const runStore = await this.loader.runStore();
