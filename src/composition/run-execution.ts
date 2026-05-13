@@ -103,7 +103,8 @@ export class DefaultRunExecution implements RunExecution {
       bundleName: this.opts.bundleName,
       runsDir: this.opts.config.runStoreDir(),
       scriptPath: this.opts.scriptPathOverride,
-      runtimeConfigFor: (name) => resolveRuntimeConfig(name, this.opts.config.runtimeConfig(name)),
+      runtimeConfigFor: (name) =>
+        resolveRuntimeConfig(name, this.opts.config.runtimeConfig(name), infra.mode),
     };
     // Only `passthrough` runs in-process. `broker` and `srt` both
     // need subprocess isolation: the worker's env carries the broker's
@@ -225,10 +226,30 @@ function startParentTracing(infra: RunInfra): boolean {
   return startTracing({ enabled: true, proxyUrl: infra.broker.proxyUrl() });
 }
 
-function resolveRuntimeConfig(name: string, slice: unknown): unknown {
+export function resolveRuntimeConfig(name: string, slice: unknown, mode: SandboxMode): unknown {
+  const selected = selectSandboxProfile(slice, mode);
   if (name === "claude-cli-provider") {
-    const cur = (slice ?? {}) as { bin?: string };
+    const cur = (selected ?? {}) as { bin?: string };
     return { ...cur, bin: resolveClaudeBin(cur.bin) };
   }
-  return slice;
+  return selected;
+}
+
+function selectSandboxProfile(slice: unknown, mode: SandboxMode): unknown {
+  if (!isRecord(slice)) return slice;
+  const { profiles, ...base } = slice;
+  if (profiles === undefined) return base;
+  if (!isRecord(profiles)) {
+    throw new Error("Runtime config `profiles` must be an object keyed by sandbox mode.");
+  }
+  const profile = profiles[mode];
+  if (profile === undefined) return base;
+  if (!isRecord(profile)) {
+    throw new Error(`Runtime config profile "${mode}" must be an object.`);
+  }
+  return { ...base, ...profile };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -45,14 +45,27 @@ sandbox:
 # workflows/<name>.yaml phases. Schemas validated by each runtime.
 runtimes:
   ai-sdk:
-    # OpenAI-compatible provider, routed via the broker. Inner sends to
-    # `http://llm-gateway/...`; srt approves the hostname (it's in
-    # local_services) and forwards to the broker, which maps llm-gateway
-    # → 127.0.0.1:4000 (LiteLLM) and stamps `Authorization: Bearer
-    # <LITELLM_MASTER_KEY>` from parent-side env. The inner has no
-    # api_key — `LITELLM_MASTER_KEY` is in the inner-env denylist.
-    base_url: http://llm-gateway/
+    # OpenAI-compatible provider. The selected profile follows the
+    # effective sandbox mode (`sandbox.mode`, overridden by CLI
+    # `--sandbox`). Brokered modes use the logical local-service
+    # hostname so the broker can map it to LiteLLM and inject auth.
     max_steps: 40
+    profiles:
+      srt:
+        # Inner sends to `http://llm-gateway/v1/...`; srt approves the
+        # hostname (it's in local_services) and forwards to the broker,
+        # which maps llm-gateway → 127.0.0.1:4000 (LiteLLM) and stamps
+        # `Authorization: Bearer <LITELLM_MASTER_KEY>` parent-side.
+        base_url: http://llm-gateway/v1
+      broker:
+        # Broker mode has no kernel sandbox, but still routes worker
+        # HTTP through the broker proxy for local-service auth injection.
+        base_url: http://llm-gateway/v1
+      passthrough:
+        # Passthrough runs in the parent process, so localhost reaches
+        # host LiteLLM directly and the runtime reads the bearer token.
+        base_url: http://localhost:4000/v1
+        api_key_env: LITELLM_MASTER_KEY
 
   claude-cli-provider:
     bin: claude

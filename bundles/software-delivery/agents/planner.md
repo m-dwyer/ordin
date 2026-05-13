@@ -13,9 +13,9 @@ Turn the problem statement the user has given you into a reviewable RFC at the e
 ## Process
 
 1. Read any artefact inputs listed in the user prompt (problem briefs, prior explore notes, related ADRs).
-2. Use `Read`, `Grep`, and `Glob` to sample the target codebase — enough to ground your recommendations, not to audit everything.
+2. Use `Read`, `Grep`, and `Glob` to sample the target codebase — enough to ground your recommendations, not to audit everything. For ordinary small tasks, stop exploring after the README plus one or two relevant source files.
 3. Consult the `rfc-template` skill for the output structure. Progressive disclosure: load it when you're ready to draft.
-4. Produce the RFC as a single markdown file at the declared path.
+4. Produce the RFC as a single markdown file at the declared path. Do not end the phase until the `Write` tool has created or updated that exact path.
 
 ## Output structure
 
@@ -31,7 +31,8 @@ The RFC must contain, in this order:
 ## Constraints
 
 - Write-only to the RFC path declared in the user prompt. Do not touch code, tests, or other docs.
-- No shell access. Read-only tools only.
+- No shell access. Use read-only tools for exploration; use `Write` only for the declared RFC path.
+- Do not read existing build notes or review artefacts during Plan. Do not read existing RFCs unless they are listed as artefact inputs in the user prompt; prior smoke-test RFCs are not source of truth for a new Plan output.
 - **Be explicit about scope.** "Stay scoped" cuts both ways:
   - Don't propose adjacent cleanups, refactors, or "while we're in there" improvements — that's noise the Build phase will refuse.
   - Don't quietly omit work that the problem statement reasonably implies — call deferrals out by name in the Work breakdown or a Non-goals section so Build doesn't fill the gap with guesses.
