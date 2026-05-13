@@ -14,6 +14,7 @@ import type { RunMeta } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import { DefaultHarnessStateLoader, type HarnessPaths } from "./default-harness-state-loader";
 import { PreviewRunUseCase } from "./preview-run";
+import { resolveClaudeBin } from "./resolve-claude-bin";
 import { RunExecutionFactory } from "./run-execution";
 import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "./run-queries";
 import { DefaultRunSession, type RunSession } from "./run-session";
@@ -290,6 +291,15 @@ export class Harness {
   /** Search-path entries the resolver walks, in precedence order. */
   static bundleSearchPath(): readonly string[] {
     return new BundleResolver().searchPath();
+  }
+
+  /**
+   * Resolve the `claude` binary path — same resolution the runtime
+   * uses, so `ordin doctor` probes the same target. Static facade
+   * delegating to the composition-internal helper.
+   */
+  static resolveClaudeBin(override?: string): string {
+    return resolveClaudeBin(override);
   }
 
   /**

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { resolveClaudeBin } from "../composition/resolve-claude-bin";
+import { Harness } from "../composition/harness";
 import { selectSandbox } from "../sandbox";
 import { ordin } from "./common";
 import { printBlank, printCommandHeader, styled, writeLine } from "./tui/print";
@@ -17,7 +17,9 @@ import { PALETTE } from "./tui/theme";
  */
 function runClaude(args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(resolveClaudeBin(), [...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(Harness.resolveClaudeBin(), [...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", (chunk: Buffer) => {
@@ -143,7 +145,7 @@ async function checkBun(): Promise<DoctorResult> {
 }
 
 async function checkClaudeBinary(): Promise<DoctorResult> {
-  const requested = resolveClaudeBin();
+  const requested = Harness.resolveClaudeBin();
   // Bun.which uses bun's PATH — the same lookup `spawn(bin)` does.
   // Surfacing the resolved absolute path makes mise/asdf shim mismatches
   // (bun finds /usr/local/bin/claude while shell finds ~/.mise/.../claude)
