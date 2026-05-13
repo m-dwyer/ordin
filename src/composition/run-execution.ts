@@ -81,7 +81,7 @@ export class RunExecutionFactory {
 
   prepare(opts: RunExecutionPrepareOptions): Promise<DefaultRunExecution> {
     const { bundleScriptPath, ...prepareOpts } = opts;
-    return DefaultRunExecution.prepare({
+    return DefaultRunExecution.create({
       ...prepareOpts,
       ...this.overrides,
       scriptPathOverride: this.overrides.scriptPathOverride ?? bundleScriptPath,
@@ -93,37 +93,43 @@ export class RunExecutionFactory {
  * Per-run execution plumbing. Owns broker / audit / sandbox lifecycle
  * and constructs the `PhaseDispatcher` that drives each phase. Use
  * cases never `new` this class directly; the composition root's
- * factory closure calls `DefaultRunExecution.prepare`.
+ * factory closure calls `DefaultRunExecution.create`. Construction is
+ * the only async seam — after `create()` returns, every accessor is
+ * sync, infra is non-optional, and the resume-shaped variant of this
+ * factory (Step 2.3+) is the single place that grows a checkpoint
+ * branch.
  */
 export class DefaultRunExecution {
-  private infra?: RunInfra;
   private tracingStarted = false;
 
-  constructor(private readonly opts: RunExecutionOptions) {}
+  private constructor(
+    private readonly opts: RunExecutionOptions,
+    private readonly infra: RunInfra,
+  ) {}
 
   /**
-   * Build a prepared `DefaultRunExecution` in one step. Equivalent to
-   * `new DefaultRunExecution(opts)` followed by `prepareInfra()`, but
-   * gives the composition root a single call to invoke from its factory
-   * closure.
+   * Build a fully-prepared `DefaultRunExecution`. Steps run in this
+   * order because each depends on the previous:
+   *
+   *   1. Load the egress-approval store from disk.
+   *   2. Construct audit → broker-dispatch → broker (audit sinks into
+   *      dispatch; dispatch into broker).
+   *   3. Select a sandbox bound to the broker.
+   *
+   * No state escapes between these steps — they're just sequenced.
    */
-  static async prepare(opts: RunExecutionOptions): Promise<DefaultRunExecution> {
-    const execution = new DefaultRunExecution(opts);
-    await execution.prepareInfra();
-    return execution;
+  static async create(opts: RunExecutionOptions): Promise<DefaultRunExecution> {
+    const egress = await prepareEgressStore(opts);
+    const infra = buildInfra(opts, egress);
+    return new DefaultRunExecution(opts, infra);
   }
 
-  async prepareInfra(): Promise<void> {
-    const egress = await this.prepareEgressStore();
-    this.infra = this.buildInfra(egress);
-  }
-
-  get sandboxMode(): SandboxMode | undefined {
-    return this.requireInfra().mode;
+  get sandboxMode(): SandboxMode {
+    return this.infra.mode;
   }
 
   onEvent(): (event: RunEvent) => void {
-    const { audit } = this.requireInfra();
+    const { audit } = this.infra;
     return (ev) => {
       audit.appendEvent({ runId: ev.runId, kind: ev.type, payload: ev }).catch((err: unknown) => {
         console.warn(
@@ -136,7 +142,7 @@ export class DefaultRunExecution {
   dispatchPhase(): (req: PhaseDispatchRequest) => Promise<PhaseInvocationResult> {
     if (this.opts.dispatchPhaseOverride) return this.opts.dispatchPhaseOverride;
 
-    const infra = this.requireInfra();
+    const infra = this.infra;
     const ctx: RuntimeContext = {
       harnessRoot: this.opts.root,
       bundleName: this.opts.bundleName,
@@ -158,10 +164,9 @@ export class DefaultRunExecution {
   }
 
   async enter(): Promise<void> {
-    const infra = this.requireInfra();
-    await infra.broker.start();
-    this.tracingStarted = startParentTracing(infra);
-    await infra.sandbox.enterIfNeeded({
+    await this.infra.broker.start();
+    this.tracingStarted = startParentTracing(this.infra);
+    await this.infra.sandbox.enterIfNeeded({
       workspaceRoot: this.opts.workspaceRoot,
       runStoreDir: this.opts.config.runStoreDir(),
       harnessRoot: this.opts.root,
@@ -170,79 +175,72 @@ export class DefaultRunExecution {
   }
 
   async dispose(): Promise<void> {
-    const infra = this.infra;
-    if (!infra) return;
     if (this.tracingStarted) await shutdownTracing();
-    await infra.audit.closeAll();
-    await infra.broker.stop();
-    await infra.sandbox.shutdown();
+    await this.infra.audit.closeAll();
+    await this.infra.broker.stop();
+    await this.infra.sandbox.shutdown();
   }
+}
 
-  private requireInfra(): RunInfra {
-    if (!this.infra) throw new Error("DefaultRunExecution used before prepareInfra()");
-    return this.infra;
-  }
-
-  private async prepareEgressStore(): Promise<EgressBinding> {
-    const ordinDir = dirname(this.opts.config.runStoreDir());
-    const projectKey = EgressApprovalStore.projectKeyForWorkspace(
-      this.opts.workspaceRoot,
-      this.opts.projectName,
-    );
-    const store = new EgressApprovalStore({ ordinDir, projectKey });
-    const preApprovedHosts = await store.load();
-    const userPrompter = this.opts.egressGatePrompter;
-    if (!userPrompter) return { preApprovedHosts };
-    const prompter: NonNullable<RunExecutionOptions["egressGatePrompter"]> = async (req) => {
-      const approved = await userPrompter(req);
-      if (approved) {
-        try {
-          await store.add(req.host, req.port);
-        } catch (err) {
-          console.warn(
-            `[harness] failed to persist egress approval for ${req.host}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+async function prepareEgressStore(opts: RunExecutionOptions): Promise<EgressBinding> {
+  const ordinDir = dirname(opts.config.runStoreDir());
+  const projectKey = EgressApprovalStore.projectKeyForWorkspace(
+    opts.workspaceRoot,
+    opts.projectName,
+  );
+  const store = new EgressApprovalStore({ ordinDir, projectKey });
+  const preApprovedHosts = await store.load();
+  const userPrompter = opts.egressGatePrompter;
+  if (!userPrompter) return { preApprovedHosts };
+  const prompter: NonNullable<RunExecutionOptions["egressGatePrompter"]> = async (req) => {
+    const approved = await userPrompter(req);
+    if (approved) {
+      try {
+        await store.add(req.host, req.port);
+      } catch (err) {
+        console.warn(
+          `[harness] failed to persist egress approval for ${req.host}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-      return approved;
-    };
-    return { preApprovedHosts, prompter };
-  }
+    }
+    return approved;
+  };
+  return { preApprovedHosts, prompter };
+}
 
-  private buildInfra(egress: EgressBinding): RunInfra {
-    const mode = this.opts.sandboxModeOverride ?? this.opts.config.sandboxMode();
-    const audit = new AuditService({
-      runStoreDir: this.opts.config.runStoreDir(),
-      onEvent: (ev) => {
-        if (ev.kind.startsWith("broker.")) return;
-        this.opts.onEvent?.(ev.payload as RunEvent);
-      },
-    });
-    const services = this.opts.config.localServices();
-    const brokerDispatch = new BrokerDispatch({
-      audit: { append: (ev) => audit.appendEvent(ev) },
-    });
-    const proxyAuth = randomBytes(32).toString("hex");
-    const broker = new Broker(services, {
-      proxyAuth,
-      onEgress: audit.egressSink(),
-      internalServices: [
-        { kind: "internal", name: "tools", handler: makeToolServiceHandler(brokerDispatch) },
-      ],
-      ...(egress.prompter ? { onEgressGate: egress.prompter } : {}),
-      preApprovedHosts: egress.preApprovedHosts,
-    });
-    const brokerClient = new InProcessBrokerClient(brokerDispatch);
-    return {
-      mode,
-      sandbox: selectSandbox(mode, { broker }),
-      broker,
-      brokerClient,
-      brokerDispatch,
-      audit,
-      services,
-    };
-  }
+function buildInfra(opts: RunExecutionOptions, egress: EgressBinding): RunInfra {
+  const mode = opts.sandboxModeOverride ?? opts.config.sandboxMode();
+  const audit = new AuditService({
+    runStoreDir: opts.config.runStoreDir(),
+    onEvent: (ev) => {
+      if (ev.kind.startsWith("broker.")) return;
+      opts.onEvent?.(ev.payload as RunEvent);
+    },
+  });
+  const services = opts.config.localServices();
+  const brokerDispatch = new BrokerDispatch({
+    audit: { append: (ev) => audit.appendEvent(ev) },
+  });
+  const proxyAuth = randomBytes(32).toString("hex");
+  const broker = new Broker(services, {
+    proxyAuth,
+    onEgress: audit.egressSink(),
+    internalServices: [
+      { kind: "internal", name: "tools", handler: makeToolServiceHandler(brokerDispatch) },
+    ],
+    ...(egress.prompter ? { onEgressGate: egress.prompter } : {}),
+    preApprovedHosts: egress.preApprovedHosts,
+  });
+  const brokerClient = new InProcessBrokerClient(brokerDispatch);
+  return {
+    mode,
+    sandbox: selectSandbox(mode, { broker }),
+    broker,
+    brokerClient,
+    brokerDispatch,
+    audit,
+    services,
+  };
 }
 
 interface EgressBinding {
