@@ -19,6 +19,9 @@ describe("RunStore", () => {
       startedAt: new Date().toISOString(),
       status: "running",
       phases: [],
+      inFlight: null,
+      currentPhaseId: null,
+      pendingGate: null,
     };
     await store.writeMeta(meta);
     const again = await store.readMeta(meta.runId);
@@ -39,6 +42,9 @@ describe("RunStore", () => {
       startedAt: "2025-01-01T00:00:00.000Z",
       status: "completed",
       phases: [],
+      inFlight: null,
+      currentPhaseId: null,
+      pendingGate: null,
     };
     const b: RunMeta = {
       ...a,

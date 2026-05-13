@@ -198,6 +198,9 @@ function runMeta(overrides: Partial<RunMeta>): RunMeta {
     startedAt: "2026-01-01T00:00:00.000Z",
     status: "completed",
     phases: [],
+    inFlight: null,
+    currentPhaseId: null,
+    pendingGate: null,
     ...overrides,
   };
 }

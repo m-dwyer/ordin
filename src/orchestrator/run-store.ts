@@ -29,6 +29,40 @@ export interface RunMeta {
   completedAt?: string;
   status: "running" | "completed" | "failed" | "halted";
   phases: PhaseMeta[];
+  /**
+   * Marker written before a phase invocation begins and cleared once
+   * the phase produces a terminal `PhaseMeta` (success / fail / reject).
+   * If the parent process dies mid-phase, this is the only on-disk
+   * record of which phase was in flight — the resume planner (Step 2.4+
+   * follow-up) reads this to know where to re-enter. Null between phases
+   * and once the run terminates.
+   */
+  inFlight: InFlightPhase | null;
+  /**
+   * Phase id the engine currently considers active. Distinct from
+   * `inFlight` (which only spans the invocation window): `currentPhaseId`
+   * spans the whole transaction, including preflight + postflight + gate.
+   * Reserved for the resume planner; written null today.
+   */
+  currentPhaseId: string | null;
+  /**
+   * Gate request awaiting an out-of-band decision when the engine
+   * yields. Reserved for the resume planner (Step 2.5 flips gates to
+   * an event-and-resume contract); written null today.
+   */
+  pendingGate: PendingGateMarker | null;
+}
+
+export interface InFlightPhase {
+  phaseId: string;
+  iteration: number;
+  startedAt: string;
+}
+
+export interface PendingGateMarker {
+  phaseId: string;
+  gateKind: string;
+  requestedAt: string;
 }
 
 export interface PhaseMeta {

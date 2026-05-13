@@ -103,6 +103,7 @@ export class PhaseTransaction {
       return await this.failBeforeRuntime(phase, iteration, planning.error);
     }
 
+    await this.markInFlight(phase, iteration);
     const { meta: phaseMeta, invokeResult, events } = await this.invoke(planning.plan, iteration);
     await this.recordRunResult(phaseMeta);
 
@@ -183,6 +184,23 @@ export class PhaseTransaction {
 
   private async recordRunResult(phaseMeta: PhaseMeta): Promise<void> {
     this.ctx.meta.phases.push(phaseMeta);
+    this.ctx.meta.inFlight = null;
+    await this.writeMeta();
+  }
+
+  /**
+   * Persist the in-flight marker so a mid-phase crash leaves a
+   * recoverable record on disk: which phase + iteration started, when,
+   * and (transitively, via `meta.phases`) everything that completed
+   * before it. The resume planner (future plan) reads this to decide
+   * whether to re-enter or skip.
+   */
+  private async markInFlight(phase: Phase, iteration: number): Promise<void> {
+    this.ctx.meta.inFlight = {
+      phaseId: phase.id,
+      iteration,
+      startedAt: new Date().toISOString(),
+    };
     await this.writeMeta();
   }
 

@@ -97,6 +97,9 @@ export class MastraEngine implements Engine {
           startedAt: new Date().toISOString(),
           status: "running",
           phases: [],
+          inFlight: null,
+          currentPhaseId: null,
+          pendingGate: null,
         };
         await services.runStore.writeMeta(meta);
         emit({ type: "run.started", runId });
