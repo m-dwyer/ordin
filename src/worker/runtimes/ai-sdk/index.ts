@@ -7,7 +7,7 @@ import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
 import type { BrokerClient } from "../../../broker/client/types";
-import { deriveToolPolicy } from "../../../domain/tool-authority";
+import { ToolPolicy } from "../../../domain/tool-policy";
 import type { MastraTracingFactory } from "../../observability/mastra-tracing";
 import { buildDispatcherTools } from "../shared/mastra-tools";
 import type {
@@ -164,11 +164,11 @@ export class AiSdkRuntime implements AgentRuntime {
     const modelId = this.modelMap.get(req.prompt.model) ?? req.prompt.model;
     const model = this.modelOverride ?? this.buildModel(modelId);
 
-    const toolNames = deriveToolPolicy({
+    const toolNames = ToolPolicy.from({
       allowedTools: req.prompt.tools,
       hasSkills: req.prompt.skills.length > 0,
       cwd: req.prompt.cwd,
-    }).toolNames;
+    }).toolNames();
     const tools = buildDispatcherTools(toolNames, {
       cwd: req.prompt.cwd,
       skills: req.prompt.skills,

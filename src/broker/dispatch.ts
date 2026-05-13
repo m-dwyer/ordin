@@ -1,11 +1,5 @@
-import {
-  deriveToolPolicy,
-  isKnownToolName,
-  knownToolNames,
-  normalizeToolMatchValue,
-  type ToolPolicy,
-  toolMatchValue,
-} from "../domain/tool-authority";
+import { isKnownToolName, knownToolNames } from "../domain/tool-authority";
+import { ToolPolicy } from "../domain/tool-policy";
 import type {
   ApprovalResult,
   BrokerClient,
@@ -75,9 +69,9 @@ export class BrokerDispatch implements BrokerClient {
   registerPhase(runId: string, phaseId: string, policy: ToolPolicy | readonly string[]): void {
     this.acls.set(
       aclKey(runId, phaseId),
-      isToolPolicy(policy)
+      policy instanceof ToolPolicy
         ? policy
-        : deriveToolPolicy({ allowedTools: policy, hasSkills: false, cwd: "" }),
+        : ToolPolicy.from({ allowedTools: policy, hasSkills: false, cwd: "" }),
     );
   }
 
@@ -121,22 +115,16 @@ export class BrokerDispatch implements BrokerClient {
         message: `Unknown tool "${intent.tool}". Known: ${knownToolNames().join(", ")}.`,
       };
     }
-    const acl = this.acls.get(aclKey(intent.runId, intent.phaseId));
-    if (!acl) {
+    const policy = this.acls.get(aclKey(intent.runId, intent.phaseId));
+    if (!policy) {
       return {
         kind: "denied",
         message: `No ACL registered for phase "${intent.phaseId}" of run "${intent.runId}".`,
       };
     }
-    if (!acl.toolNames.includes(intent.tool)) {
-      return {
-        kind: "denied",
-        message: `Tool "${intent.tool}" is not in this phase's allowed_tools.`,
-      };
-    }
-    const patternError = checkPatternAcl(acl, intent);
-    if (patternError) return patternError;
-    return undefined;
+    const decision = policy.decide({ tool: intent.tool, input: intent.input });
+    if (decision.ok) return undefined;
+    return { kind: "denied", message: decision.message };
   }
 
   private async appendDispatch(
@@ -160,40 +148,4 @@ export class BrokerDispatch implements BrokerClient {
 
 function aclKey(runId: string, phaseId: string): string {
   return `${runId}\0${phaseId}`;
-}
-
-function isToolPolicy(value: ToolPolicy | readonly string[]): value is ToolPolicy {
-  return "specs" in value && "toolNames" in value;
-}
-
-function checkPatternAcl(policy: ToolPolicy, intent: ToolIntent): ToolError | undefined {
-  if (!isKnownToolName(intent.tool)) return undefined;
-  const specs = policy.specs.filter((spec) => spec.name === intent.tool);
-  if (specs.length === 0) return undefined;
-  if (specs.some((spec) => !spec.pattern)) return undefined;
-
-  const rawValue = toolMatchValue(intent.tool, intent.input);
-  if (rawValue === undefined) {
-    return {
-      kind: "denied",
-      message: `Tool "${intent.tool}" requires a pattern match, but its input has no matchable field.`,
-    };
-  }
-  const value = normalizeToolMatchValue(intent.tool, rawValue, policy.cwd);
-  if (specs.some((spec) => spec.pattern && globMatches(spec.pattern, value))) {
-    return undefined;
-  }
-  return {
-    kind: "denied",
-    message: `Tool "${intent.tool}" input "${rawValue}" does not match this phase's allowed_tools patterns.`,
-  };
-}
-
-function globMatches(pattern: string, value: string): boolean {
-  return globRegex(pattern).test(value);
-}
-
-function globRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`);
 }

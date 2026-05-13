@@ -6,7 +6,7 @@ import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { z } from "zod";
 import type { BrokerClient } from "../../broker/client/types";
-import { deriveToolPolicy } from "../../domain/tool-authority";
+import { ToolPolicy } from "../../domain/tool-policy";
 import type { MastraTracingFactory } from "../observability/mastra-tracing";
 import { ClaudeLanguageModelV2, classifyFailure } from "./claude-language-model-v2";
 import type { ClaudeProviderMcpEntrypoint } from "./claude-provider-mcp";
@@ -123,11 +123,11 @@ export class ClaudeCliProviderRuntime implements AgentRuntime {
     const started = Date.now();
     const override = this.phaseOverrides[req.prompt.phaseId] ?? {};
     const maxSteps = override.max_steps ?? this.maxSteps;
-    const toolNames = deriveToolPolicy({
+    const toolNames = ToolPolicy.from({
       allowedTools: req.prompt.tools,
       hasSkills: req.prompt.skills.length > 0,
       cwd: req.prompt.cwd,
-    }).toolNames;
+    }).toolNames();
     const tokens = { input: 0, output: 0, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 0 };
 
     const emit = (event: RuntimeEvent): void => {

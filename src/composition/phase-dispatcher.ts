@@ -1,6 +1,6 @@
 import type { BrokerClient } from "../broker/client/types";
 import type { BrokerDispatch } from "../broker/dispatch";
-import { deriveToolPolicy } from "../domain/tool-authority";
+import { ToolPolicy } from "../domain/tool-policy";
 import type { PhaseDispatchRequest } from "../orchestrator/engine";
 import {
   PhaseInvocation,
@@ -97,7 +97,7 @@ export class PhaseDispatcher {
     const invoke = await this.source.prepare(req);
     const { runId, preview } = req;
     const { phaseId } = preview.prompt;
-    const policy = deriveToolPolicy({
+    const policy = ToolPolicy.from({
       allowedTools: preview.prompt.tools,
       hasSkills: preview.prompt.skills.length > 0,
       cwd: preview.prompt.cwd,

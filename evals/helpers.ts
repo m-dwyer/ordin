@@ -7,7 +7,7 @@ import { InProcessBrokerClient } from "../src/broker/client/in-process";
 import { BrokerDispatch } from "../src/broker/dispatch";
 import type { Artefact } from "../src/domain/artefact";
 import { PhasePreparer, resolveArtefacts } from "../src/domain/phase-preview";
-import { deriveToolPolicy } from "../src/domain/tool-authority";
+import { ToolPolicy } from "../src/domain/tool-policy";
 import { resolveArtefactPath, type WorkflowManifest } from "../src/domain/workflow";
 import { ArtefactManager } from "../src/infrastructure/artefact-manager";
 import { BundleLoader } from "../src/infrastructure/bundle-loader";
@@ -177,7 +177,7 @@ export async function runPhase(input: RunPhaseInput): Promise<Artefact> {
       brokerDispatch.registerPhase(
         runId,
         phase.id,
-        deriveToolPolicy({
+        ToolPolicy.from({
           allowedTools: preview.prompt.tools,
           hasSkills: preview.prompt.skills.length > 0,
           cwd: EVAL_REPO,
