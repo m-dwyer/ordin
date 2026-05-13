@@ -16,16 +16,52 @@ export type { PhasePreview } from "../domain/phase-preview";
  * engine-neutral execution program. Compilation is pure topology work;
  * per-run services and inputs are supplied later when the selected
  * engine executes or previews that program.
+ *
+ * The seam is shaped for resumable state-machine execution, not just
+ * one-shot topology (see `docs/decisions/engine-resumable.md`). Today
+ * a single MastraEngine implementation runs to completion in-process;
+ * the `start` + `RunHandle` surface is the precondition for cross-
+ * process pause/resume in a follow-up plan. Engine-neutral plan
+ * traversal (e.g. "what's the next phase given this RunMeta?") lives
+ * with the plan in `workflow-plan.ts`, not on this seam.
  */
 export interface Engine {
   readonly name: string;
   compile(manifest: WorkflowManifest): WorkflowProgram;
+  /**
+   * Begin a run and resolve once `runId` is known + the initial
+   * `run.started` event has been emitted. The returned handle lets the
+   * caller await final completion, query a pending gate (resume seam),
+   * and subscribe to events. The legacy `run()` is start + await.
+   */
+  start(
+    program: WorkflowProgram,
+    input: EngineRunInput,
+    services: EngineServices,
+  ): Promise<RunHandle>;
+  /** Convenience wrapper: `start().then(h => h.awaitCompletion())`. */
   run(program: WorkflowProgram, input: EngineRunInput, services: EngineServices): Promise<RunMeta>;
   preview(
     program: WorkflowProgram,
     input: PreviewInput,
     services: PreviewServices,
   ): Promise<readonly PhasePreview[]>;
+}
+
+/**
+ * Live handle for a run that has begun but may still be in flight.
+ * Calling `awaitCompletion()` blocks until the engine finishes; the
+ * `events` stream replays buffered events and then emits live ones
+ * until the run closes. `pendingGate()` returns the request the engine
+ * is currently yielding on, or undefined if no gate is pending —
+ * undefined today, becomes meaningful when Step 2.5 lands the
+ * gates-as-events contract.
+ */
+export interface RunHandle {
+  readonly runId: string;
+  readonly events: AsyncIterable<RunEvent>;
+  awaitCompletion(): Promise<RunMeta>;
+  pendingGate(): GateRequest | undefined;
 }
 
 export interface WorkflowProgram {

@@ -2,13 +2,18 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { generateRunId, type RunMeta, RunStore } from "../../src/orchestrator/run-store";
+import {
+  createInitialRunMeta,
+  generateRunId,
+  type RunMeta,
+  RunStore,
+} from "../../src/orchestrator/run-store";
 
 describe("RunStore", () => {
   it("round-trips run metadata", async () => {
     const base = await mkdtemp(join(tmpdir(), "harness-rs-"));
     const store = new RunStore(base);
-    const meta: RunMeta = {
+    const meta: RunMeta = createInitialRunMeta({
       runId: generateRunId("test-slug"),
       workflow: "wf",
       bundle: { name: "wf", version: "0", hash: "0".repeat(64) },
@@ -16,13 +21,7 @@ describe("RunStore", () => {
       task: "do the thing",
       slug: "test-slug",
       repo: "/r",
-      startedAt: new Date().toISOString(),
-      status: "running",
-      phases: [],
-      inFlight: null,
-      currentPhaseId: null,
-      pendingGate: null,
-    };
+    });
     await store.writeMeta(meta);
     const again = await store.readMeta(meta.runId);
     expect(again).toEqual(meta);

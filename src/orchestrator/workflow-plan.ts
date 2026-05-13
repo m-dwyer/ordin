@@ -1,4 +1,5 @@
 import type { Phase, WorkflowManifest } from "../domain/workflow";
+import type { RunMeta } from "./run-store";
 
 export interface WorkflowDiagnostic {
   readonly code:
@@ -61,6 +62,41 @@ export function compileWorkflowPlan(manifest: WorkflowManifest): ExecutionPlan {
     rejecter,
     maxIterations: rejecter.on_reject?.max_iterations ?? 1,
   };
+}
+
+/**
+ * Walk an execution plan against the on-disk RunMeta and return the
+ * next phase id the engine would invoke, or undefined if the run has
+ * completed every phase the plan reaches. Engine-neutral plan
+ * traversal — both MastraEngine and any future engine compiling to
+ * the same plan shape share this. The resume planner (follow-up plan)
+ * uses this to decide where to re-enter after a mid-run crash.
+ *
+ * "Completed" here means the latest entry for a phase in
+ * `runMeta.phases` has `status: "completed"` *and* its gate decision
+ * is approved or auto-approved (rejections trigger looping, not
+ * forward progress).
+ */
+export function nextPhase(plan: ExecutionPlan, runMeta: RunMeta): string | undefined {
+  const traversal =
+    plan.kind === "linear" ? plan.phases : [...plan.beforeLoop, ...plan.loop, ...plan.afterLoop];
+  const completed = completedPhases(runMeta);
+  for (const phase of traversal) {
+    if (!completed.has(phase.id)) return phase.id;
+  }
+  return undefined;
+}
+
+function completedPhases(runMeta: RunMeta): ReadonlySet<string> {
+  const latest = new Map<string, "completed" | "failed" | "rejected" | "running">();
+  for (const entry of runMeta.phases) {
+    latest.set(entry.phaseId, entry.status);
+  }
+  const done = new Set<string>();
+  for (const [id, status] of latest) {
+    if (status === "completed") done.add(id);
+  }
+  return done;
 }
 
 export function collectWorkflowDiagnostics(

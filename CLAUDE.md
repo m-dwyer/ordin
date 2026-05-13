@@ -41,6 +41,7 @@ sandbox/       isolation primitive (leaf — depends on nothing else in src)
 - Classes for loaders, adapters, and services (WorkflowLoader, HumanGate, ClaudeCliRuntime, MastraEngine, etc.). Service-shaped function-type aliases (`(opts) => Promise<X>` that pre-binds config and is constructed once) should be classes too — single concrete class is fine, no interface needed unless there's a real second adapter.
 - Plain `readonly` interfaces for data that flows between layers.
 - Named exports only — no default exports.
+- Implementation lives in files named after what they contain (`mastra-engine.ts`, `tool-policy.ts`). Don't hide the implementation in `index.ts`. Single-file directories should be flattened; `index.ts` is reserved for genuine barrel re-exports across multi-file modules.
 - No `.ts` or `.js` extensions on relative imports (Bundler resolution handles it).
 - Zod schemas are the source of truth at I/O boundaries; `z.infer<typeof Schema>` for types.
 

@@ -1,21 +1,24 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
-import { PhasePreparer, type PhasePreview, resolveArtefacts } from "../../domain/phase-preview";
-import type { Phase, WorkflowManifest } from "../../domain/workflow";
-import { withSpan } from "../../observability/spans";
+import { PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
+import type { Phase, WorkflowManifest } from "../domain/workflow";
+import { withSpan } from "../observability/spans";
 import type {
   Engine,
   EngineRunInput,
   EngineServices,
+  GateRequest,
   PreviewInput,
   PreviewServices,
+  RunHandle,
   WorkflowProgram,
-} from "../engine";
-import type { RunEvent } from "../events";
-import { PhaseRunner } from "../phase-runner";
-import type { PhaseTransactionContext } from "../phase-transaction";
-import { generateRunId, type RunMeta } from "../run-store";
-import { compileWorkflowPlan, type ExecutionPlan } from "../workflow-plan";
+} from "./engine";
+import { EventBus } from "./event-bus";
+import type { RunEvent } from "./events";
+import { PhaseRunner } from "./phase-runner";
+import type { PhaseTransactionContext } from "./phase-transaction";
+import { createInitialRunMeta, generateRunId, type RunMeta } from "./run-store";
+import { compileWorkflowPlan, type ExecutionPlan } from "./workflow-plan";
 
 /**
  * Mastra-backed engine. Each phase is a `createStep`; a single
@@ -53,13 +56,35 @@ export class MastraEngine implements Engine {
     };
   }
 
-  async run(
+  async start(
     program: WorkflowProgram,
     input: EngineRunInput,
     services: EngineServices,
-  ): Promise<RunMeta> {
+  ): Promise<RunHandle> {
     const runId = generateRunId(input.slug);
-    return withSpan(
+    const bus = new EventBus<RunEvent>();
+    const emit = (ev: RunEvent): void => {
+      bus.emit(ev);
+      input.onEvent?.(ev);
+    };
+    const meta: RunMeta = createInitialRunMeta({
+      runId,
+      workflow: program.manifest.name,
+      bundle: services.bundle,
+      tier: input.tier,
+      task: input.task,
+      slug: input.slug,
+      repo: input.workspaceRoot,
+      ...(input.sandboxMode ? { sandboxMode: input.sandboxMode } : {}),
+      ...(input.onlyPhases ? { onlyPhases: input.onlyPhases } : {}),
+      ...(input.startAt ? { startAt: input.startAt } : {}),
+    });
+    await services.runStore.writeMeta(meta);
+    emit({ type: "run.started", runId });
+
+    // The run's lifetime span opens here and closes when the inner
+    // async returns. awaitCompletion() just awaits this promise.
+    const completion = withSpan(
       "ordin.run",
       {
         "ordin.run_id": runId,
@@ -76,76 +101,69 @@ export class MastraEngine implements Engine {
         "langfuse.session.id": runId,
       },
       async (span) => {
-        const emit = input.onEvent ?? ((_: RunEvent) => {});
-        const meta: RunMeta = {
-          runId,
-          workflow: program.manifest.name,
-          bundle: { ...services.bundle },
-          tier: input.tier,
-          task: input.task,
-          slug: input.slug,
-          repo: input.workspaceRoot,
-          ...(input.sandboxMode ? { sandboxMode: input.sandboxMode } : {}),
-          ...(input.onlyPhases || input.startAt
-            ? {
-                phaseSlicing: {
-                  ...(input.onlyPhases ? { onlyPhases: [...input.onlyPhases] } : {}),
-                  ...(input.startAt ? { startAt: input.startAt } : {}),
-                },
-              }
-            : {}),
-          startedAt: new Date().toISOString(),
-          status: "running",
-          phases: [],
-          inFlight: null,
-          currentPhaseId: null,
-          pendingGate: null,
-        };
-        await services.runStore.writeMeta(meta);
-        emit({ type: "run.started", runId });
+        try {
+          const preparer = new PhasePreparer();
+          const ctx: RunCtx = {
+            runId,
+            meta,
+            manifest: program.manifest,
+            input,
+            services,
+            preparer,
+            emit,
+            iterations: new Map(),
+            feedback: undefined,
+            outcome: undefined,
+          };
 
-        const preparer = new PhasePreparer();
+          const wf = compileMastraWorkflow(program.manifest, program.plan, ctx);
+          const run = await wf.createRun();
+          const result = await run.start({ inputData: {} });
 
-        const ctx: RunCtx = {
-          runId,
-          meta,
-          manifest: program.manifest,
-          input,
-          services,
-          preparer,
-          emit,
-          iterations: new Map(),
-          feedback: undefined,
-          outcome: undefined,
-        };
+          if (ctx.outcome) {
+            // A step set the outcome before bailing — `result.status` will
+            // be "bailed" for halt/fail; ctx carries the intent.
+            meta.status = ctx.outcome;
+          } else if (result.status === "success") {
+            meta.status = "completed";
+          } else {
+            // Mastra returned failed/suspended/tripwire and no step set
+            // ctx.outcome — treat as a real engine error.
+            meta.completedAt = new Date().toISOString();
+            meta.status = "failed";
+            await services.runStore.writeMeta(meta);
+            throw extractFailureError(result);
+          }
 
-        const wf = compileMastraWorkflow(program.manifest, program.plan, ctx);
-        const run = await wf.createRun();
-        const result = await run.start({ inputData: {} });
-
-        if (ctx.outcome) {
-          // A step set the outcome before bailing — `result.status` will
-          // be "bailed" for halt/fail; ctx carries the intent.
-          meta.status = ctx.outcome;
-        } else if (result.status === "success") {
-          meta.status = "completed";
-        } else {
-          // Mastra returned failed/suspended/tripwire and no step set
-          // ctx.outcome — treat as a real engine error.
           meta.completedAt = new Date().toISOString();
-          meta.status = "failed";
           await services.runStore.writeMeta(meta);
-          throw extractFailureError(result);
+          emit({ type: "run.completed", runId, status: meta.status });
+          span.setAttribute("ordin.status", meta.status);
+          span.setAttribute("langfuse.trace.output", summariseRunOutput(meta));
+          return meta;
+        } finally {
+          bus.close();
         }
-
-        meta.completedAt = new Date().toISOString();
-        await services.runStore.writeMeta(meta);
-        emit({ type: "run.completed", runId, status: meta.status });
-        span.setAttribute("ordin.status", meta.status);
-        span.setAttribute("langfuse.trace.output", summariseRunOutput(meta));
-        return meta;
       },
     );
+
+    return {
+      runId,
+      events: bus.subscribe(),
+      awaitCompletion: () => completion,
+      // Reserved for the gates-as-events flip in Step 2.5. Today the
+      // engine never yields for a gate — onGateRequested awaits inline.
+      pendingGate: (): GateRequest | undefined => undefined,
+    };
+  }
+
+  async run(
+    program: WorkflowProgram,
+    input: EngineRunInput,
+    services: EngineServices,
+  ): Promise<RunMeta> {
+    const handle = await this.start(program, input, services);
+    return handle.awaitCompletion();
   }
 
   async preview(

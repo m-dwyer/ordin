@@ -148,6 +148,9 @@ describe("EngineRegistry", () => {
       plan: compileWorkflowPlan(manifest),
     }),
     preview: async () => [],
+    start: async () => {
+      throw new Error("not implemented");
+    },
     run: async () => {
       throw new Error("not implemented");
     },

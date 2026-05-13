@@ -8,7 +8,7 @@ import { BundleResolver } from "../infrastructure/bundle-resolver";
 import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import { ProjectRegistryLoader } from "../infrastructure/project-loader";
 import { type Engine, EngineRegistry } from "../orchestrator/engine";
-import { MastraEngine } from "../orchestrator/mastra";
+import { MastraEngine } from "../orchestrator/mastra-engine";
 import { RunStore } from "../orchestrator/run-store";
 import { KNOWN_RUNTIME_NAMES } from "../worker/runtimes/registry";
 

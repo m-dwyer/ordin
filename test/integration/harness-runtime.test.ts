@@ -33,6 +33,9 @@ describe("Harness", () => {
           },
         },
       ],
+      start: async () => {
+        throw new Error("preview facade test must not start the engine");
+      },
       run: async () => {
         throw new Error("preview facade test must not run the engine");
       },

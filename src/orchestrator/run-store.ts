@@ -141,3 +141,50 @@ export function generateRunId(slug: string, now: Date = new Date()): string {
   const ts = now.toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
   return `${ts}_${slug}`;
 }
+
+/**
+ * Fields the caller picks out of its context to seed a new RunMeta.
+ * Initial-state defaults (status, phases, resume markers, startedAt)
+ * are filled in by `createInitialRunMeta` — adding a new reserved
+ * field on RunMeta only requires touching the factory.
+ */
+export interface InitialRunMetaInput {
+  readonly runId: string;
+  readonly workflow: string;
+  readonly bundle: { readonly name: string; readonly version: string; readonly hash: string };
+  readonly tier: "S" | "M" | "L";
+  readonly task: string;
+  readonly slug: string;
+  readonly repo: string;
+  readonly sandboxMode?: "passthrough" | "broker" | "srt";
+  readonly onlyPhases?: readonly string[];
+  readonly startAt?: string;
+}
+
+/** Construct a fresh RunMeta in the "running" initial state. */
+export function createInitialRunMeta(input: InitialRunMetaInput): RunMeta {
+  return {
+    runId: input.runId,
+    workflow: input.workflow,
+    bundle: { ...input.bundle },
+    tier: input.tier,
+    task: input.task,
+    slug: input.slug,
+    repo: input.repo,
+    ...(input.sandboxMode ? { sandboxMode: input.sandboxMode } : {}),
+    ...(input.onlyPhases || input.startAt
+      ? {
+          phaseSlicing: {
+            ...(input.onlyPhases ? { onlyPhases: [...input.onlyPhases] } : {}),
+            ...(input.startAt ? { startAt: input.startAt } : {}),
+          },
+        }
+      : {}),
+    startedAt: new Date().toISOString(),
+    status: "running",
+    phases: [],
+    inFlight: null,
+    currentPhaseId: null,
+    pendingGate: null,
+  };
+}

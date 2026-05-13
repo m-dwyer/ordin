@@ -1,8 +1,8 @@
 import { GateResolver } from "../gates/dispatch";
 import type { GateContext, GateDecision, GatePrompter } from "../gates/types";
+import { EventBus } from "../orchestrator/event-bus";
 import type { RunEvent } from "../orchestrator/events";
 import type { RunMeta } from "../orchestrator/run-store";
-import { EventBus } from "./event-bus";
 
 /**
  * Snapshot of a gate that's waiting for an out-of-band decision.

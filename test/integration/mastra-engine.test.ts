@@ -11,7 +11,7 @@ import { HarnessConfigLoader } from "../../src/infrastructure/config-loader";
 import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
-import { MastraEngine } from "../../src/orchestrator/mastra";
+import { MastraEngine } from "../../src/orchestrator/mastra-engine";
 import { invokeWithRuntime, PhaseInvocation } from "../../src/orchestrator/phase-invocation";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
