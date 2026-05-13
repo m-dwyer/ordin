@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Harness } from "../../src/composition/harness";
-import { AutoGate } from "../../src/gates/dispatch";
+import { AutoApprovePrompter, GateResolver } from "../../src/gates/dispatch";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const hasSrt = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
@@ -30,7 +30,7 @@ describe.skipIf(!hasSrt)("srt sandbox scripted e2e", () => {
         slug: "sandbox-e2e",
         repoPath: workspace,
         tier: "S",
-        gateForKind: () => new AutoGate(),
+        gateResolver: new GateResolver(new AutoApprovePrompter()),
       });
 
       expect(meta.status).toBe("completed");

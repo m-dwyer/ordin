@@ -25,6 +25,7 @@ export type { VerifyResult } from "../broker/audit-chain";
 export type { SandboxMode } from "../domain/config";
 export type { PhasePreview } from "../domain/phase-preview";
 export type { Phase } from "../domain/workflow";
+export { AutoApprovePrompter, GateResolver } from "../gates/dispatch";
 export type { Gate } from "../gates/types";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
@@ -173,14 +174,14 @@ export class Harness {
    * `run.started`. Resolves with `runId` synchronously available; the
    * eventual `RunMeta` arrives via `session.completion`. Out-of-band
    * gate resolution flows through `session.resolveGate(phaseId, ...)`
-   * unless the caller passed an interactive `gateForKind` in `input`.
+   * unless the caller passed an interactive `gateResolver` in `input`.
    */
   async prepareRun(input: StartRunInput): Promise<RunSession> {
     const session = new DefaultRunSession();
     const sessionEmit = session.onEvent(input.onEvent);
-    // CLI passes its own gateForKind (interactive); HTTP/MCP omit and
-    // the session's deferred prompter handles it.
-    const gateForKind = input.gateForKind ?? session.gateResolver();
+    // CLI passes its own resolver (interactive); HTTP/MCP omit and the
+    // session's deferred prompter handles it.
+    const gateResolver = input.gateResolver ?? session.gateResolver();
 
     let captureRunId!: (id: string) => void;
     let rejectRunStart!: (err: Error) => void;
@@ -195,7 +196,7 @@ export class Harness {
     };
 
     const completion = this.startRun_
-      .execute({ ...input, onEvent, gateForKind })
+      .execute({ ...input, onEvent, gateResolver })
       .catch((err: unknown) => {
         const e = err instanceof Error ? err : new Error(String(err));
         rejectRunStart(e);

@@ -29,25 +29,39 @@ export class HumanGate implements Gate {
 }
 
 /**
+ * A `GatePrompter` that approves every prompt. Used by tests and
+ * headless flows that want `human`-gate phases to flow through without
+ * adding a `kind`-aware switch in the gate layer.
+ */
+export class AutoApprovePrompter implements GatePrompter {
+  async prompt(_ctx: GateContext): Promise<GateDecision> {
+    return { status: "approved", note: "auto-approved" };
+  }
+}
+
+/**
  * Single source of truth for `Phase["gate"]` → `Gate` mapping. Callers
- * (CLI, run-session, application use cases) build their resolver here
- * with the prompter they have. Omitting the prompter is the headless
+ * (CLI, run-session, application use cases) construct one with the
+ * prompter they have. Omitting the prompter is the strict headless
  * mode: `auto`/`pre-commit` still resolve to `AutoGate`, but `human`
  * fails closed so a caller can't silently ship past a human checkpoint
- * by forgetting to wire a prompter.
+ * by forgetting to wire a prompter. Tests that want human-gates to
+ * auto-approve pass an `AutoApprovePrompter`.
  */
-export function gateResolverFor(prompter?: GatePrompter): (kind: Phase["gate"]) => Gate {
-  return (kind) => {
+export class GateResolver {
+  constructor(private readonly prompter?: GatePrompter) {}
+
+  forKind(kind: Phase["gate"]): Gate {
     switch (kind) {
       case "human":
-        if (!prompter) {
+        if (!this.prompter) {
           throw new Error(
-            'Gate kind "human" requires a GatePrompter. Pass one to gateResolverFor ' +
+            'Gate kind "human" requires a GatePrompter. Pass one to new GateResolver(...) ' +
               "(CLI wires an OpenTUI prompter; run-session wires a deferred prompter; " +
-              "headless callers should use `auto` gates instead).",
+              "headless callers can pass an AutoApprovePrompter).",
           );
         }
-        return new HumanGate(prompter);
+        return new HumanGate(this.prompter);
       case "auto":
       case "pre-commit":
         return new AutoGate();
@@ -56,5 +70,5 @@ export function gateResolverFor(prompter?: GatePrompter): (kind: Phase["gate"]) 
         throw new Error(`Unknown gate kind: ${String(_exhaustive)}`);
       }
     }
-  };
+  }
 }

@@ -101,7 +101,7 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
         const result = await session.runtime.startRun({
           ...input,
           onEvent: session.onEvent,
-          gateForKind: session.gateForKind,
+          gateResolver: session.gateResolver,
         });
         session.finish({ runId: result.runId, status: result.status });
       } finally {

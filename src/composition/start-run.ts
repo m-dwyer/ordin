@@ -1,7 +1,5 @@
 import { requireSlug } from "../domain/slug";
-import type { Phase } from "../domain/workflow";
-import { gateResolverFor } from "../gates/dispatch";
-import type { Gate } from "../gates/types";
+import { GateResolver } from "../gates/dispatch";
 import type { EngineRunInput, EngineServices, GateRequest } from "../orchestrator/engine";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { DefaultHarnessStateLoader, LoadedHarnessState } from "./default-harness-state-loader";
@@ -31,7 +29,7 @@ export class StartRunUseCase {
       onEvent: input.onEvent,
       bundleScriptPath: state.bundle.scriptPath,
     });
-    const gateForKind = input.gateForKind ?? gateResolverFor();
+    const gateResolver = input.gateResolver ?? new GateResolver();
     try {
       await execution.enter();
       const runInput: EngineRunInput = {
@@ -42,7 +40,7 @@ export class StartRunUseCase {
         sandboxMode: execution.sandboxMode,
         startAt: input.startAt,
         onlyPhases: input.onlyPhases,
-        onGateRequested: (request) => handleGateRequest(gateForKind, request),
+        onGateRequested: (request) => handleGateRequest(gateResolver, request),
         onEvent: execution.onEvent(),
         dispatchPhase: execution.dispatchPhase(),
         abortSignal: input.abortSignal,
@@ -54,8 +52,8 @@ export class StartRunUseCase {
   }
 }
 
-function handleGateRequest(gateForKind: (kind: Phase["gate"]) => Gate, request: GateRequest) {
-  const gate = gateForKind(request.gateKind);
+function handleGateRequest(gateResolver: GateResolver, request: GateRequest) {
+  const gate = gateResolver.forKind(request.gateKind);
   return gate.request({
     runId: request.runId,
     phaseId: request.phaseId,

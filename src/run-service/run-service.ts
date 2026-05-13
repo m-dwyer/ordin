@@ -26,7 +26,7 @@ import type { RunEvent } from "../orchestrator/events";
  */
 export type RunServiceOptions = HarnessOptions;
 
-export type StartRunRequest = Omit<StartRunInput, "onEvent" | "gateForKind">;
+export type StartRunRequest = Omit<StartRunInput, "onEvent" | "gateResolver">;
 
 export class RunService {
   private readonly harness: Harness;

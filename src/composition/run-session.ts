@@ -1,6 +1,5 @@
-import type { Phase } from "../domain/workflow";
-import { gateResolverFor } from "../gates/dispatch";
-import type { Gate, GateContext, GateDecision, GatePrompter } from "../gates/types";
+import { GateResolver } from "../gates/dispatch";
+import type { GateContext, GateDecision, GatePrompter } from "../gates/types";
 import type { RunEvent } from "../orchestrator/events";
 import type { RunMeta } from "../orchestrator/run-store";
 import { EventBus } from "./event-bus";
@@ -153,11 +152,11 @@ export class DefaultRunSession implements RunSession {
   }
 
   /**
-   * Gate resolver bound to this session's deferred prompter. Pass to
-   * the engine via the `gateForKind` thread.
+   * Gate resolver bound to this session's deferred prompter. Pass into
+   * `StartRunInput.gateResolver` for out-of-band gate flows.
    */
-  gateResolver(): (kind: Phase["gate"]) => Gate {
-    return gateResolverFor(this.prompter);
+  gateResolver(): GateResolver {
+    return new GateResolver(this.prompter);
   }
 
   /**

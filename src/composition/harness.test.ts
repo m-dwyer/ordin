@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { dispatchFromRuntime, FakeRuntime } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { AutoGate } from "../gates/dispatch";
+import { AutoApprovePrompter, GateResolver } from "../gates/dispatch";
 import type { RunEvent } from "../orchestrator/events";
 import { Harness } from "./harness";
 
@@ -27,7 +27,7 @@ describe("Harness", () => {
       repoPath,
       tier: "M",
       onEvent: (ev) => events.push(ev),
-      gateForKind: () => new AutoGate(),
+      gateResolver: new GateResolver(new AutoApprovePrompter()),
     });
 
     expect(meta.status).toBe("completed");
@@ -61,7 +61,7 @@ describe("Harness", () => {
       slug: "session-test",
       repoPath,
       tier: "M",
-      gateForKind: () => new AutoGate(),
+      gateResolver: new GateResolver(new AutoApprovePrompter()),
     });
 
     expect(session.runId).toMatch(/_session-test$/);

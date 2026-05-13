@@ -10,15 +10,14 @@
  */
 
 import type { RunEvent } from "../../composition/harness";
-import type { Phase } from "../../domain/workflow";
-import { gateResolverFor } from "../../gates/dispatch";
-import type { Gate, GateContext, GateDecision, GatePrompter } from "../../gates/types";
+import { GateResolver } from "../../gates/dispatch";
+import type { GateContext, GateDecision, GatePrompter } from "../../gates/types";
 import { firstLine, formatDuration, summariseToolInput } from "./format";
 
 export interface NonTtySession {
   readonly onEvent: (event: RunEvent) => void;
   readonly finish: () => void;
-  readonly gateForKind: (kind: Phase["gate"]) => Gate;
+  readonly gateResolver: GateResolver;
 }
 
 export function nonTtyRunSession(): NonTtySession {
@@ -87,7 +86,7 @@ export function nonTtyRunSession(): NonTtySession {
   return {
     onEvent,
     finish,
-    gateForKind: gateResolverFor(new NonInteractiveGatePrompter()),
+    gateResolver: new GateResolver(new NonInteractiveGatePrompter()),
   };
 }
 

@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { registerRun } from "../../src/cli/run";
 import type { Harness, PhasePreview, StartRunInput } from "../../src/composition/harness";
+import { GateResolver } from "../../src/gates/dispatch";
 
 describe("registerRun", () => {
   it("passes workflow and run options to the runtime", async () => {
@@ -34,9 +35,7 @@ describe("registerRun", () => {
             previewRun: async () => [],
           } as unknown as Harness,
           onEvent: () => {},
-          gateForKind: () => {
-            throw new Error("not used in this test");
-          },
+          gateResolver: new GateResolver(),
           finish: () => {},
           dispose: () => {},
         };

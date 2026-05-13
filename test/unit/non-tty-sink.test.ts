@@ -197,7 +197,7 @@ describe("nonTtyRunSession", () => {
 
   it("gate prompter throws with a message pointing at the HTTP/remote flow", async () => {
     const session = nonTtyRunSession();
-    const gate = session.gateForKind("human");
+    const gate = session.gateResolver.forKind("human");
     await expect(
       gate.request({
         runId: RUN_ID,

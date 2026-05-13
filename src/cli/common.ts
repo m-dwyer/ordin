@@ -1,8 +1,7 @@
 import { InvalidArgumentError } from "commander";
 import {
-  type Gate,
+  type GateResolver,
   Harness,
-  type Phase,
   type RunEvent,
   type RunMeta,
   type SandboxMode,
@@ -48,7 +47,7 @@ export function ordin(opts: OrdinCliOptions = {}): Harness {
 export interface OrdinRunSession {
   readonly runtime: Harness;
   readonly onEvent: (event: RunEvent) => void;
-  readonly gateForKind: (kind: Phase["gate"]) => Gate;
+  readonly gateResolver: GateResolver;
   readonly finish: (summary: { runId: string; status: RunMeta["status"] }) => void;
   readonly dispose: () => Promise<void> | void;
 }
@@ -91,7 +90,7 @@ export async function ordinRunSession(opts: {
     return {
       runtime: new Harness(sharedOpts),
       onEvent: session.onEvent,
-      gateForKind: session.gateForKind,
+      gateResolver: session.gateResolver,
       finish: () => session.finish(),
       dispose: () => session.finish(),
     };
@@ -135,7 +134,7 @@ export async function ordinRunSession(opts: {
   return {
     runtime,
     onEvent: (ev) => controller.pushEvent(ev),
-    gateForKind: openTuiGateResolver(controller),
+    gateResolver: openTuiGateResolver(controller),
     finish: (summary) => controller.finish(summary),
     dispose: async () => {
       await controller.dispose();

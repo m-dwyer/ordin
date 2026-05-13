@@ -10,9 +10,8 @@
  * `GatePrompter` interface so the orchestrator can use the OpenTUI
  * controller exactly the way it used the Clack one.
  */
-import type { Phase } from "../../domain/workflow";
-import { gateResolverFor } from "../../gates/dispatch";
-import type { Gate, GateContext, GateDecision, GatePrompter } from "../../gates/types";
+import { GateResolver } from "../../gates/dispatch";
+import type { GateContext, GateDecision, GatePrompter } from "../../gates/types";
 import type { OpenTuiRunController } from "../tui/controller";
 
 export class OpenTuiGatePrompter implements GatePrompter {
@@ -23,10 +22,8 @@ export class OpenTuiGatePrompter implements GatePrompter {
   }
 }
 
-export function openTuiGateResolver(
-  controller: OpenTuiRunController,
-): (kind: Phase["gate"]) => Gate {
-  return gateResolverFor(new OpenTuiGatePrompter(controller));
+export function openTuiGateResolver(controller: OpenTuiRunController): GateResolver {
+  return new GateResolver(new OpenTuiGatePrompter(controller));
 }
 
 /**

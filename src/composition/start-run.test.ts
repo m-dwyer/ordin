@@ -8,7 +8,7 @@ import {
   makeStubRuntime,
 } from "../../test/fixtures/agent-runtime";
 import { makeHarnessRoot } from "../../test/fixtures/harness-root";
-import { AutoGate } from "../gates/dispatch";
+import { AutoApprovePrompter, GateResolver } from "../gates/dispatch";
 import type { AgentRuntime } from "../worker/runtimes/types";
 import { DefaultHarnessStateLoader } from "./default-harness-state-loader";
 import { RunExecutionFactory } from "./run-execution";
@@ -25,7 +25,7 @@ describe("StartRunUseCase", () => {
       slug: "ship-feature-x",
       repoPath,
       tier: "M",
-      gateForKind: () => new AutoGate(),
+      gateResolver: new GateResolver(new AutoApprovePrompter()),
     });
 
     expect(runtime.invocations.map((i) => i.prompt.phaseId)).toEqual(["plan", "build", "review"]);
@@ -58,7 +58,7 @@ describe("StartRunUseCase", () => {
       slug: "should-fail",
       repoPath,
       tier: "M",
-      gateForKind: () => new AutoGate(),
+      gateResolver: new GateResolver(new AutoApprovePrompter()),
     });
 
     expect(meta.status).toBe("failed");
@@ -79,7 +79,7 @@ describe("StartRunUseCase", () => {
       repoPath,
       tier: "M",
       onlyPhases: ["build"],
-      gateForKind: () => new AutoGate(),
+      gateResolver: new GateResolver(new AutoApprovePrompter()),
     });
 
     expect(runtime.invoke).not.toHaveBeenCalled();
