@@ -106,6 +106,10 @@ Each ships independently. Schema in `src/domain/workflow.ts`, composer pass-thro
 
 **3.5. `Phase.permission_mode`** — Claude CLI `--permission-mode`; AiSdkRuntime tool-loop filter.
 
+## Parked follow-ups (worth doing eventually)
+
+- **`cli/run-command.ts` `runtimeForBundle` callback collapse.** Split `resolveRunCommand` into `resolveRunBundle` (takes a narrow `LookupRun` callback, returns the bundle decision) + `resolveSeedPlan` (takes the resolved-bundle Harness). Add a bundle-conflict guard: `--bundle X` together with `--again R(bundle=Y)` or `--from-run R(bundle=Y)` should error when `X != Y`. Out-of-scope for the current cleanup branch; not blocking anything.
+
 ## Parked (do not fold in)
 
 - **DAG workflow shape** — see `dag-workflow-plan.md`. Independent PR. Designed to compose with Track 2 (unified `ExecutionPlan` does not change the `Engine` interface).
