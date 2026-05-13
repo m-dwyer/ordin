@@ -1,9 +1,7 @@
-import { SpanStatusCode } from "@opentelemetry/api";
 import type { ArtefactStore } from "../domain/artefact-store";
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import { type PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
-import { withSpan } from "../observability/spans";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
@@ -68,8 +66,12 @@ type PlanningResult =
  * feedback synthesis, gate-event emission) and a future
  * `LangGraphEngine` may want to swap it for an `interrupt()`-based
  * variant.
+ *
+ * The OTel span wrap and engine-facing entry point live in `PhaseRunner`
+ * (./phase-runner.ts) so transaction logic stays orthogonal to the
+ * per-phase tracing contract.
  */
-class PhaseTransaction {
+export class PhaseTransaction {
   private readonly artefacts: ArtefactStore;
   private readonly gate: GateCoordinator;
 
@@ -246,54 +248,4 @@ class PhaseTransaction {
 
 function formatMissing(suffix: string, phase: Phase, missing: readonly ArtefactPointer[]): string {
   return `Phase "${phase.id}" declared ${suffix}: ${missing.map((m) => m.path).join(", ")}`;
-}
-
-/**
- * Engine-neutral phase transaction entry point. Engines call this
- * once per phase step with their per-run context.
- */
-export async function executePhase(
-  phase: Phase,
-  ctx: PhaseTransactionContext,
-): Promise<PhaseExecutionOutcome> {
-  const iteration = (ctx.iterations.get(phase.id) ?? 0) + 1;
-  return withSpan(
-    `ordin.phase.${phase.id}`,
-    {
-      "ordin.run_id": ctx.runId,
-      "ordin.phase_id": phase.id,
-      "ordin.agent": phase.agent,
-      "ordin.iteration": iteration,
-      "langfuse.observation.input": `phase=${phase.id} agent=${phase.agent} iteration=${iteration}\n${ctx.input.task}`,
-    },
-    async (span) => {
-      const result = await new PhaseTransaction(ctx).execute(phase);
-      const failure = phaseFailure(ctx.meta, phase.id, iteration);
-      span.setAttribute("ordin.approved", result.approved);
-      if (ctx.outcome) span.setAttribute("ordin.outcome", ctx.outcome);
-      if (failure) {
-        span.setAttribute("ordin.error", failure);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: failure });
-      }
-      span.setAttribute(
-        "langfuse.observation.output",
-        phaseOutput(result.approved, ctx.outcome, failure),
-      );
-      return result;
-    },
-  );
-}
-
-function phaseFailure(meta: RunMeta, phaseId: string, iteration: number): string | undefined {
-  return meta.phases.find((p) => p.phaseId === phaseId && p.iteration === iteration)?.error;
-}
-
-function phaseOutput(
-  approved: boolean,
-  outcome: PhaseTransactionContext["outcome"],
-  failure: string | undefined,
-): string {
-  if (failure) return `outcome=${outcome ?? "failed"}\nerror=${failure}`;
-  if (outcome) return `outcome=${outcome}`;
-  return `approved=${approved}`;
 }

@@ -12,7 +12,8 @@ import type {
   WorkflowProgram,
 } from "../engine";
 import type { RunEvent } from "../events";
-import { executePhase, type PhaseTransactionContext } from "../phase-transaction";
+import { PhaseRunner } from "../phase-runner";
+import type { PhaseTransactionContext } from "../phase-transaction";
 import { generateRunId, type RunMeta } from "../run-store";
 import { compileWorkflowPlan, type ExecutionPlan } from "../workflow-plan";
 
@@ -197,13 +198,14 @@ function summariseRunOutput(meta: RunMeta): string {
 }
 
 function compileMastraWorkflow(manifest: WorkflowManifest, plan: ExecutionPlan, ctx: RunCtx) {
+  const runner = new PhaseRunner(ctx);
   const phaseStep = (phase: Phase) =>
     createStep({
       id: phase.id,
       inputSchema: GateResult,
       outputSchema: GateResult,
       execute: async ({ bail }) => {
-        const result = await executePhase(phase, ctx);
+        const result = await runner.runPhase(phase);
         return ctx.outcome ? (bail as unknown as Bail)(result) : result;
       },
     });
@@ -227,7 +229,7 @@ function compileMastraWorkflow(manifest: WorkflowManifest, plan: ExecutionPlan, 
     outputSchema: GateResult,
     execute: async ({ bail }) => {
       for (const phase of plan.loop) {
-        const result = await executePhase(phase, ctx);
+        const result = await runner.runPhase(phase);
         // A non-rejecter halt or runtime failure inside the loop must
         // end the workflow, not just the iteration.
         if (ctx.outcome) return (bail as unknown as Bail)(result);
