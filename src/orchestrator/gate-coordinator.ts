@@ -1,21 +1,8 @@
-import type { ArtefactPointer, Feedback } from "../domain/composer";
+import type { Feedback } from "../domain/composer";
 import type { Phase } from "../domain/workflow";
-import type { InvokeResult } from "../worker/runtimes/types";
-import type { EngineRunInput } from "./engine";
+import type { EngineRunInput, GateRequest } from "./engine";
 import type { RunEvent } from "./events";
 import type { PhaseMeta } from "./run-store";
-
-function summariseInvocation(result: InvokeResult): string {
-  const parts = [
-    `duration: ${(result.durationMs / 1000).toFixed(1)}s`,
-    `in: ${result.tokens.input.toLocaleString()} tok`,
-    `out: ${result.tokens.output.toLocaleString()} tok`,
-  ];
-  if (result.tokens.cacheReadInput > 0) {
-    parts.push(`cache-read: ${result.tokens.cacheReadInput.toLocaleString()} tok`);
-  }
-  return parts.join("  |  ");
-}
 
 export interface GateCoordinatorContext {
   readonly runId: string;
@@ -35,18 +22,10 @@ export class GateCoordinator {
   async decide(
     phase: Phase,
     phaseMeta: PhaseMeta,
-    invokeResult: InvokeResult,
-    outputs: readonly ArtefactPointer[],
+    request: GateRequest,
   ): Promise<GatePhaseDecision> {
     this.ctx.emit({ type: "gate.requested", runId: this.ctx.runId, phaseId: phase.id });
-    const decision = await this.ctx.input.onGateRequested({
-      runId: this.ctx.runId,
-      phaseId: phase.id,
-      gateKind: phase.gate,
-      cwd: this.ctx.input.workspaceRoot,
-      artefacts: outputs,
-      summary: summariseInvocation(invokeResult),
-    });
+    const decision = await this.ctx.input.onGateRequested(request);
 
     if (decision.status === "approved") {
       phaseMeta.status = "completed";
@@ -64,8 +43,14 @@ export class GateCoordinator {
         runId: this.ctx.runId,
         phaseId: phase.id,
         iteration: phaseMeta.iteration,
-        tokens: invokeResult.tokens,
-        durationMs: invokeResult.durationMs,
+        tokens: phaseMeta.tokens ?? {
+          input: 0,
+          output: 0,
+          cacheReadInput: 0,
+          cacheCreationInput: 0,
+          totalInput: 0,
+        },
+        durationMs: phaseMeta.durationMs ?? 0,
       });
       return { approved: true };
     }

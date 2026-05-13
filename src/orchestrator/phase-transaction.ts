@@ -2,7 +2,8 @@ import type { ArtefactStore } from "../domain/artefact-store";
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import { type PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
-import type { EngineRunInput, EngineServices } from "./engine";
+import type { InvokeResult } from "../worker/runtimes/types";
+import type { EngineRunInput, EngineServices, GateRequest } from "./engine";
 import type { RunEvent } from "./events";
 import { GateCoordinator } from "./gate-coordinator";
 import { diagnoseMissingOutputs } from "./phase-diagnostics";
@@ -29,6 +30,14 @@ export interface PhaseTransactionContext {
   readonly iterations: Map<string, number>;
   feedback: Feedback | undefined;
   outcome: EngineOutcome | undefined;
+  /**
+   * The gate request the engine is currently waiting on, if any. Set
+   * by `PhaseTransaction` before awaiting `input.onGateRequested` and
+   * cleared once the decision arrives. `MastraEngine` exposes this
+   * through `RunHandle.pendingGate()` so out-of-band transports can
+   * see what's awaiting them without registering an inline callback.
+   */
+  pendingGate: GateRequest | undefined;
 }
 
 export interface PhaseExecutionOutcome {
@@ -119,7 +128,18 @@ export class PhaseTransaction {
       return await this.failAfterRuntime(phase, phaseMeta, iteration, `${summary}\n${diagnosis}`);
     }
 
-    const gateDecision = await this.gate.decide(phase, phaseMeta, invokeResult, outputs);
+    const gateRequest: GateRequest = {
+      runId: this.ctx.runId,
+      phaseId: phase.id,
+      gateKind: phase.gate,
+      cwd: this.ctx.input.workspaceRoot,
+      artefacts: outputs,
+      summary: summariseInvocation(invokeResult),
+    };
+    await this.markGatePending(phase, gateRequest);
+    const gateDecision = await this.gate.decide(phase, phaseMeta, gateRequest);
+    this.ctx.pendingGate = undefined;
+    this.ctx.meta.pendingGate = null;
     await this.writeMeta();
 
     this.ctx.feedback = gateDecision.feedback;
@@ -204,6 +224,22 @@ export class PhaseTransaction {
     await this.writeMeta();
   }
 
+  /**
+   * Surface the pending gate to two consumers: `ctx.pendingGate` for
+   * in-process readers (MastraEngine's `RunHandle.pendingGate()`) and
+   * `meta.pendingGate` for crash-recovery / out-of-band transports
+   * reading meta.json. Cleared after `gate.decide` returns.
+   */
+  private async markGatePending(phase: Phase, request: GateRequest): Promise<void> {
+    this.ctx.pendingGate = request;
+    this.ctx.meta.pendingGate = {
+      phaseId: phase.id,
+      gateKind: phase.gate,
+      requestedAt: new Date().toISOString(),
+    };
+    await this.writeMeta();
+  }
+
   private writeMeta(): Promise<void> {
     return this.ctx.services.runStore.writeMeta(this.ctx.meta);
   }
@@ -266,4 +302,16 @@ export class PhaseTransaction {
 
 function formatMissing(suffix: string, phase: Phase, missing: readonly ArtefactPointer[]): string {
   return `Phase "${phase.id}" declared ${suffix}: ${missing.map((m) => m.path).join(", ")}`;
+}
+
+function summariseInvocation(result: InvokeResult): string {
+  const parts = [
+    `duration: ${(result.durationMs / 1000).toFixed(1)}s`,
+    `in: ${result.tokens.input.toLocaleString()} tok`,
+    `out: ${result.tokens.output.toLocaleString()} tok`,
+  ];
+  if (result.tokens.cacheReadInput > 0) {
+    parts.push(`cache-read: ${result.tokens.cacheReadInput.toLocaleString()} tok`);
+  }
+  return parts.join("  |  ");
 }

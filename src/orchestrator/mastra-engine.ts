@@ -82,8 +82,25 @@ export class MastraEngine implements Engine {
     await services.runStore.writeMeta(meta);
     emit({ type: "run.started", runId });
 
-    // The run's lifetime span opens here and closes when the inner
-    // async returns. awaitCompletion() just awaits this promise.
+    // `ctx` is hoisted out of the span closure so the returned handle's
+    // pendingGate() can read the engine's live gate state. PhaseTransaction
+    // sets ctx.pendingGate before awaiting input.onGateRequested and
+    // clears it after — the handle is the engine-side surface of that.
+    const preparer = new PhasePreparer();
+    const ctx: RunCtx = {
+      runId,
+      meta,
+      manifest: program.manifest,
+      input,
+      services,
+      preparer,
+      emit,
+      iterations: new Map(),
+      feedback: undefined,
+      outcome: undefined,
+      pendingGate: undefined,
+    };
+
     const completion = withSpan(
       "ordin.run",
       {
@@ -102,20 +119,6 @@ export class MastraEngine implements Engine {
       },
       async (span) => {
         try {
-          const preparer = new PhasePreparer();
-          const ctx: RunCtx = {
-            runId,
-            meta,
-            manifest: program.manifest,
-            input,
-            services,
-            preparer,
-            emit,
-            iterations: new Map(),
-            feedback: undefined,
-            outcome: undefined,
-          };
-
           const wf = compileMastraWorkflow(program.manifest, program.plan, ctx);
           const run = await wf.createRun();
           const result = await run.start({ inputData: {} });
@@ -151,9 +154,7 @@ export class MastraEngine implements Engine {
       runId,
       events: bus.subscribe(),
       awaitCompletion: () => completion,
-      // Reserved for the gates-as-events flip in Step 2.5. Today the
-      // engine never yields for a gate — onGateRequested awaits inline.
-      pendingGate: (): GateRequest | undefined => undefined,
+      pendingGate: (): GateRequest | undefined => ctx.pendingGate,
     };
   }
 
