@@ -1,4 +1,5 @@
 import type { Agent } from "../domain/agent";
+import type { ArtefactStore } from "../domain/artefact-store";
 import type { HarnessConfig } from "../domain/config";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { GateKind, WorkflowManifest } from "../domain/workflow";
@@ -56,6 +57,12 @@ export interface EngineServices {
    * attributes so traces can be sliced by exact loaded content.
    */
   readonly bundle: { readonly name: string; readonly version: string; readonly hash: string };
+  /**
+   * Builds an `ArtefactStore` for the given workspace. Injected so
+   * orchestrator code stays disk-loader-free; composition wires the
+   * concrete `ArtefactManager`.
+   */
+  readonly artefactStore: (workspaceRoot: string) => ArtefactStore;
 }
 
 /**

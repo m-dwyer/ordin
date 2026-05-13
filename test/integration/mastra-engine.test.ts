@@ -6,6 +6,7 @@ import type { Agent } from "../../src/domain/agent";
 import type { HarnessConfig } from "../../src/domain/config";
 import type { Workflow } from "../../src/domain/workflow";
 import type { GateDecision } from "../../src/gates/types";
+import { ArtefactManager } from "../../src/infrastructure/artefact-manager";
 import { HarnessConfigLoader } from "../../src/infrastructure/config-loader";
 import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
@@ -106,6 +107,7 @@ function makeServices(harness: Harness, runtime: AgentRuntime): EngineServices {
     runtimeNames: new Set([runtime.name]),
     runStore: harness.runStore,
     bundle: { name: "fake-bundle", version: "0", hash: "0".repeat(64) },
+    artefactStore: (workspaceRoot) => new ArtefactManager(workspaceRoot),
   };
 }
 

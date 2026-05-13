@@ -1,8 +1,8 @@
 import { SpanStatusCode } from "@opentelemetry/api";
+import type { ArtefactStore } from "../domain/artefact-store";
 import type { ArtefactPointer, Feedback } from "../domain/composer";
 import { type PhasePreparer, type PhasePreview, resolveArtefacts } from "../domain/phase-preview";
 import type { Phase, WorkflowManifest } from "../domain/workflow";
-import { ArtefactManager } from "../infrastructure/artefact-manager";
 import { withSpan } from "../observability/spans";
 import type { EngineRunInput, EngineServices } from "./engine";
 import type { RunEvent } from "./events";
@@ -70,11 +70,11 @@ type PlanningResult =
  * variant.
  */
 class PhaseTransaction {
-  private readonly artefacts: ArtefactManager;
+  private readonly artefacts: ArtefactStore;
   private readonly gate: GateCoordinator;
 
   constructor(private readonly ctx: PhaseTransactionContext) {
-    this.artefacts = new ArtefactManager(ctx.input.workspaceRoot);
+    this.artefacts = ctx.services.artefactStore(ctx.input.workspaceRoot);
     this.gate = new GateCoordinator({
       runId: ctx.runId,
       input: ctx.input,

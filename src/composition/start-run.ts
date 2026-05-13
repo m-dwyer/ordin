@@ -1,5 +1,6 @@
 import { requireSlug } from "../domain/slug";
 import { GateResolver } from "../gates/dispatch";
+import { ArtefactManager } from "../infrastructure/artefact-manager";
 import type { EngineRunInput, EngineServices, GateRequest } from "../orchestrator/engine";
 import type { RunMeta } from "../orchestrator/run-store";
 import type { DefaultHarnessStateLoader, LoadedHarnessState } from "./default-harness-state-loader";
@@ -70,5 +71,6 @@ function engineServices(state: LoadedHarnessState): EngineServices {
     runtimeNames: state.runtimeNames,
     runStore: state.runStore,
     bundle: state.bundle,
+    artefactStore: (workspaceRoot) => new ArtefactManager(workspaceRoot),
   };
 }
