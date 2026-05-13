@@ -132,8 +132,12 @@ The **Broker** module that approves tool intents and records dispatch/result aud
 _Avoid_: tool service, dispatcher
 
 **Tool Authority**:
-The shared contract module that parses `allowed_tools` and derives effective tool policy.
+The shared contract module that owns the tool catalog and parses `allowed_tools` into specs.
 _Avoid_: tool parser, ACL helper
+
+**Tool Policy**:
+The per-phase policy value derived from **Allowed Tools** that decides whether a **Tool Intent** is approved. Owned by **Broker Dispatch** as ACL state; the decision predicate lives in the domain.
+_Avoid_: ACL, allowlist, tool ACL
 
 **Allowed Tools**:
 Workflow policy entries that control exposed tools and optional broker-enforced input patterns.
@@ -184,8 +188,9 @@ _Avoid_: sample app, test repo
 - A **Client Interface** calls **Harness** or **Run Service** to control runs.
 - **Run Execution** supplies **Phase Runner** with dispatch behavior for each **Phase**.
 - A **Worker** reports a **Tool Intent** to **Broker Dispatch**.
-- **Tool Authority** derives the **Allowed Tools** policy registered with **Broker Dispatch**.
-- **Broker Dispatch** approves or denies a **Tool Intent** before the worker executes it.
+- **Tool Authority** parses **Allowed Tools** entries against its tool catalog.
+- A **Tool Policy** is constructed from parsed **Allowed Tools** and registered per-phase with **Broker Dispatch**.
+- **Broker Dispatch** asks the **Tool Policy** to decide a **Tool Intent**, then records the decision in the **Audit Chain**.
 - A **Sandbox** constrains the **Worker**, not the whole domain model.
 - A **Run Event** may be promoted from a **Runtime Event** by **Phase Runner**.
 - An **Audit Chain** records broker observations and selected run observations for one **Run**.
