@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import type { Harness, PhasePreview } from "../composition/harness";
-import { ordin, ordinRunSession, parseSandboxMode, parseTier } from "./common";
+import { installAbortHandler, ordin, ordinRunSession, parseSandboxMode, parseTier } from "./common";
 import { applySeedPlan, type RunCommandOpts, resolveRunCommand } from "./run-command";
 import { renderDryRun } from "./tui/dry-run";
 
@@ -97,11 +97,14 @@ export function registerRun(program: Command, deps: RunCommandDeps = {}): void {
         ...(opts.script ? { scriptPath: opts.script } : {}),
         header: resolved.header,
       });
+      const abortSignal = installAbortHandler();
+      session.bindAbortSignal(abortSignal);
       try {
         const result = await session.runtime.startRun({
           ...input,
           onEvent: session.onEvent,
           gateResolver: session.gateResolver,
+          abortSignal,
         });
         session.finish({ runId: result.runId, status: result.status });
       } finally {

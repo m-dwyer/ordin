@@ -12,6 +12,7 @@ import { setupCompiledRuntime } from "./compiled-runtime";
 import { registerDoctor } from "./doctor";
 import { registerMcp } from "./mcp";
 import { registerRemote } from "./remote";
+import { registerResume } from "./resume";
 import { registerRetro } from "./retro";
 import { registerRun } from "./run";
 import { registerRuns } from "./runs";
@@ -35,6 +36,7 @@ program
   .version("0.1.0");
 
 registerRun(program);
+registerResume(program);
 registerRuns(program);
 registerRetro(program);
 registerStatus(program);

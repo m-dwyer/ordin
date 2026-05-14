@@ -1,0 +1,59 @@
+# Resume-test workflow. Three phases purpose-built for exercising
+# `ordin resume`:
+#
+#   1. prepare    — fast, writes one artefact, then halts at `gate: human`
+#                   so you can Ctrl-C the run BETWEEN runtime completion
+#                   and gate decision. On disk: meta.pendingGate is set,
+#                   meta.phases[plan].status is "running". Resume hits
+#                   the gate-replay path.
+#
+#   2. process    — sleeps for 8s before writing its artefact, with
+#                   `gate: auto`. Lets you Ctrl-C DURING the runtime
+#                   invocation. On disk: meta.inFlight points at process,
+#                   no PhaseMeta entry exists for it yet. Resume hits
+#                   the inFlight-rerun path.
+#
+#   3. finalize   — writes a closing artefact with `gate: auto`. Lets
+#                   you confirm the workflow advances cleanly past
+#                   resumed phases.
+
+name: resume-test
+version: 1
+runtime: scripted
+model: scripted
+description: >
+  Three-phase resume tester. Pause at a human gate for pendingGate
+  replay, or kill mid-process for inFlight rerun. No LLM.
+
+phases:
+  - id: prepare
+    agent: probe-agent
+    gate: human
+    allowed_tools:
+      - Write
+    fresh_context: true
+    outputs:
+      - label: Plan note
+        path: notes/resume-test-plan.md
+        description: Note the prepare phase produces; reviewed at the human gate
+
+  - id: process
+    agent: probe-agent
+    gate: auto
+    allowed_tools:
+      - Bash
+      - Write
+    outputs:
+      - label: Process log
+        path: notes/resume-test-process.md
+        description: Note the process phase produces after a deliberate delay
+
+  - id: finalize
+    agent: probe-agent
+    gate: auto
+    allowed_tools:
+      - Write
+    outputs:
+      - label: Final report
+        path: notes/resume-test-final.md
+        description: Closing report wrapping up the run

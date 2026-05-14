@@ -69,34 +69,45 @@ export function compileWorkflowPlan(manifest: WorkflowManifest): ExecutionPlan {
  * next phase id the engine would invoke, or undefined if the run has
  * completed every phase the plan reaches. Engine-neutral plan
  * traversal — both MastraEngine and any future engine compiling to
- * the same plan shape share this. The resume planner (follow-up plan)
- * uses this to decide where to re-enter after a mid-run crash.
+ * the same plan shape share this. The resume planner uses this to
+ * decide where to re-enter after a mid-run crash.
  *
  * "Completed" here means the latest entry for a phase in
  * `runMeta.phases` has `status: "completed"` *and* its gate decision
  * is approved or auto-approved (rejections trigger looping, not
  * forward progress).
+ *
+ * Loop case: if a single-retry-loop's rejecter has `status: "rejected"`
+ * as its latest entry, the next phase is the rejecter's `on_reject.goto`,
+ * not the rejecter itself. Without this, a crash between rejection and
+ * the start of the next loop iteration would resume by re-running the
+ * rejecter — wrong, since the loop hasn't actually retried yet.
  */
 export function nextPhase(plan: ExecutionPlan, runMeta: RunMeta): string | undefined {
+  const latest = latestPhaseStatuses(runMeta);
+  if (
+    plan.kind === "single-retry-loop" &&
+    latest.get(plan.rejecter.id) === "rejected" &&
+    plan.rejecter.on_reject
+  ) {
+    return plan.rejecter.on_reject.goto;
+  }
   const traversal =
     plan.kind === "linear" ? plan.phases : [...plan.beforeLoop, ...plan.loop, ...plan.afterLoop];
-  const completed = completedPhases(runMeta);
   for (const phase of traversal) {
-    if (!completed.has(phase.id)) return phase.id;
+    if (latest.get(phase.id) !== "completed") return phase.id;
   }
   return undefined;
 }
 
-function completedPhases(runMeta: RunMeta): ReadonlySet<string> {
+function latestPhaseStatuses(
+  runMeta: RunMeta,
+): ReadonlyMap<string, "completed" | "failed" | "rejected" | "running"> {
   const latest = new Map<string, "completed" | "failed" | "rejected" | "running">();
   for (const entry of runMeta.phases) {
     latest.set(entry.phaseId, entry.status);
   }
-  const done = new Set<string>();
-  for (const [id, status] of latest) {
-    if (status === "completed") done.add(id);
-  }
-  return done;
+  return latest;
 }
 
 export function collectWorkflowDiagnostics(

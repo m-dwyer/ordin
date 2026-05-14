@@ -5,6 +5,7 @@ import type { Phase, WorkflowManifest } from "../domain/workflow";
 import { withSpan } from "../observability/spans";
 import type {
   Engine,
+  EngineResumeInput,
   EngineRunInput,
   EngineServices,
   GateRequest,
@@ -17,8 +18,13 @@ import { EventBus } from "./event-bus";
 import type { RunEvent } from "./events";
 import { PhaseRunner } from "./phase-runner";
 import type { PhaseTransactionContext } from "./phase-transaction";
-import { createInitialRunMeta, generateRunId, type RunMeta } from "./run-store";
-import { compileWorkflowPlan, type ExecutionPlan } from "./workflow-plan";
+import {
+  createInitialRunMeta,
+  generateRunId,
+  type PendingGateMarker,
+  type RunMeta,
+} from "./run-store";
+import { compileWorkflowPlan, type ExecutionPlan, nextPhase } from "./workflow-plan";
 
 /**
  * Mastra-backed engine. Each phase is a `createStep`; a single
@@ -129,6 +135,12 @@ export class MastraEngine implements Engine {
             meta.status = ctx.outcome;
           } else if (result.status === "success") {
             meta.status = "completed";
+          } else if (input.abortSignal?.aborted) {
+            // User aborted (Ctrl-C). Leave the run resumable — don't
+            // flip status to "failed" or set completedAt. inFlight stays
+            // pointing at whatever phase was in flight, which is exactly
+            // what the resume planner wants.
+            throw new RunAbortedError(input.task);
           } else {
             // Mastra returned failed/suspended/tripwire and no step set
             // ctx.outcome — treat as a real engine error.
@@ -156,6 +168,203 @@ export class MastraEngine implements Engine {
       awaitCompletion: () => completion,
       pendingGate: (): GateRequest | undefined => ctx.pendingGate,
     };
+  }
+
+  async resume(
+    program: WorkflowProgram,
+    meta: RunMeta,
+    input: EngineResumeInput,
+    services: EngineServices,
+  ): Promise<RunHandle> {
+    const runId = meta.runId;
+    const bus = new EventBus<RunEvent>();
+    const emit = (ev: RunEvent): void => {
+      bus.emit(ev);
+      input.onEvent?.(ev);
+    };
+    // Synthesise EngineRunInput from meta + transport callbacks so
+    // PhaseTransaction (which reads task/slug/workspaceRoot/tier/etc.
+    // off ctx.input) doesn't need a resume-specific code path.
+    const synthInput: EngineRunInput = {
+      task: meta.task,
+      slug: meta.slug,
+      workspaceRoot: meta.repo,
+      tier: meta.tier,
+      sandboxMode: meta.sandboxMode,
+      startAt: undefined,
+      onlyPhases: undefined,
+      onEvent: input.onEvent,
+      onGateRequested: input.onGateRequested,
+      dispatchPhase: input.dispatchPhase,
+      abortSignal: input.abortSignal,
+    };
+    const preparer = new PhasePreparer();
+    const ctx: RunCtx = {
+      runId,
+      meta,
+      manifest: program.manifest,
+      input: synthInput,
+      services,
+      preparer,
+      emit,
+      iterations: new Map(),
+      feedback: undefined,
+      outcome: undefined,
+      pendingGate: undefined,
+    };
+    emit({ type: "run.started", runId });
+
+    const completion = withSpan(
+      "ordin.run",
+      {
+        "ordin.run_id": runId,
+        "ordin.workflow": program.manifest.name,
+        "ordin.bundle.name": services.bundle.name,
+        "ordin.bundle.version": services.bundle.version,
+        "ordin.bundle.hash": services.bundle.hash,
+        "ordin.tier": meta.tier,
+        "ordin.slug": meta.slug,
+        "ordin.task": meta.task.slice(0, 256),
+        "ordin.engine": this.name,
+        "ordin.resumed": true,
+        "langfuse.trace.name": meta.slug,
+        "langfuse.trace.input": meta.task,
+        "langfuse.session.id": runId,
+      },
+      async (span) => {
+        try {
+          if (meta.pendingGate) {
+            const halted = await this.replayPendingGate(ctx, meta.pendingGate);
+            if (halted) meta.status = "halted";
+          }
+
+          if (meta.status === "running") {
+            const next = nextPhase(program.plan, meta);
+            if (!next) {
+              meta.status = "completed";
+            } else {
+              // Clear the stale in-flight marker (if any) before re-entering
+              // the phase. recordRunResult would do this on the next phase
+              // boundary anyway, but doing it here keeps meta tidy on disk
+              // for any external observer between now and that point.
+              meta.inFlight = null;
+              await services.runStore.writeMeta(meta);
+
+              const slicedManifest = program.manifest.startingAt(next);
+              const slicedPlan = compileWorkflowPlan(slicedManifest);
+              const wf = compileMastraWorkflow(slicedManifest, slicedPlan, ctx);
+              const run = await wf.createRun();
+              const result = await run.start({ inputData: {} });
+
+              if (ctx.outcome) {
+                meta.status = ctx.outcome;
+              } else if (result.status === "success") {
+                meta.status = "completed";
+              } else if (input.abortSignal?.aborted) {
+                throw new RunAbortedError(meta.task);
+              } else {
+                meta.status = "failed";
+                meta.completedAt = new Date().toISOString();
+                await services.runStore.writeMeta(meta);
+                throw extractFailureError(result);
+              }
+            }
+          }
+
+          meta.completedAt = meta.completedAt ?? new Date().toISOString();
+          await services.runStore.writeMeta(meta);
+          emit({ type: "run.completed", runId, status: meta.status });
+          span.setAttribute("ordin.status", meta.status);
+          span.setAttribute("langfuse.trace.output", summariseRunOutput(meta));
+          return meta;
+        } finally {
+          bus.close();
+        }
+      },
+    );
+
+    return {
+      runId,
+      events: bus.subscribe(),
+      awaitCompletion: () => completion,
+      pendingGate: (): GateRequest | undefined => ctx.pendingGate,
+    };
+  }
+
+  /**
+   * Replay a buffered gate request from a prior run that died awaiting
+   * a decision. The PhaseMeta entry already exists (the prior process
+   * wrote it before requesting the gate); we mutate it in place with
+   * the new decision and emit the same event sequence a fresh gate
+   * would. v1: a rejection halts the run rather than entering loop
+   * retry — the machinery for loop replay exists in PhaseTransaction
+   * but isn't wired through resume yet.
+   */
+  private async replayPendingGate(ctx: RunCtx, marker: PendingGateMarker): Promise<boolean> {
+    const phase = ctx.manifest.findPhase(marker.phaseId);
+    const phaseMeta = [...ctx.meta.phases].reverse().find((p) => p.phaseId === marker.phaseId);
+    if (!phaseMeta) {
+      throw new Error(
+        `Resume: meta.pendingGate references phase "${marker.phaseId}" with no PhaseMeta entry`,
+      );
+    }
+    const outputs = resolveArtefacts(phase.outputs, ctx.input.slug);
+    const request: GateRequest = {
+      runId: ctx.runId,
+      phaseId: phase.id,
+      gateKind: phase.gate,
+      cwd: ctx.input.workspaceRoot,
+      artefacts: outputs,
+      summary: "Resumed from a prior session — gate decision pending.",
+    };
+    ctx.pendingGate = request;
+    ctx.emit({ type: "gate.requested", runId: ctx.runId, phaseId: phase.id });
+    const decision = await ctx.input.onGateRequested(request);
+    ctx.pendingGate = undefined;
+    ctx.meta.pendingGate = null;
+
+    if (decision.status === "approved") {
+      phaseMeta.status = "completed";
+      phaseMeta.gateDecision = phase.gate === "auto" ? "auto" : "approved";
+      if (decision.note) phaseMeta.gateNote = decision.note;
+      await ctx.services.runStore.writeMeta(ctx.meta);
+      ctx.emit({
+        type: "gate.decided",
+        runId: ctx.runId,
+        phaseId: phase.id,
+        decision: phaseMeta.gateDecision,
+        ...(decision.note ? { note: decision.note } : {}),
+      });
+      ctx.emit({
+        type: "phase.completed",
+        runId: ctx.runId,
+        phaseId: phase.id,
+        iteration: phaseMeta.iteration,
+        tokens: phaseMeta.tokens ?? {
+          input: 0,
+          output: 0,
+          cacheReadInput: 0,
+          cacheCreationInput: 0,
+          totalInput: 0,
+        },
+        durationMs: phaseMeta.durationMs ?? 0,
+      });
+      return false;
+    }
+
+    phaseMeta.status = "rejected";
+    phaseMeta.gateDecision = "rejected";
+    phaseMeta.gateNote = decision.reason;
+    await ctx.services.runStore.writeMeta(ctx.meta);
+    ctx.emit({
+      type: "gate.decided",
+      runId: ctx.runId,
+      phaseId: phase.id,
+      decision: "rejected",
+      reason: decision.reason,
+    });
+    ctx.outcome = "halted";
+    return true;
   }
 
   async run(
@@ -190,6 +399,20 @@ export class MastraEngine implements Engine {
         artefactOutputs: resolveArtefacts(phase.outputs, input.slug),
       });
     });
+  }
+}
+
+/**
+ * Thrown when a run was interrupted by a cooperative abort (Ctrl-C
+ * routed through `input.abortSignal`). The engine treats this as a
+ * "leave it resumable" signal: no `status: "failed"` write, no
+ * `completedAt`. Distinguishes the abort path from real workflow
+ * failures so resume can pick up from the in-flight phase.
+ */
+export class RunAbortedError extends Error {
+  constructor(task: string) {
+    super(`Run aborted by user (task: ${task.slice(0, 80)})`);
+    this.name = "RunAbortedError";
   }
 }
 

@@ -65,9 +65,16 @@ export class OpenTuiRunController {
   private readonly pausedSignal = createSignal<{ status: RunStatus } | null>(null);
 
   private renderer?: CliRenderer;
-  private pendingGate: ((d: GateDecision) => void) | null = null;
-  private pendingEgressGate: ((approved: boolean) => void) | null = null;
+  private pendingGate: {
+    resolve: (d: GateDecision) => void;
+    reject: (err: Error) => void;
+  } | null = null;
+  private pendingEgressGate: {
+    resolve: (approved: boolean) => void;
+    reject: (err: Error) => void;
+  } | null = null;
   private pendingDismiss: (() => void) | null = null;
+  private abortSignal: AbortSignal | undefined;
   private finished = false;
   private nextRowId = 1;
   private nextSectionKey = 1;
@@ -124,7 +131,12 @@ export class OpenTuiRunController {
 
     this.renderer = await createCliRenderer({
       targetFps: 30,
-      exitOnCtrlC: true,
+      // The CLI's installAbortHandler owns SIGINT — it triggers
+      // cooperative abort, lets the engine unwind, and runs
+      // session.dispose() (which destroys this renderer). Letting
+      // OpenTUI also exit on Ctrl-C races our handler and skips the
+      // unwind.
+      exitOnCtrlC: false,
       useMouse: true,
       screenMode: "alternate-screen",
       externalOutputMode: "passthrough",
@@ -311,8 +323,9 @@ export class OpenTuiRunController {
     setGate(gate);
     this.patchActiveSection(ctx.phaseId, { status: "gate", gate });
     setHint("");
-    return new Promise<GateDecision>((resolve) => {
-      this.pendingGate = resolve;
+    if (this.abortSignal?.aborted) return Promise.reject(new Error("Run aborted"));
+    return new Promise<GateDecision>((resolve, reject) => {
+      this.pendingGate = { resolve, reject };
     });
   }
 
@@ -326,9 +339,33 @@ export class OpenTuiRunController {
   requestEgressGate(host: string, port: number | undefined): Promise<boolean> {
     const [, setEgress] = this.egressGateSignal;
     setEgress({ host, port });
-    return new Promise<boolean>((resolve) => {
-      this.pendingEgressGate = resolve;
+    if (this.abortSignal?.aborted) return Promise.reject(new Error("Run aborted"));
+    return new Promise<boolean>((resolve, reject) => {
+      this.pendingEgressGate = { resolve, reject };
     });
+  }
+
+  /**
+   * Bind the run's abort signal so Ctrl-C wakes up any pending gate
+   * waits — otherwise the engine would block forever inside
+   * `onGateRequested`. Idempotent; called once after construction.
+   */
+  bindAbortSignal(signal: AbortSignal): void {
+    this.abortSignal = signal;
+    signal.addEventListener("abort", () => this.cancelPendingGates());
+  }
+
+  private cancelPendingGates(): void {
+    if (this.pendingGate) {
+      const { reject } = this.pendingGate;
+      this.pendingGate = null;
+      reject(new Error("Run aborted"));
+    }
+    if (this.pendingEgressGate) {
+      const { reject } = this.pendingEgressGate;
+      this.pendingEgressGate = null;
+      reject(new Error("Run aborted"));
+    }
   }
 
   /**
@@ -452,9 +489,9 @@ export class OpenTuiRunController {
   private decideEgressGate(approved: boolean): void {
     const [, setEgress] = this.egressGateSignal;
     setEgress(null);
-    const resolve = this.pendingEgressGate;
+    const pending = this.pendingEgressGate;
     this.pendingEgressGate = null;
-    resolve?.(approved);
+    pending?.resolve(approved);
   }
 
   private decideGate(decision: GateDecision): void {
@@ -475,9 +512,9 @@ export class OpenTuiRunController {
       gate: undefined,
       ...(decision.status === "rejected" ? { error: decision.reason } : {}),
     });
-    const resolve = this.pendingGate;
+    const pending = this.pendingGate;
     this.pendingGate = null;
-    resolve?.(decision);
+    pending?.resolve(decision);
   }
 
   private setPhase(id: string, patch: Partial<PhaseRow>): void {

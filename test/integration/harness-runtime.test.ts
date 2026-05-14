@@ -39,6 +39,9 @@ describe("Harness", () => {
       run: async () => {
         throw new Error("preview facade test must not run the engine");
       },
+      resume: async () => {
+        throw new Error("preview facade test must not resume the engine");
+      },
     };
 
     const repoPath = await mkdtemp(join(tmpdir(), "ordin-custom-repo-"));

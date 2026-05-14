@@ -38,6 +38,7 @@ describe("registerRun", () => {
           gateResolver: new GateResolver(),
           finish: () => {},
           dispose: () => {},
+          bindAbortSignal: () => {},
         };
       },
     });

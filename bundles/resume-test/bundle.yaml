@@ -1,0 +1,8 @@
+name: resume-test
+version: 0.1.0
+description: >
+  Deterministic 3-phase workflow with a human gate and a deliberately
+  slow phase. Built for manually exercising `ordin resume` against the
+  pendingGate replay path and the inFlight re-run path. Pure scripted
+  runtime — no LLM call, no qwen variance.
+runtime: scripted

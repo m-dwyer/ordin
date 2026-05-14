@@ -11,7 +11,7 @@ import { HarnessConfigLoader } from "../../src/infrastructure/config-loader";
 import { WorkflowLoader } from "../../src/infrastructure/workflow-loader";
 import type { EngineServices, GateRequest } from "../../src/orchestrator/engine";
 import type { RunEvent } from "../../src/orchestrator/events";
-import { MastraEngine } from "../../src/orchestrator/mastra-engine";
+import { MastraEngine, RunAbortedError } from "../../src/orchestrator/mastra-engine";
 import { invokeWithRuntime, PhaseInvocation } from "../../src/orchestrator/phase-invocation";
 import { type RunMeta, RunStore } from "../../src/orchestrator/run-store";
 import type {
@@ -336,6 +336,164 @@ phases:
     expect(previews.every((p) => p.prompt.userPrompt.includes("preview only"))).toBe(true);
     // No runtime was invoked because preview never touches one.
     expect(runtime.invocations).toHaveLength(0);
+  });
+
+  it("treats an aborted signal as a resumable interruption, not a failure", async () => {
+    const harness = await makeHarness();
+    const engine = new MastraEngine();
+    const program = engine.compile(harness.workflow);
+    const services = makeServices(harness, runtime);
+    const controller = new AbortController();
+
+    // Dispatcher fires abort then rejects, simulating Ctrl-C during phase
+    // invocation. The engine should recognize the signal and refuse to
+    // mark the run failed.
+    const dispatchPhase = async (): Promise<never> => {
+      controller.abort();
+      throw new Error("aborted");
+    };
+
+    await expect(
+      engine.run(
+        program,
+        {
+          task: "t",
+          slug: "t",
+          workspaceRoot: "/tmp/repo",
+          tier: "M",
+          sandboxMode: undefined,
+          startAt: undefined,
+          onlyPhases: undefined,
+          onEvent: undefined,
+          onGateRequested: async () => ({ status: "approved" }),
+          abortSignal: controller.signal,
+          dispatchPhase,
+        },
+        services,
+      ),
+    ).rejects.toBeInstanceOf(RunAbortedError);
+
+    // Find the most-recent run dir and verify the on-disk state is
+    // resumable: status still "running", inFlight points at the
+    // interrupted phase, no completedAt.
+    const runs = await harness.runStore.listRuns();
+    const meta = runs[0];
+    expect(meta?.status).toBe("running");
+    expect(meta?.completedAt).toBeUndefined();
+    expect(meta?.inFlight?.phaseId).toBe("plan");
+  });
+
+  it("resumes from a pending gate, applying the replayed decision and continuing", async () => {
+    const harness = await makeHarness();
+    // Synthesize the on-disk state of a run that crashed while awaiting
+    // a `build` gate decision: plan + build runtimes both ran, build's
+    // PhaseMeta is in `phases` but its gate was never decided.
+    const meta: RunMeta = {
+      runId: "test-run",
+      workflow: harness.workflow.name,
+      bundle: { name: "fake-bundle", version: "0", hash: "0".repeat(64) },
+      tier: "M",
+      task: "do the thing",
+      slug: "do-thing",
+      repo: "/tmp/repo",
+      startedAt: "2026-05-15T00:00:00.000Z",
+      status: "running",
+      phases: [
+        {
+          phaseId: "plan",
+          iteration: 1,
+          startedAt: "2026-05-15T00:00:00.100Z",
+          completedAt: "2026-05-15T00:00:01.000Z",
+          status: "completed",
+          gateDecision: "approved",
+          runtime: "fake",
+          tokens: { input: 5, output: 5, cacheReadInput: 0, cacheCreationInput: 0, totalInput: 5 },
+          durationMs: 100,
+        },
+        {
+          phaseId: "build",
+          iteration: 1,
+          startedAt: "2026-05-15T00:00:01.100Z",
+          status: "running",
+          runtime: "fake",
+          tokens: {
+            input: 10,
+            output: 20,
+            cacheReadInput: 0,
+            cacheCreationInput: 0,
+            totalInput: 10,
+          },
+          durationMs: 200,
+        },
+      ],
+      inFlight: null,
+      currentPhaseId: null,
+      pendingGate: {
+        phaseId: "build",
+        gateKind: "human",
+        requestedAt: "2026-05-15T00:00:01.300Z",
+      },
+    };
+    await harness.runStore.writeMeta(meta);
+
+    const engine = new MastraEngine();
+    const program = engine.compile(harness.workflow);
+    const services = makeServices(harness, runtime);
+    const runner = new PhaseInvocation();
+    const events: RunEvent[] = [];
+
+    const handle = await engine.resume(
+      program,
+      meta,
+      {
+        onEvent: (e) => events.push(e),
+        onGateRequested: async () => ({ status: "approved" }),
+        dispatchPhase: (req) =>
+          runner.run({
+            preview: req.preview,
+            runtimeName: runtime.name,
+            invoke: invokeWithRuntime(runtime),
+            context: { runId: req.runId, runDir: req.runDir, iteration: req.iteration },
+            emit: req.emit,
+          }),
+        abortSignal: undefined,
+      },
+      services,
+    );
+    const finalMeta = await handle.awaitCompletion();
+
+    // runId unchanged; meta.json reused, not minted.
+    expect(finalMeta.runId).toBe("test-run");
+    expect(finalMeta.status).toBe("completed");
+    expect(finalMeta.pendingGate).toBeNull();
+
+    // Replay mutated the existing build entry in place, didn't add a duplicate.
+    const buildEntries = finalMeta.phases.filter((p) => p.phaseId === "build");
+    expect(buildEntries).toHaveLength(1);
+    expect(buildEntries[0]?.status).toBe("completed");
+    expect(buildEntries[0]?.gateDecision).toBe("approved");
+
+    // Only review (the next undone phase) re-invoked the runtime;
+    // plan + build were not re-run.
+    expect(runtime.invocations.map((i) => i.prompt.phaseId)).toEqual(["review"]);
+
+    // Lifecycle: replay emits gate.requested + gate.decided + phase.completed
+    // for build BEFORE review's phase.started.
+    const lifecycle = events
+      .map((e) => e.type)
+      .filter((t) => t.startsWith("gate.") || t.startsWith("phase.") || t.startsWith("run."));
+    expect(lifecycle).toEqual([
+      "run.started",
+      "gate.requested",
+      "gate.decided",
+      "phase.completed",
+      "phase.started",
+      "phase.runtime.completed",
+      "gate.requested",
+      "gate.decided",
+      "phase.completed",
+      "run.completed",
+    ]);
   });
 
   it("runs a linear workflow with no on_reject back-edge", async () => {

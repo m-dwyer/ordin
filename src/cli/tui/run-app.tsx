@@ -121,6 +121,14 @@ export function RunApp(props: RunAppProps) {
   };
 
   useKeyboard((key) => {
+    // Ctrl-C — cooperative abort. Re-fire SIGINT so the CLI's installed
+    // handler (installAbortHandler) triggers the AbortController exactly
+    // once, regardless of whether OpenTUI consumed the keypress or the
+    // terminal passed it through as a signal.
+    if (key.ctrl && key.name === "c") {
+      process.kill(process.pid, "SIGINT");
+      return;
+    }
     // Egress gate — fires mid-phase, blocks an in-flight HTTP request.
     // Takes precedence over phase gates because it's the more time-
     // sensitive prompt (the inner is waiting for srt to answer).

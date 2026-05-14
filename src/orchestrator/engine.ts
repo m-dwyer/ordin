@@ -41,6 +41,19 @@ export interface Engine {
   ): Promise<RunHandle>;
   /** Convenience wrapper: `start().then(h => h.awaitCompletion())`. */
   run(program: WorkflowProgram, input: EngineRunInput, services: EngineServices): Promise<RunMeta>;
+  /**
+   * Continue an interrupted run from its persisted `RunMeta`. The engine
+   * reuses the meta's `runId`, mutates the meta in place, and decides
+   * where to re-enter from `meta.inFlight` / `meta.pendingGate` /
+   * `nextPhase(plan, meta)`. v1 in-process semantics: a rejected gate
+   * on replay halts the run rather than entering loop retry.
+   */
+  resume(
+    program: WorkflowProgram,
+    meta: RunMeta,
+    input: EngineResumeInput,
+    services: EngineServices,
+  ): Promise<RunHandle>;
   preview(
     program: WorkflowProgram,
     input: PreviewInput,
@@ -133,6 +146,20 @@ export interface EngineRunInput {
    * dispatcher decides *where* (in-process, sandboxed worker, remote
    * runner). Harness supplies this per-run.
    */
+  readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseInvocationResult>;
+  readonly abortSignal: AbortSignal | undefined;
+}
+
+/**
+ * Per-run dependencies for `Engine.resume`. Narrower than
+ * `EngineRunInput` — task / slug / tier / workspaceRoot / sandboxMode /
+ * slicing are all read from the persisted `RunMeta`, not the caller.
+ * Only the transport-supplied callbacks (events, gate, dispatch, abort)
+ * remain.
+ */
+export interface EngineResumeInput {
+  readonly onEvent: ((event: RunEvent) => void) | undefined;
+  readonly onGateRequested: (request: GateRequest) => Promise<GateDecision>;
   readonly dispatchPhase: (request: PhaseDispatchRequest) => Promise<PhaseInvocationResult>;
   readonly abortSignal: AbortSignal | undefined;
 }

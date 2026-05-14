@@ -53,7 +53,7 @@ export class StartRunUseCase {
   }
 }
 
-function handleGateRequest(gateResolver: GateResolver, request: GateRequest) {
+export function handleGateRequest(gateResolver: GateResolver, request: GateRequest) {
   const gate = gateResolver.forKind(request.gateKind);
   return gate.request({
     runId: request.runId,
@@ -64,7 +64,7 @@ function handleGateRequest(gateResolver: GateResolver, request: GateRequest) {
   });
 }
 
-function engineServices(state: LoadedHarnessState): EngineServices {
+export function engineServices(state: LoadedHarnessState): EngineServices {
   return {
     config: state.config,
     agents: state.agents,

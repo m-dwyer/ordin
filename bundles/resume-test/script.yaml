@@ -1,0 +1,77 @@
+# Deterministic script for the resume-test workflow.
+#
+# Variables substituted at dispatch time: {cwd}, {workspace}, {run_id},
+# {phase}. Slug substitution happens in the workflow's outputs paths.
+
+phases:
+  prepare:
+    steps:
+      - text: |
+          Prepare phase: writing the plan note for review.
+
+      - tool:
+          name: Write
+          input:
+            file_path: notes/resume-test-plan.md
+            content: |
+              # Plan note
+
+              Run: {run_id}
+              Phase: {phase}
+              Workspace: {workspace}
+
+              The prepare phase wrote this so the human gate has
+              something concrete to approve. After approval, `process`
+              runs.
+
+      - text: |
+          Prepare done. Gate is `human` — Ctrl-C now to test pendingGate
+          replay, then `ordin resume <runId>`.
+
+  process:
+    steps:
+      - text: |
+          Process phase: deliberately slow. Sleeping 8s before writing
+          the process log so you have a window to Ctrl-C and test the
+          inFlight rerun path.
+
+      - tool:
+          name: Bash
+          input:
+            command: "sleep 8 && echo 'process phase: slept ok'"
+
+      - tool:
+          name: Write
+          input:
+            file_path: notes/resume-test-process.md
+            content: |
+              # Process log
+
+              Run: {run_id}
+              Phase: {phase}
+
+              The process phase finished its 8-second wait and wrote
+              this artefact. Gate is `auto` — workflow advances to
+              `finalize` immediately.
+
+      - text: |
+          Process done. Advancing to finalize.
+
+  finalize:
+    steps:
+      - text: |
+          Finalize phase: writing the closing report.
+
+      - tool:
+          name: Write
+          input:
+            file_path: notes/resume-test-final.md
+            content: |
+              # Final report
+
+              Run: {run_id}
+              Phase: {phase}
+
+              All three phases ran. If you see this file on disk and
+              the run reports `completed`, the resume PR (or a fresh
+              run, depending on how you got here) is working.

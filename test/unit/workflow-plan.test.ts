@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowManifest } from "../../src/domain/workflow";
 import { type Engine, EngineRegistry } from "../../src/orchestrator/engine";
+import type { PhaseMeta, RunMeta } from "../../src/orchestrator/run-store";
 import {
   collectWorkflowDiagnostics,
   compileWorkflowPlan,
+  nextPhase,
   WorkflowValidationError,
 } from "../../src/orchestrator/workflow-plan";
 
@@ -140,6 +142,45 @@ describe("compileWorkflowPlan", () => {
   });
 });
 
+describe("nextPhase", () => {
+  const loopPlan = compileWorkflowPlan(
+    new WorkflowManifest({
+      name: "with-loop",
+      version: "1",
+      phases: [
+        { id: "plan", agent: "planner", runtime: "fake", gate: "auto" },
+        { id: "build", agent: "builder", runtime: "fake", gate: "auto" },
+        {
+          id: "review",
+          agent: "reviewer",
+          runtime: "fake",
+          gate: "human",
+          on_reject: { goto: "build", max_iterations: 2 },
+        },
+        { id: "ship", agent: "shipper", runtime: "fake", gate: "auto" },
+      ],
+    }),
+  );
+
+  it("returns the rejecter's goto target when the rejecter rejected", () => {
+    const meta = metaWithPhases([
+      phase("plan", "completed", 1),
+      phase("build", "completed", 1),
+      phase("review", "rejected", 1),
+    ]);
+    expect(nextPhase(loopPlan, meta)).toBe("build");
+  });
+
+  it("walks past an approved rejecter to the next phase", () => {
+    const meta = metaWithPhases([
+      phase("plan", "completed", 1),
+      phase("build", "completed", 1),
+      phase("review", "completed", 1),
+    ]);
+    expect(nextPhase(loopPlan, meta)).toBe("ship");
+  });
+});
+
 describe("EngineRegistry", () => {
   const fakeEngine: Engine = {
     name: "fake",
@@ -154,6 +195,9 @@ describe("EngineRegistry", () => {
     run: async () => {
       throw new Error("not implemented");
     },
+    resume: async () => {
+      throw new Error("not implemented");
+    },
   };
 
   it("resolves engines by name", () => {
@@ -165,3 +209,31 @@ describe("EngineRegistry", () => {
     expect(() => new EngineRegistry([fakeEngine, fakeEngine])).toThrow(/already registered/);
   });
 });
+
+function phase(phaseId: string, status: PhaseMeta["status"], iteration: number): PhaseMeta {
+  return {
+    phaseId,
+    iteration,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    completedAt: "2026-05-14T00:00:01.000Z",
+    status,
+  };
+}
+
+function metaWithPhases(phases: PhaseMeta[]): RunMeta {
+  return {
+    runId: "test",
+    workflow: "test",
+    bundle: { name: "test", version: "1", hash: "h" },
+    tier: "M",
+    task: "t",
+    slug: "s",
+    repo: "/tmp",
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    phases,
+    inFlight: null,
+    currentPhaseId: null,
+    pendingGate: null,
+  };
+}

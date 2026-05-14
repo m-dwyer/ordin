@@ -50,6 +50,12 @@ export interface OrdinRunSession {
   readonly gateResolver: GateResolver;
   readonly finish: (summary: { runId: string; status: RunMeta["status"] }) => void;
   readonly dispose: () => Promise<void> | void;
+  /**
+   * Bind the abort signal to the live TUI controller so Ctrl-C wakes
+   * up any pending gate prompts. Called after `installAbortHandler`
+   * (which produces the signal) and the session itself are constructed.
+   */
+  readonly bindAbortSignal: (signal: AbortSignal) => void;
 }
 
 /**
@@ -93,6 +99,9 @@ export async function ordinRunSession(opts: {
       gateResolver: session.gateResolver,
       finish: () => session.finish(),
       dispose: () => session.finish(),
+      bindAbortSignal: () => {
+        // Non-TTY has no interactive gate; abort flows through dispatchPhase only.
+      },
     };
   }
 
@@ -159,6 +168,7 @@ export async function ordinRunSession(opts: {
       }
       await stderrTee.close();
     },
+    bindAbortSignal: (signal) => controller.bindAbortSignal(signal),
   };
 }
 
@@ -169,4 +179,29 @@ export function slugify(input: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
+}
+
+/**
+ * Install a SIGINT handler that triggers a cooperative abort instead of
+ * terminating the process. Returns the signal for plumbing into
+ * `startRun` / `resumeRun`. Registering any SIGINT listener disables
+ * Bun's default-kill behavior, which lets the engine catch the abort,
+ * unwind cleanly, and the CLI's `finally` block dispose the renderer
+ * before exit.
+ *
+ * Two-press semantics: first Ctrl-C requests abort; second Ctrl-C
+ * force-exits with code 130 in case the engine itself is wedged.
+ */
+export function installAbortHandler(): AbortSignal {
+  const controller = new AbortController();
+  let aborted = false;
+  process.on("SIGINT", () => {
+    if (aborted) {
+      // Second Ctrl-C: caller asked again, give up gracefully.
+      process.exit(130);
+    }
+    aborted = true;
+    controller.abort();
+  });
+  return controller.signal;
 }

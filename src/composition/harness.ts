@@ -5,16 +5,19 @@ import type { VerifyResult } from "../broker/audit-chain";
 import type { BundleHash } from "../domain/bundle";
 import type { PhasePreview } from "../domain/phase-preview";
 import type { WorkflowManifest } from "../domain/workflow";
+import type { GateResolver } from "../gates/dispatch";
 import { BundleLoader } from "../infrastructure/bundle-loader";
 import { BundleResolver } from "../infrastructure/bundle-resolver";
+import { HarnessConfigLoader } from "../infrastructure/config-loader";
 import type { Engine, PhaseDispatchRequest } from "../orchestrator/engine";
 import type { RunEvent } from "../orchestrator/events";
 import type { PhaseInvocationResult } from "../orchestrator/phase-invocation";
-import type { RunMeta } from "../orchestrator/run-store";
+import { type RunMeta, RunStore } from "../orchestrator/run-store";
 import type { SandboxMode } from "../sandbox";
 import { DefaultHarnessStateLoader, type HarnessPaths } from "./default-harness-state-loader";
 import { PreviewRunUseCase } from "./preview-run";
 import { resolveClaudeBin } from "./resolve-claude-bin";
+import { type ResumeRunInput, ResumeRunUseCase } from "./resume-run";
 import { RunExecutionFactory } from "./run-execution";
 import { GetRunUseCase, ListRunsUseCase, VerifyAuditUseCase } from "./run-queries";
 import { DefaultRunSession, type RunSession } from "./run-session";
@@ -30,8 +33,15 @@ export { AutoApprovePrompter, GateResolver } from "../gates/dispatch";
 export type { Gate } from "../gates/types";
 export type { RunEvent } from "../orchestrator/events";
 export type { PhaseMeta, RunMeta } from "../orchestrator/run-store";
+export { replayResumedHistory } from "./resume-replay";
 export type { PendingGate, RunSession } from "./run-session";
 export type { StartRunInput } from "./start-run-input";
+
+export interface ResumeRunOptions {
+  readonly onEvent?: (event: RunEvent) => void;
+  readonly gateResolver?: GateResolver;
+  readonly abortSignal?: AbortSignal;
+}
 
 /**
  * Stable library surface. The CLI is the Stage 1 client; HTTP and MCP
@@ -105,6 +115,7 @@ export class Harness {
   private readonly loader: DefaultHarnessStateLoader;
   private readonly factory: RunExecutionFactory;
   private readonly startRun_: StartRunUseCase;
+  private readonly resumeRun_: ResumeRunUseCase;
   private readonly previewRun_: PreviewRunUseCase;
   private readonly listRuns_: ListRunsUseCase;
   private readonly getRun_: GetRunUseCase;
@@ -137,6 +148,7 @@ export class Harness {
 
     this.workspaceResolver = workspaceResolver;
     this.startRun_ = new StartRunUseCase(this.loader, this.factory, workspaceResolver);
+    this.resumeRun_ = new ResumeRunUseCase(this.loader, this.factory);
     this.previewRun_ = new PreviewRunUseCase(this.loader, workspaceResolver);
     this.listRuns_ = new ListRunsUseCase(this.loader);
     this.getRun_ = new GetRunUseCase(this.loader);
@@ -222,6 +234,69 @@ export class Harness {
   async startRun(input: StartRunInput): Promise<RunMeta> {
     const session = await this.prepareRun(input);
     return session.completion;
+  }
+
+  /**
+   * Continue an interrupted run from its persisted RunMeta. Identity
+   * is fixed by `meta` — no flags here override `task`, `bundle`, slug,
+   * tier, workspace, or sandbox mode. The returned `RunSession` mirrors
+   * `prepareRun`'s shape so transports (CLI, HTTP, MCP) consume the
+   * same handle either way.
+   */
+  async resumeRun(runId: string, opts: ResumeRunOptions = {}): Promise<RunSession> {
+    const session = new DefaultRunSession();
+    const sessionEmit = session.onEvent(opts.onEvent);
+    const gateResolver = opts.gateResolver ?? session.gateResolver();
+
+    const useCaseInput: ResumeRunInput = {
+      runId,
+      onEvent: sessionEmit,
+      gateResolver,
+      ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+    };
+
+    let captureRunId!: (id: string) => void;
+    let rejectRunStart!: (err: Error) => void;
+    const runIdReady = new Promise<string>((res, rej) => {
+      captureRunId = res;
+      rejectRunStart = rej;
+    });
+    const onEvent = (event: RunEvent): void => {
+      sessionEmit(event);
+      if (event.type === "run.started") captureRunId(event.runId);
+    };
+
+    const completion = this.resumeRun_
+      .execute({ ...useCaseInput, onEvent })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err : new Error(String(err));
+        rejectRunStart(e);
+        throw e;
+      });
+
+    const observedRunId = await runIdReady;
+    this.sessions.set(observedRunId, session);
+    session.bind(observedRunId, completion);
+    return session;
+  }
+
+  /**
+   * Read a run's `meta.json` without loading any bundle. The CLI uses
+   * this to discover the bundle name a `runId` was started against,
+   * before constructing a full `Harness` to drive the resume. Static so
+   * callers can avoid the chicken-and-egg of needing a bundle to
+   * construct a Harness to read the bundle name. Returned `runDir` is
+   * the per-run directory (`<runStoreDir>/<runId>`) — useful for
+   * locating the per-phase transcript JSONLs.
+   */
+  static async peekRunMeta(
+    runId: string,
+    opts: { root?: string } = {},
+  ): Promise<{ readonly meta: RunMeta; readonly runDir: string }> {
+    const root = opts.root ?? defaultRoot();
+    const config = await new HarnessConfigLoader().load(join(root, "ordin.config.yaml"));
+    const runStore = new RunStore(config.runStoreDir());
+    return { meta: await runStore.readMeta(runId), runDir: runStore.runDir(runId) };
   }
 
   findSession(runId: string): RunSession | undefined {
